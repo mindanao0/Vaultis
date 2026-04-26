@@ -1,2 +1,2 @@
-date,ticker,shares,price_usd,amount_thb,note
-2026-04-26,VOO,1.0,100.0,1000.0,
+date,ticker,shares,price_usd,fx_rate_thb,amount_thb,fee_thb,note
+2026-04-26,VOO,1.0,100.0,33.5,1000.0,0.0,

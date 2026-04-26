@@ -124,7 +124,7 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
 [แนะนำช่วงเวลาที่เหมาะสม]"""
 
 
-def get_monthly_advice(budget_thb: float = 5000) -> dict[str, Any]:
+def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:
     """วิเคราะห์ข้อมูล ETF ปัจจุบันและขอคำแนะนำ DCA รายเดือนจาก Groq."""
     try:
         if budget_thb <= 0:
@@ -155,7 +155,7 @@ def get_monthly_advice(budget_thb: float = 5000) -> dict[str, Any]:
 
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
         discord_result: dict[str, Any] = {"success": False, "skipped": True}
-        if webhook_url:
+        if webhook_url and send_discord:
             discord_result = send_discord_webhook(
                 webhook_url=webhook_url,
                 title="Vaultis AI Advisor (Monthly DCA)",

@@ -127,6 +127,48 @@ def send_technical_alert(
         return {"success": False, "error": str(exc)}
 
 
+def send_dca_reminder(
+    webhook_url: str = "",
+    dca_date_text: str = "วันที่ 1 ของเดือนหน้า",
+    dca_budget_thb: float = 5000,
+    fx_rate_thb: float = 33.5,
+    ai_advice: str = "กำลังวิเคราะห์...",
+) -> Dict[str, Any]:
+    """ส่งแจ้งเตือน DCA ล่วงหน้าสำหรับวันพรุ่งนี้ผ่าน Discord."""
+    try:
+        webhook_url = (webhook_url or "").strip() or DISCORD_WEBHOOK_URL
+        if not webhook_url:
+            raise ValueError("webhook_url ห้ามว่าง")
+
+        budget_text = f"{dca_budget_thb:,.0f}"
+        advice_text = (ai_advice or "").strip() or "- รอตรวจสอบข้อมูลตลาดเพิ่มเติม"
+        description = (
+            f"📅 DCA Reminder — พรุ่งนี้วันที่ {dca_date_text}\n"
+            "───────────────────────────\n"
+            f"💰 งบ DCA เดือนนี้: {budget_text} บาท\n"
+            f"💱 FX Rate วันนี้: {fx_rate_thb:.2f} THB/USD\n\n"
+            "🤖 AI แนะนำแบ่งเงินเดือนนี้:\n"
+            f"{advice_text}\n\n"
+            "⚠️ อย่าลืมเปิด Dime พรุ่งนี้!"
+        )
+
+        payload = {
+            "embeds": [
+                {
+                    "title": "Vaultis DCA Reminder",
+                    "description": description,
+                    "color": 0x0099FF,
+                }
+            ]
+        }
+
+        response = requests.post(webhook_url, json=payload, timeout=10)
+        response.raise_for_status()
+        return {"success": True, "status_code": response.status_code}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def test_alert() -> Dict[str, Any]:
     """ส่งข้อความทดสอบการเชื่อมต่อ Discord Webhook."""
     payload = {

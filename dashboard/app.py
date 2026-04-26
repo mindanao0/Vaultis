@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from dotenv import dotenv_values
 from plotly.subplots import make_subplots
 
 # เพิ่ม path ของ root โปรเจกต์เพื่อให้ import โมดูลข้ามโฟลเดอร์ได้เมื่อรันผ่าน Streamlit
@@ -26,7 +28,66 @@ from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
 from portfolio.rebalance import check_rebalance_needed
-from portfolio.tracker import add_transaction, get_portfolio_summary, get_total_summary, get_transactions
+from portfolio.tracker import (
+    add_transaction,
+    estimate_dime_fee_thb,
+    get_portfolio_summary,
+    get_today_fx_rate_thb,
+    get_total_summary,
+    get_transactions,
+)
+
+
+def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
+    """เพิ่ม/อัปเดต key ในไฟล์ .env โดยคงค่าอื่นไว้."""
+    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    updated_lines: list[str] = []
+    found = False
+
+    for line in existing_lines:
+        if line.startswith(f"{key}="):
+            updated_lines.append(f"{key}={value}")
+            found = True
+        else:
+            updated_lines.append(line)
+
+    if not found:
+        updated_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(updated_lines).strip() + "\n", encoding="utf-8")
+    os.environ[key] = value
+
+
+def render_settings_page() -> None:
+    """หน้าตั้งค่า DCA สำหรับ scheduler."""
+    st.header("Settings")
+    st.caption("กำหนดวัน DCA รายเดือนและงบประมาณที่จะใช้แจ้งเตือน Dime")
+
+    env_path = PROJECT_ROOT / ".env"
+    env_values = dotenv_values(env_path)
+
+    default_day = int(env_values.get("DCA_DAY", "1") or 1)
+    default_budget = float(env_values.get("DCA_BUDGET_THB", "5000") or 5000)
+
+    with st.form("dca_settings_form"):
+        dca_day = st.number_input("DCA Day (1-31)", min_value=1, max_value=31, value=int(default_day), step=1)
+        dca_budget = st.number_input(
+            "DCA Budget (THB)",
+            min_value=100.0,
+            value=float(default_budget),
+            step=100.0,
+            format="%.0f",
+        )
+        submitted = st.form_submit_button("บันทึกการตั้งค่า", type="primary")
+
+    if submitted:
+        try:
+            _upsert_env_value(env_path, "DCA_DAY", str(int(dca_day)))
+            _upsert_env_value(env_path, "DCA_BUDGET_THB", str(int(dca_budget)))
+            st.success("บันทึกค่า DCA_DAY และ DCA_BUDGET_THB ลง .env เรียบร้อยแล้ว")
+            st.info("ถ้ามี scheduler รันอยู่ แนะนำ restart เพื่อให้โหลดค่าใหม่")
+        except Exception as exc:
+            st.error(f"บันทึกค่าล้มเหลว: {exc}")
 
 
 def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
@@ -561,6 +622,7 @@ def render_portfolio_page() -> None:
     st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
 
     st.subheader("เพิ่มรายการซื้อ")
+    today_fx_rate = get_today_fx_rate_thb()
     with st.form("portfolio_buy_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -571,7 +633,23 @@ def render_portfolio_page() -> None:
             price_usd = st.number_input("ราคา USD", min_value=0.0001, value=100.0, step=0.1, format="%.4f")
         with col3:
             amount_thb = st.number_input("จำนวนเงิน THB", min_value=0.01, value=1000.0, step=10.0, format="%.2f")
+            fx_rate_thb = st.number_input(
+                "FX Rate (THB/USD)",
+                min_value=0.0001,
+                value=float(today_fx_rate),
+                step=0.01,
+                format="%.4f",
+            )
             note = st.text_input("หมายเหตุ", value="")
+
+        trade_number, estimated_fee_thb = estimate_dime_fee_thb(
+            trade_date=buy_date,
+            shares=float(shares),
+            price_usd=float(price_usd),
+            fx_rate_thb=float(fx_rate_thb),
+        )
+        st.caption(f"เทรดที่ {trade_number} ของเดือนนี้")
+        st.caption(f"ค่าธรรมเนียมโดยประมาณ: {estimated_fee_thb:,.2f} บาท")
 
         submitted = st.form_submit_button("บันทึกการซื้อ", type="primary")
         if submitted:
@@ -581,6 +659,7 @@ def render_portfolio_page() -> None:
                     ticker=ticker,
                     shares=float(shares),
                     price_usd=float(price_usd),
+                    fx_rate_thb=float(fx_rate_thb),
                     amount_thb=float(amount_thb),
                     note=note,
                 )
@@ -594,7 +673,7 @@ def render_portfolio_page() -> None:
     holdings_df = get_portfolio_summary()
     total_summary = get_total_summary()
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("💰 เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
     m2.metric("📈 มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
     m3.metric(
@@ -602,22 +681,36 @@ def render_portfolio_page() -> None:
         f"{total_summary['total_pnl_thb']:,.2f}",
         delta=f"{total_summary['total_return_pct']:.2f}%",
     )
+    m4.metric("💱 FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
+    m5.metric("💸 ค่าธรรมเนียมรวมทั้งหมด (THB)", f"{total_summary['total_fee_thb']:,.2f}")
 
     if holdings_df.empty:
         st.info("ยังไม่มีรายการซื้อในพอร์ต")
     else:
         display_holdings = holdings_df[
-            ["Ticker", "Shares", "Avg Cost (USD)", "Current Price (USD)", "P&L (USD)", "P&L (THB)", "Return (%)"]
+            [
+                "Ticker",
+                "Shares",
+                "FX Rate (Buy)",
+                "Avg Cost (USD)",
+                "Current Price (USD)",
+                "P&L (USD)",
+                "P&L (THB)",
+                "Return (%)",
+                "Fee (THB)",
+            ]
         ].copy()
         st.dataframe(
             display_holdings.style.format(
                 {
                     "Shares": "{:,.4f}",
+                    "FX Rate (Buy)": "{:,.4f}",
                     "Avg Cost (USD)": "${:,.2f}",
                     "Current Price (USD)": "${:,.2f}",
                     "P&L (USD)": "${:,.2f}",
                     "P&L (THB)": "{:,.2f}",
                     "Return (%)": "{:,.2f}%",
+                    "Fee (THB)": "{:,.2f}",
                 }
             ),
             use_container_width=True,
@@ -651,7 +744,9 @@ def render_portfolio_page() -> None:
             "ticker": "Ticker",
             "shares": "Shares",
             "price_usd": "Price (USD)",
+            "fx_rate_thb": "FX Rate (THB/USD)",
             "amount_thb": "Amount (THB)",
+            "fee_thb": "ค่าธรรมเนียม (THB)",
             "note": "Note",
         }
     )
@@ -660,7 +755,9 @@ def render_portfolio_page() -> None:
             {
                 "Shares": "{:,.4f}",
                 "Price (USD)": "${:,.4f}",
+                "FX Rate (THB/USD)": "{:,.4f}",
                 "Amount (THB)": "{:,.2f}",
+                "ค่าธรรมเนียม (THB)": "{:,.2f}",
             }
         ),
         use_container_width=True,
@@ -684,7 +781,7 @@ def render_dashboard() -> None:
         st.sidebar.header("Pages")
         page = st.sidebar.radio(
             "เลือกหน้า",
-            ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro"],
+            ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"],
             index=0,
         )
 
@@ -710,6 +807,10 @@ def render_dashboard() -> None:
 
         if page == "Macro":
             render_macro_page()
+            return
+
+        if page == "Settings":
+            render_settings_page()
             return
 
         st.subheader("Price Trend (Normalized = 100)")

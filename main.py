@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict
 
 import schedule
 from dotenv import load_dotenv
 
-from alerts.notifier import send_discord_webhook, send_technical_alert
+from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
 from analysis.ai_advisor import get_monthly_advice
 from analysis.returns import calculate_period_returns
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
+from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
 
 
@@ -28,6 +29,9 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
 
 ROOT_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+
+DCA_DAY = max(1, min(31, int(os.getenv("DCA_DAY", "1"))))  # วันที่ DCA ทุกเดือน (default วันที่ 1)
+DCA_BUDGET_THB = float(os.getenv("DCA_BUDGET_THB", "5000"))  # งบ DCA ต่อเดือน
 
 
 def generate_weekly_report_and_notify(webhook_url: str) -> None:
@@ -138,6 +142,53 @@ def run_monthly_ai_advisor_if_first_day() -> None:
         generate_monthly_ai_advisor_and_notify()
 
 
+def _extract_ai_allocation_summary(advice_text: str) -> str:
+    """ดึงเฉพาะส่วนสรุปการแบ่งเงินจาก AI เพื่อใช้ในข้อความเตือน DCA."""
+    cleaned = (advice_text or "").strip()
+    if not cleaned:
+        return "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
+
+    start_key = "💰 แนะนำแบ่งเงิน"
+    end_key = "⚠️ ความเสี่ยงเดือนนี้"
+    if start_key in cleaned:
+        start_idx = cleaned.index(start_key)
+        section = cleaned[start_idx:]
+        if end_key in section:
+            section = section.split(end_key, maxsplit=1)[0].strip()
+        return section[:900]
+    return cleaned[:900]
+
+
+def check_and_send_dca_reminder(webhook_url: str) -> None:
+    """ทุกวัน 08:00 เช็คว่าพรุ่งนี้เป็นวัน DCA หรือไม่ และส่งเตือนล่วงหน้า."""
+    try:
+        tomorrow = datetime.now() + timedelta(days=1)
+        if tomorrow.day != DCA_DAY:
+            return
+
+        fx_rate = float(get_today_fx_rate_thb())
+        ai_advice = "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
+        try:
+            advice_result = get_monthly_advice(budget_thb=DCA_BUDGET_THB, send_discord=False)
+            ai_advice = _extract_ai_allocation_summary(advice_result.get("advice_text", ""))
+        except Exception as advice_exc:
+            ai_advice = f"- ดึงคำแนะนำ AI ไม่สำเร็จ ({advice_exc})"
+
+        result = send_dca_reminder(
+            webhook_url=webhook_url,
+            dca_date_text=tomorrow.strftime("%d/%m/%Y"),
+            dca_budget_thb=DCA_BUDGET_THB,
+            fx_rate_thb=fx_rate,
+            ai_advice=ai_advice,
+        )
+        if result.get("success"):
+            print(f"ส่ง DCA reminder สำเร็จ สำหรับวันที่ {tomorrow.strftime('%d/%m/%Y')}")
+        else:
+            print(f"ส่ง DCA reminder ไม่สำเร็จ: {result.get('error')}")
+    except Exception as exc:
+        print(f"เกิดข้อผิดพลาดใน DCA reminder: {exc}")
+
+
 def run_scheduler() -> None:
     """ตั้งเวลาแจ้งเตือนตามรอบรายเดือน/รายสัปดาห์/รายวัน."""
     try:
@@ -147,14 +198,17 @@ def run_scheduler() -> None:
 
         # 1) วันที่ 1 ของทุกเดือน 08:00 -> AI Advisor (ผ่าน daily guard)
         schedule.every().day.at("08:00").do(run_monthly_ai_advisor_if_first_day)
-        # 2) ทุกวันจันทร์ 08:00 -> Weekly Summary (RSI + Return)
+        # 2) ทุกวัน 08:00 -> เช็คว่าพรุ่งนี้เป็นวัน DCA แล้วเตือนล่วงหน้า
+        schedule.every().day.at("08:00").do(check_and_send_dca_reminder, webhook_url=webhook_url)
+        # 3) ทุกวันจันทร์ 08:00 -> Weekly Summary (RSI + Return)
         schedule.every().monday.at("08:00").do(generate_weekly_report_and_notify, webhook_url=webhook_url)
-        # 3) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
+        # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
         schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
 
         print(
             "Vaultis scheduler started: "
             "monthly AI Advisor (day 1 08:00), "
+            f"DCA reminder check (daily 08:00, DCA day {DCA_DAY}), "
             "weekly summary (Mon 08:00), "
             "daily technical alert check (09:00, RSI abnormal only)"
         )
