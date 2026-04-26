@@ -11,9 +11,10 @@ import streamlit as st
 import yfinance as yf
 
 from utils.cache import cache_data_1h
+from utils.config import load_config
 
 
-DEFAULT_TICKERS: List[str] = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+DEFAULT_TICKERS: List[str] = load_config()["etf"]["tickers"]
 
 
 @cache_data_1h

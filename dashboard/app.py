@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -11,7 +10,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-from dotenv import dotenv_values
 from plotly.subplots import make_subplots
 
 # เพิ่ม path ของ root โปรเจกต์เพื่อให้ import โมดูลข้ามโฟลเดอร์ได้เมื่อรันผ่าน Streamlit
@@ -24,6 +22,7 @@ from analysis.ai_advisor import get_monthly_advice
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
+from alerts.notifier import test_alert
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
@@ -36,56 +35,133 @@ from portfolio.tracker import (
     get_total_summary,
     get_transactions,
 )
-
-
-def _upsert_env_value(env_path: Path, key: str, value: str) -> None:
-    """เพิ่ม/อัปเดต key ในไฟล์ .env โดยคงค่าอื่นไว้."""
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    updated_lines: list[str] = []
-    found = False
-
-    for line in existing_lines:
-        if line.startswith(f"{key}="):
-            updated_lines.append(f"{key}={value}")
-            found = True
-        else:
-            updated_lines.append(line)
-
-    if not found:
-        updated_lines.append(f"{key}={value}")
-
-    env_path.write_text("\n".join(updated_lines).strip() + "\n", encoding="utf-8")
-    os.environ[key] = value
+from utils.config import DEFAULT_CONFIG, load_config, save_config
 
 
 def render_settings_page() -> None:
-    """หน้าตั้งค่า DCA สำหรับ scheduler."""
+    """หน้าตั้งค่าระบบผ่านไฟล์ config.json."""
     st.header("Settings")
-    st.caption("กำหนดวัน DCA รายเดือนและงบประมาณที่จะใช้แจ้งเตือน Dime")
+    st.caption("ตั้งค่าการลงทุน, ETF, การแจ้งเตือน และการแสดงผลของแอป")
 
-    env_path = PROJECT_ROOT / ".env"
-    env_values = dotenv_values(env_path)
+    config = load_config()
+    main_etfs = DEFAULT_CONFIG["etf"]["tickers"]
+    current_tickers = config["etf"]["tickers"]
+    additional_tickers = [ticker for ticker in current_tickers if ticker not in main_etfs]
+    page_options = ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"]
 
-    default_day = int(env_values.get("DCA_DAY", "1") or 1)
-    default_budget = float(env_values.get("DCA_BUDGET_THB", "5000") or 5000)
+    st.subheader("1) DCA Settings")
+    dca_budget = st.number_input(
+        "งบ DCA ต่อเดือน (THB)",
+        min_value=100.0,
+        value=float(config["dca"]["monthly_budget_thb"]),
+        step=100.0,
+        format="%.0f",
+    )
+    dca_day = st.number_input(
+        "วันที่ DCA ทุกเดือน",
+        min_value=1,
+        max_value=31,
+        value=int(config["dca"]["day_of_month"]),
+        step=1,
+    )
 
-    with st.form("dca_settings_form"):
-        dca_day = st.number_input("DCA Day (1-31)", min_value=1, max_value=31, value=int(default_day), step=1)
-        dca_budget = st.number_input(
-            "DCA Budget (THB)",
-            min_value=100.0,
-            value=float(default_budget),
-            step=100.0,
-            format="%.0f",
-        )
-        submitted = st.form_submit_button("บันทึกการตั้งค่า", type="primary")
+    st.divider()
+    st.subheader("2) ETF Settings")
+    st.caption("ETF หลัก: " + ", ".join(main_etfs))
+    etf_input = st.text_input(
+        "เพิ่ม ETF เพิ่มเติม (คั่นด้วย comma เช่น VT, IWM)",
+        value=", ".join(additional_tickers),
+    )
+    combined_tickers: list[str] = []
+    for ticker in [*main_etfs, *[item.strip().upper() for item in etf_input.split(",")]]:
+        if ticker and ticker not in combined_tickers:
+            combined_tickers.append(ticker)
 
-    if submitted:
+    removable_tickers = st.multiselect(
+        "เลือก ETF ที่ต้องการลบออก",
+        options=combined_tickers,
+        default=[],
+    )
+    final_tickers = [ticker for ticker in combined_tickers if ticker not in removable_tickers]
+    if not final_tickers:
+        st.warning("ต้องมี ETF อย่างน้อย 1 ตัว")
+
+    st.divider()
+    st.subheader("3) Notification Settings")
+    webhook_url = st.text_input(
+        "Discord Webhook URL",
+        value=str(config["notifications"]["discord_webhook_url"]),
+        type="password",
+    )
+    weekly_summary_enabled = st.checkbox(
+        "Weekly Summary ทุกวันจันทร์",
+        value=bool(config["notifications"]["weekly_summary"]),
+    )
+    dca_reminder_enabled = st.checkbox(
+        "DCA Reminder ก่อน 1 วัน",
+        value=bool(config["notifications"]["dca_reminder"]),
+    )
+    rsi_alert_enabled = st.checkbox(
+        "RSI Alert เมื่อ Oversold/Overbought",
+        value=bool(config["notifications"]["rsi_alert"]),
+    )
+    if st.button("ทดสอบส่ง Discord"):
+        test_result = test_alert(webhook_url=webhook_url)
+        if test_result.get("success"):
+            st.success("ส่งข้อความทดสอบไป Discord สำเร็จ")
+        else:
+            st.error(f"ส่งข้อความทดสอบไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
+
+    st.divider()
+    st.subheader("4) Display Settings")
+    current_default_page = str(config["display"]["default_page"])
+    default_page = st.selectbox(
+        "Default Page เมื่อเปิดแอป",
+        page_options,
+        index=page_options.index(current_default_page) if current_default_page in page_options else 0,
+    )
+    currency = st.radio(
+        "สกุลเงินหลัก",
+        options=["THB", "USD"],
+        index=0 if str(config["display"]["currency"]).upper() == "THB" else 1,
+        horizontal=True,
+    )
+    default_fx_rate = st.number_input(
+        "อัตราแลกเปลี่ยน Default (ถ้าดึงไม่ได้)",
+        min_value=1.0,
+        value=float(config["display"]["default_fx_rate"]),
+        step=0.1,
+        format="%.4f",
+    )
+
+    if st.button("บันทึก Settings", type="primary"):
+        if not final_tickers:
+            st.error("บันทึกไม่ได้: ต้องมี ETF อย่างน้อย 1 ตัว")
+            return
+
+        updated_config = {
+            **config,
+            "dca": {
+                "monthly_budget_thb": float(dca_budget),
+                "day_of_month": int(dca_day),
+            },
+            "etf": {"tickers": final_tickers},
+            "notifications": {
+                "discord_webhook_url": webhook_url.strip(),
+                "weekly_summary": bool(weekly_summary_enabled),
+                "dca_reminder": bool(dca_reminder_enabled),
+                "rsi_alert": bool(rsi_alert_enabled),
+            },
+            "display": {
+                "default_page": default_page,
+                "currency": currency,
+                "default_fx_rate": float(default_fx_rate),
+            },
+        }
         try:
-            _upsert_env_value(env_path, "DCA_DAY", str(int(dca_day)))
-            _upsert_env_value(env_path, "DCA_BUDGET_THB", str(int(dca_budget)))
-            st.success("บันทึกค่า DCA_DAY และ DCA_BUDGET_THB ลง .env เรียบร้อยแล้ว")
-            st.info("ถ้ามี scheduler รันอยู่ แนะนำ restart เพื่อให้โหลดค่าใหม่")
+            save_config(updated_config)
+            st.success("บันทึก Settings ลง config.json เรียบร้อยแล้ว")
+            st.info("หากมี scheduler รันอยู่ ให้ restart เพื่อโหลดค่าใหม่")
         except Exception as exc:
             st.error(f"บันทึกค่าล้มเหลว: {exc}")
 
@@ -161,7 +237,7 @@ def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
     """หน้า Technical Signals แบบกราฟ Candlestick + RSI + Signal Cards."""
     st.header("Technical Signals")
-    technical_tickers = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+    technical_tickers = DEFAULT_TICKERS
 
     selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
 
@@ -435,11 +511,12 @@ def render_ai_advisor_page() -> None:
     """หน้า AI Advisor: ขอคำแนะนำ DCA รายเดือนจาก Claude."""
     st.header("AI Advisor")
     st.caption("วิเคราะห์ ETF ปัจจุบันด้วย Claude และแนะนำแผน DCA รายเดือน")
+    config = load_config()
 
     budget_thb = st.number_input(
         "งบ DCA รายเดือน (บาท)",
         min_value=500.0,
-        value=5000.0,
+        value=float(config["dca"]["monthly_budget_thb"]),
         step=500.0,
         format="%.0f",
     )
@@ -630,10 +707,15 @@ def render_portfolio_page() -> None:
     """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ตปัจจุบัน."""
     st.header("Portfolio")
     st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
+    config = load_config()
+    primary_currency = str(config["display"]["currency"]).upper()
+    default_fx_rate = float(config["display"]["default_fx_rate"])
 
     st.subheader("เพิ่มรายการซื้อ")
     with st.spinner("กำลังโหลดข้อมูล..."):
         today_fx_rate = get_today_fx_rate_thb()
+    if not today_fx_rate or today_fx_rate <= 0:
+        today_fx_rate = default_fx_rate
     with st.form("portfolio_buy_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -686,13 +768,25 @@ def render_portfolio_page() -> None:
         total_summary = get_total_summary()
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("💰 เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
-    m2.metric("📈 มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
-    m3.metric(
-        "✅ กำไร/ขาดทุน (THB)",
-        f"{total_summary['total_pnl_thb']:,.2f}",
-        delta=f"{total_summary['total_return_pct']:.2f}%",
-    )
+    if primary_currency == "USD":
+        invested = total_summary["total_invested_thb"] / today_fx_rate
+        current = total_summary["current_value_thb"] / today_fx_rate
+        pnl_value = total_summary["total_pnl_thb"] / today_fx_rate
+        m1.metric("💰 เงินลงทุนทั้งหมด (USD)", f"{invested:,.2f}")
+        m2.metric("📈 มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
+        m3.metric(
+            "✅ กำไร/ขาดทุน (USD)",
+            f"{pnl_value:,.2f}",
+            delta=f"{total_summary['total_return_pct']:.2f}%",
+        )
+    else:
+        m1.metric("💰 เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
+        m2.metric("📈 มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
+        m3.metric(
+            "✅ กำไร/ขาดทุน (THB)",
+            f"{total_summary['total_pnl_thb']:,.2f}",
+            delta=f"{total_summary['total_return_pct']:.2f}%",
+        )
     m4.metric("💱 FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
     m5.metric("💸 ค่าธรรมเนียมรวมทั้งหมด (THB)", f"{total_summary['total_fee_thb']:,.2f}")
 
@@ -782,7 +876,7 @@ def render_dashboard() -> None:
     try:
         st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
         st.title("Vaultis - Long-term ETF Analyzer")
-        st.caption("วิเคราะห์ ETF หลัก: VOO, SCHD, QQQM, XLV, GLDM (ย้อนหลัง 10 ปี)")
+        st.caption(f"วิเคราะห์ ETF: {', '.join(DEFAULT_TICKERS)} (ย้อนหลัง 10 ปี)")
 
         if st.button("🔄 Refresh ข้อมูล"):
             st.cache_data.clear()
@@ -795,13 +889,20 @@ def render_dashboard() -> None:
             st.error("ไม่พบข้อมูล ETF")
             return
 
-        default_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}
+        base_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}
+        default_weights = {ticker: base_weights.get(ticker, 1.0) for ticker in DEFAULT_TICKERS}
+        total = sum(default_weights.values())
+        default_weights = {ticker: value / total for ticker, value in default_weights.items()}
+        config = load_config()
 
         st.sidebar.header("Pages")
+        page_options = ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"]
+        default_page = str(config["display"]["default_page"])
+        default_page_index = page_options.index(default_page) if default_page in page_options else 0
         page = st.sidebar.radio(
             "เลือกหน้า",
-            ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"],
-            index=0,
+            page_options,
+            index=default_page_index,
         )
 
         if page == "Portfolio":

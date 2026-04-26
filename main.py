@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict
 
 import schedule
-from dotenv import load_dotenv
 
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
 from analysis.ai_advisor import get_monthly_advice
@@ -17,6 +14,7 @@ from analysis.returns import calculate_period_returns
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
+from utils.config import load_config
 
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
@@ -26,13 +24,6 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "XLV": 0.15,
     "GLDM": 0.10,
 }
-
-ROOT_DIR = Path(__file__).resolve().parent
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
-
-DCA_DAY = max(1, min(31, int(os.getenv("DCA_DAY", "1"))))  # วันที่ DCA ทุกเดือน (default วันที่ 1)
-DCA_BUDGET_THB = float(os.getenv("DCA_BUDGET_THB", "5000"))  # งบ DCA ต่อเดือน
-
 
 def generate_weekly_report_and_notify(webhook_url: str) -> None:
     """สร้าง Weekly Summary (RSI + Return) และส่งแจ้งเตือนไป Discord."""
@@ -81,7 +72,9 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
 def generate_monthly_ai_advisor_and_notify() -> None:
     """ส่ง AI Advisor เดือนละครั้งตอนต้นเดือน."""
     try:
-        result = get_monthly_advice(budget_thb=5000)
+        config = load_config()
+        budget_thb = float(config["dca"]["monthly_budget_thb"])
+        result = get_monthly_advice(budget_thb=budget_thb)
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
             print("ส่ง AI Advisor รายเดือนไป Discord สำเร็จ")
@@ -162,14 +155,17 @@ def _extract_ai_allocation_summary(advice_text: str) -> str:
 def check_and_send_dca_reminder(webhook_url: str) -> None:
     """ทุกวัน 08:00 เช็คว่าพรุ่งนี้เป็นวัน DCA หรือไม่ และส่งเตือนล่วงหน้า."""
     try:
+        config = load_config()
+        dca_day = int(config["dca"]["day_of_month"])
+        dca_budget_thb = float(config["dca"]["monthly_budget_thb"])
         tomorrow = datetime.now() + timedelta(days=1)
-        if tomorrow.day != DCA_DAY:
+        if tomorrow.day != dca_day:
             return
 
         fx_rate = float(get_today_fx_rate_thb())
         ai_advice = "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
         try:
-            advice_result = get_monthly_advice(budget_thb=DCA_BUDGET_THB, send_discord=False)
+            advice_result = get_monthly_advice(budget_thb=dca_budget_thb, send_discord=False)
             ai_advice = _extract_ai_allocation_summary(advice_result.get("advice_text", ""))
         except Exception as advice_exc:
             ai_advice = f"- ดึงคำแนะนำ AI ไม่สำเร็จ ({advice_exc})"
@@ -177,7 +173,7 @@ def check_and_send_dca_reminder(webhook_url: str) -> None:
         result = send_dca_reminder(
             webhook_url=webhook_url,
             dca_date_text=tomorrow.strftime("%d/%m/%Y"),
-            dca_budget_thb=DCA_BUDGET_THB,
+            dca_budget_thb=dca_budget_thb,
             fx_rate_thb=fx_rate,
             ai_advice=ai_advice,
         )
@@ -192,25 +188,31 @@ def check_and_send_dca_reminder(webhook_url: str) -> None:
 def run_scheduler() -> None:
     """ตั้งเวลาแจ้งเตือนตามรอบรายเดือน/รายสัปดาห์/รายวัน."""
     try:
-        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        config = load_config()
+        notifications = config["notifications"]
+        dca_day = int(config["dca"]["day_of_month"])
+        webhook_url = str(notifications.get("discord_webhook_url", "")).strip()
         if not webhook_url:
-            raise ValueError("กรุณาตั้งค่า environment variable: DISCORD_WEBHOOK_URL")
+            raise ValueError("กรุณาตั้งค่า Discord Webhook URL ใน Settings")
 
         # 1) วันที่ 1 ของทุกเดือน 08:00 -> AI Advisor (ผ่าน daily guard)
         schedule.every().day.at("08:00").do(run_monthly_ai_advisor_if_first_day)
         # 2) ทุกวัน 08:00 -> เช็คว่าพรุ่งนี้เป็นวัน DCA แล้วเตือนล่วงหน้า
-        schedule.every().day.at("08:00").do(check_and_send_dca_reminder, webhook_url=webhook_url)
+        if notifications.get("dca_reminder", True):
+            schedule.every().day.at("08:00").do(check_and_send_dca_reminder, webhook_url=webhook_url)
         # 3) ทุกวันจันทร์ 08:00 -> Weekly Summary (RSI + Return)
-        schedule.every().monday.at("08:00").do(generate_weekly_report_and_notify, webhook_url=webhook_url)
+        if notifications.get("weekly_summary", True):
+            schedule.every().monday.at("08:00").do(generate_weekly_report_and_notify, webhook_url=webhook_url)
         # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
-        schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
+        if notifications.get("rsi_alert", True):
+            schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
 
         print(
             "Vaultis scheduler started: "
             "monthly AI Advisor (day 1 08:00), "
-            f"DCA reminder check (daily 08:00, DCA day {DCA_DAY}), "
-            "weekly summary (Mon 08:00), "
-            "daily technical alert check (09:00, RSI abnormal only)"
+            f"DCA reminder check (daily 08:00, DCA day {dca_day}) = {notifications.get('dca_reminder', True)}, "
+            f"weekly summary (Mon 08:00) = {notifications.get('weekly_summary', True)}, "
+            f"daily technical alert check (09:00, RSI abnormal only) = {notifications.get('rsi_alert', True)}"
         )
 
         while True:

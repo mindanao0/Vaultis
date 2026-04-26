@@ -7,12 +7,13 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+from utils.config import load_config
 
 CSV_COLUMNS = ["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb", "fee_thb", "note"]
 TRACKER_DIR = Path(__file__).resolve().parent
 DATA_DIR = TRACKER_DIR / "data"
 TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
-DEFAULT_USDTHB = 33.5
+DEFAULT_USDTHB = float(load_config()["display"]["default_fx_rate"])
 FEE_RATE = 0.0015
 
 

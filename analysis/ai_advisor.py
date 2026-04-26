@@ -18,12 +18,13 @@ from analysis.correlation import calculate_correlation_matrix
 from analysis.macro import get_macro_data
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
+from utils.config import load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-ADVISOR_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+ADVISOR_TICKERS = load_config()["etf"]["tickers"]
 
 
 def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
@@ -153,7 +154,7 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         print(advice_text)
         print("=============================================\n")
 
-        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
         discord_result: dict[str, Any] = {"success": False, "skipped": True}
         if webhook_url and send_discord:
             discord_result = send_discord_webhook(

@@ -7,9 +7,10 @@ import pandas as pd
 import streamlit as st
 
 from utils.cache import cache_data_1h
+from utils.config import load_config
 import yfinance as yf
 
-TICKERS: list[str] = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+TICKERS: list[str] = load_config()["etf"]["tickers"]
 
 
 def _extract_adj_close(raw_data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:

@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
 import requests
 from dotenv import load_dotenv
+from utils.config import load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 
 
 def send_discord_webhook(
@@ -136,7 +135,7 @@ def send_dca_reminder(
 ) -> Dict[str, Any]:
     """ส่งแจ้งเตือน DCA ล่วงหน้าสำหรับวันพรุ่งนี้ผ่าน Discord."""
     try:
-        webhook_url = (webhook_url or "").strip() or DISCORD_WEBHOOK_URL
+        webhook_url = (webhook_url or "").strip() or str(load_config()["notifications"]["discord_webhook_url"]).strip()
         if not webhook_url:
             raise ValueError("webhook_url ห้ามว่าง")
 
@@ -169,7 +168,7 @@ def send_dca_reminder(
         return {"success": False, "error": str(exc)}
 
 
-def test_alert() -> Dict[str, Any]:
+def test_alert(webhook_url: str = "") -> Dict[str, Any]:
     """ส่งข้อความทดสอบการเชื่อมต่อ Discord Webhook."""
     payload = {
         "embeds": [
@@ -190,10 +189,11 @@ def test_alert() -> Dict[str, Any]:
     }
 
     try:
-        if not DISCORD_WEBHOOK_URL:
-            raise ValueError("กรุณาตั้งค่า DISCORD_WEBHOOK_URL ก่อนทดสอบ")
+        selected_webhook = (webhook_url or "").strip() or str(load_config()["notifications"]["discord_webhook_url"]).strip()
+        if not selected_webhook:
+            raise ValueError("กรุณาตั้งค่า Discord Webhook URL ในหน้า Settings ก่อนทดสอบ")
 
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        response = requests.post(selected_webhook, json=payload, timeout=10)
         response.raise_for_status()
         return {"success": True, "status_code": response.status_code}
     except Exception as exc:
