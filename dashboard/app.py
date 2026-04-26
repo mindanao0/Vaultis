@@ -24,6 +24,7 @@ from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
 from alerts.notifier import test_alert
+from alerts.price_alert import add_alert, check_alerts, delete_alert, get_current_prices, list_alerts
 from data.fetcher import fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
@@ -99,7 +100,17 @@ def render_settings_page() -> None:
 
     config = load_config()
     current_tickers = get_tickers()
-    page_options = ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"]
+    page_options = [
+        "Overview",
+        "Portfolio",
+        "Backtest",
+        "DCA Simulator",
+        "Technical Signals",
+        "AI Advisor",
+        "Macro",
+        "Price Alerts",
+        "Settings",
+    ]
 
     st.subheader("1) DCA Settings")
     dca_budget = st.number_input(
@@ -224,6 +235,175 @@ def render_settings_page() -> None:
             st.info("หากมี scheduler รันอยู่ ให้ restart เพื่อโหลดค่าใหม่")
         except Exception as exc:
             st.error(f"บันทึกค่าล้มเหลว: {exc}")
+
+
+def _style_alert_rows(row: pd.Series) -> list[str]:
+    state = str(row.get("Status", ""))
+    distance = pd.to_numeric(pd.Series([row.get("Distance %", None)]), errors="coerce").iloc[0]
+    if state == "Triggered":
+        return ["background-color: rgba(220, 53, 69, 0.18)"] * len(row)
+    if pd.notna(distance) and abs(float(distance)) <= 2.0:
+        return ["background-color: rgba(46, 204, 113, 0.15)"] * len(row)
+    return [""] * len(row)
+
+
+def render_price_alerts_page() -> None:
+    """หน้า Price Alerts: ตั้งเงื่อนไขราคา, ติดตามสถานะ, และดูประวัติที่ trigger แล้ว."""
+    st.header("Price Alerts")
+    tickers = get_tickers()
+    if not tickers:
+        st.warning("ยังไม่มี ETF ในระบบ กรุณาเพิ่มใน Settings")
+        return
+
+    all_alerts = list_alerts(include_triggered=True)
+    pending_alerts = [item for item in all_alerts if not bool(item.get("triggered"))]
+    history_alerts = [item for item in all_alerts if bool(item.get("triggered"))]
+
+    watch_tickers = sorted(
+        set(tickers)
+        | {str(item.get("ticker", "")).strip().upper() for item in all_alerts if str(item.get("ticker", "")).strip()}
+    )
+    latest_prices = get_current_prices(watch_tickers)
+
+    st.subheader("1) เพิ่ม Alert ใหม่")
+    col_ticker, col_type, col_price = st.columns([2, 2, 2])
+    with col_ticker:
+        selected_ticker = st.selectbox("เลือก ETF", tickers, key="price_alert_ticker")
+    with col_type:
+        selected_type = st.selectbox(
+            "เงื่อนไข",
+            options=["below", "above"],
+            format_func=lambda x: "Below (ต่ำกว่า)" if x == "below" else "Above (สูงกว่า)",
+            key="price_alert_type",
+        )
+    with col_price:
+        target_price = st.number_input("ราคาเป้าหมาย (USD)", min_value=0.01, value=100.0, step=0.5, format="%.2f")
+    note = st.text_input("หมายเหตุ", value="", placeholder="เช่น จังหวะ DCA เพิ่ม")
+
+    current_price = latest_prices.get(selected_ticker)
+    if current_price is not None:
+        st.caption(f"ราคาปัจจุบันของ {selected_ticker}: ${current_price:,.2f}")
+    else:
+        st.caption(f"ไม่พบราคาปัจจุบันของ {selected_ticker} ในขณะนี้")
+
+    if st.button("ตั้ง Alert", type="primary"):
+        try:
+            created = add_alert(
+                ticker=selected_ticker,
+                alert_type=selected_type,
+                price=float(target_price),
+                note=note,
+            )
+            st.success(
+                f"ตั้ง Alert สำเร็จ: {created['ticker']} {created['alert_type']} ${float(created['price']):,.2f}"
+            )
+            st.rerun()
+        except Exception as exc:
+            st.error(f"ตั้ง Alert ไม่สำเร็จ: {exc}")
+
+    if st.button("เช็ค Alert ตอนนี้"):
+        result = check_alerts()
+        triggered_count = len(result.get("triggered", []))
+        if triggered_count > 0:
+            st.success(f"พบ Alert trigger แล้ว {triggered_count} รายการ (มีการส่ง Discord แล้ว)")
+        else:
+            st.info("ยังไม่มี Alert ที่เข้าเงื่อนไข")
+        st.rerun()
+
+    st.divider()
+    st.subheader("2) Alert ที่ตั้งไว้")
+    if not pending_alerts:
+        st.info("ยังไม่มี Alert ที่รอ trigger")
+    else:
+        pending_rows: list[dict[str, object]] = []
+        for item in pending_alerts:
+            ticker = str(item.get("ticker", "")).strip().upper()
+            alert_type = str(item.get("alert_type", "")).lower()
+            target = float(item.get("price", 0.0))
+            now_price = latest_prices.get(ticker)
+            if now_price is None:
+                distance = None
+            elif alert_type == "below":
+                distance = ((now_price - target) / target) * 100.0
+            else:
+                distance = ((target - now_price) / target) * 100.0
+
+            pending_rows.append(
+                {
+                    "ID": item.get("id"),
+                    "ETF": ticker,
+                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
+                    "ราคาเป้า (USD)": target,
+                    "ราคาปัจจุบัน (USD)": now_price,
+                    "Distance %": distance,
+                    "Status": "Triggered" if now_price is not None and distance is not None and distance <= 0 else "Pending",
+                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
+                    "สร้างเมื่อ": str(item.get("created_at", "")),
+                }
+            )
+
+        pending_df = pd.DataFrame(pending_rows)
+        show_cols = [
+            "ETF",
+            "เงื่อนไข",
+            "ราคาเป้า (USD)",
+            "ราคาปัจจุบัน (USD)",
+            "Distance %",
+            "Status",
+            "หมายเหตุ",
+            "สร้างเมื่อ",
+        ]
+        st.dataframe(
+            pending_df[show_cols].style.format(
+                {
+                    "ราคาเป้า (USD)": "${:,.2f}",
+                    "ราคาปัจจุบัน (USD)": "${:,.2f}",
+                    "Distance %": "{:+.2f}%",
+                },
+                na_rep="N/A",
+            ).apply(_style_alert_rows, axis=1),
+            use_container_width=True,
+        )
+
+        delete_options = {f"{row['ETF']} | {row['เงื่อนไข']} | ${row['ราคาเป้า (USD)']:,.2f}": row["ID"] for _, row in pending_df.iterrows()}
+        selected_delete_key = st.selectbox("เลือก Alert ที่ต้องการลบ", options=list(delete_options.keys()), key="delete_price_alert")
+        if st.button("ลบ Alert"):
+            selected_alert_id = delete_options.get(selected_delete_key)
+            if selected_alert_id and delete_alert(str(selected_alert_id)):
+                st.success("ลบ Alert เรียบร้อยแล้ว")
+                st.rerun()
+            else:
+                st.warning("ไม่พบ Alert ที่เลือก")
+
+    st.divider()
+    st.subheader("3) Alert History")
+    if not history_alerts:
+        st.info("ยังไม่มีประวัติ Alert ที่ trigger")
+    else:
+        history_rows: list[dict[str, object]] = []
+        for item in history_alerts:
+            alert_type = str(item.get("alert_type", "")).lower()
+            history_rows.append(
+                {
+                    "ETF": str(item.get("ticker", "")).strip().upper(),
+                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
+                    "ราคาเป้า (USD)": float(item.get("price", 0.0)),
+                    "ราคาที่ Trigger (USD)": item.get("triggered_price"),
+                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
+                    "Triggered At": str(item.get("triggered_at", "")),
+                }
+            )
+        history_df = pd.DataFrame(history_rows).sort_values("Triggered At", ascending=False)
+        st.dataframe(
+            history_df.style.format(
+                {
+                    "ราคาเป้า (USD)": "${:,.2f}",
+                    "ราคาที่ Trigger (USD)": "${:,.2f}",
+                },
+                na_rep="N/A",
+            ),
+            use_container_width=True,
+        )
 
 
 def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
@@ -968,7 +1148,17 @@ def render_dashboard() -> None:
         config = load_config()
 
         st.sidebar.header("Pages")
-        page_options = ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"]
+        page_options = [
+            "Overview",
+            "Portfolio",
+            "Backtest",
+            "DCA Simulator",
+            "Technical Signals",
+            "AI Advisor",
+            "Macro",
+            "Price Alerts",
+            "Settings",
+        ]
         default_page = str(config["display"]["default_page"])
         default_page_index = page_options.index(default_page) if default_page in page_options else 0
         page = st.sidebar.radio(
@@ -999,6 +1189,10 @@ def render_dashboard() -> None:
 
         if page == "Macro":
             render_macro_page()
+            return
+
+        if page == "Price Alerts":
+            render_price_alerts_page()
             return
 
         if page == "Settings":

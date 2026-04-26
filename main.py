@@ -9,6 +9,7 @@ from typing import Dict
 import schedule
 
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
+from alerts.price_alert import check_alerts
 from analysis.ai_advisor import get_monthly_advice
 from analysis.returns import calculate_period_returns
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
@@ -206,13 +207,17 @@ def run_scheduler() -> None:
         # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
         if notifications.get("rsi_alert", True):
             schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
+        # 5) ทุกวัน 09:00 และ 21:00 -> Price Alert
+        schedule.every().day.at("09:00").do(check_alerts)
+        schedule.every().day.at("21:00").do(check_alerts)
 
         print(
             "Vaultis scheduler started: "
             "monthly AI Advisor (day 1 08:00), "
             f"DCA reminder check (daily 08:00, DCA day {dca_day}) = {notifications.get('dca_reminder', True)}, "
             f"weekly summary (Mon 08:00) = {notifications.get('weekly_summary', True)}, "
-            f"daily technical alert check (09:00, RSI abnormal only) = {notifications.get('rsi_alert', True)}"
+            f"daily technical alert check (09:00, RSI abnormal only) = {notifications.get('rsi_alert', True)}, "
+            "price alert check (daily 09:00, 21:00) = True"
         )
 
         while True:
