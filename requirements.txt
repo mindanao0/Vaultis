@@ -10,3 +10,4 @@ schedule
 python-dotenv
 groq
 google-genai
+reportlab

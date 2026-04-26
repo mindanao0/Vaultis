@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -35,6 +36,39 @@ from portfolio.tracker import (
     get_transactions,
 )
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
+from utils.pdf_export import generate_monthly_report
+
+
+def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
+    """Render monthly PDF export controls with Streamlit download button."""
+    config = load_config()
+    month_text = datetime.today().strftime("%B %Y")
+    default_budget = float(config["dca"]["monthly_budget_thb"])
+    budget_thb = st.number_input(
+        "งบ DCA สำหรับ AI Summary (THB)",
+        min_value=500.0,
+        value=default_budget,
+        step=500.0,
+        format="%.0f",
+        key=f"{section_key}_pdf_budget",
+    )
+
+    cache_key = f"{section_key}_pdf_bytes"
+    file_key = f"{section_key}_pdf_filename"
+    if st.button(prepare_label, key=f"{section_key}_prepare_pdf"):
+        with st.spinner("กำลังสร้างรายงาน PDF..."):
+            st.session_state[cache_key] = generate_monthly_report(month=month_text, budget_thb=float(budget_thb))
+            st.session_state[file_key] = f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"
+        st.success("สร้างไฟล์รายงานเรียบร้อยแล้ว กดปุ่มด้านล่างเพื่อดาวน์โหลด")
+
+    if cache_key in st.session_state:
+        st.download_button(
+            label=download_label,
+            data=st.session_state[cache_key],
+            file_name=st.session_state.get(file_key, f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"),
+            mime="application/pdf",
+            key=f"{section_key}_download_pdf",
+        )
 
 
 def _is_valid_etf_ticker(ticker: str) -> bool:
@@ -738,6 +772,12 @@ def render_portfolio_page() -> None:
     """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ตปัจจุบัน."""
     st.header("Portfolio")
     st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
+    _render_pdf_export_panel(
+        section_key="portfolio",
+        prepare_label="📄 Export Portfolio Report",
+        download_label="ดาวน์โหลด PDF พอร์ตปัจจุบัน",
+    )
+    st.divider()
     config = load_config()
     primary_currency = str(config["display"]["currency"]).upper()
     default_fx_rate = float(config["display"]["default_fx_rate"])
@@ -965,6 +1005,12 @@ def render_dashboard() -> None:
             render_settings_page()
             return
 
+        _render_pdf_export_panel(
+            section_key="overview",
+            prepare_label="📄 Export รายงานเดือนนี้",
+            download_label="ดาวน์โหลด PDF รายงานเดือนนี้",
+        )
+        st.divider()
         st.subheader("Price Trend (Normalized = 100)")
         normalized_prices = prices.ffill().apply(
             lambda series: (series / series.dropna().iloc[0]) * 100 if not series.dropna().empty else series
