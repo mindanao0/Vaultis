@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import time
 from datetime import datetime, timedelta
 from typing import Dict
@@ -230,4 +231,22 @@ def run_scheduler() -> None:
 
 
 if __name__ == "__main__":
-    run_scheduler()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job", type=str, default="all")
+    args = parser.parse_args()
+
+    if args.job == "weekly_summary":
+        config = load_config()
+        webhook_url = str(config["notifications"].get("discord_webhook_url", "")).strip()
+        if not webhook_url:
+            raise ValueError("กรุณาตั้งค่า Discord Webhook URL ใน Settings")
+        generate_weekly_report_and_notify(webhook_url=webhook_url)
+    elif args.job == "monthly_advice":
+        get_monthly_advice(budget_thb=5000)
+    elif args.job == "price_alert":
+        check_alerts()
+    elif args.job == "all":
+        # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)
+        run_scheduler()
+    else:
+        raise ValueError(f"Unknown job: {args.job}")

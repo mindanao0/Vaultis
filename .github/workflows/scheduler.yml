@@ -1,0 +1,42 @@
+name: Vaultis Scheduler
+
+on:
+  schedule:
+    - cron: '0 1 * * 1' # ทุกวันจันทร์ 08:00 Thailand
+    - cron: '0 1 1 * *' # วันที่ 1 ทุกเดือน 08:00 Thailand
+    - cron: '0 2 * * *' # ทุกวัน 09:00 Thailand
+  workflow_dispatch:
+
+jobs:
+  run-scheduler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Weekly Summary (วันจันทร์)
+        if: github.event.schedule == '0 1 * * 1'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python main.py --job weekly_summary
+      - name: Run Monthly AI Advisor (วันที่ 1)
+        if: github.event.schedule == '0 1 1 * *'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python main.py --job monthly_advice
+      - name: Run Price Alert (ทุกวัน)
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python main.py --job price_alert
