@@ -2,10 +2,11 @@ yfinance
 fredapi
 pandas
 numpy
-pandas-ta==0.3.14b
+ta
 streamlit
 plotly
 requests
 schedule
 python-dotenv
 groq
+google-genai

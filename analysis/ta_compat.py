@@ -1,4 +1,4 @@
-"""Compatibility layer for technical indicators without numba dependency."""
+"""Compatibility layer for technical indicators using `ta` library."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ def _rsi_fallback(series: pd.Series, length: int = 14) -> pd.Series:
     return rsi.fillna(0.0)
 
 
-class _PandasTAFallback:
-    """Fallback implementation for required pandas_ta APIs."""
+class _FallbackIndicatorAPI:
+    """Fallback implementation for required indicator APIs."""
 
     @staticmethod
     def sma(series: pd.Series, length: int = 14) -> pd.Series:
@@ -30,6 +30,19 @@ class _PandasTAFallback:
 
 
 try:
-    import pandas_ta as ta  # type: ignore
+    import ta as ta_lib  # type: ignore
+
+    class _TaWrapper:
+        """Expose a pandas_ta-like surface used by this project."""
+
+        @staticmethod
+        def sma(series: pd.Series, length: int = 14) -> pd.Series:
+            return ta_lib.trend.SMAIndicator(close=series, window=length, fillna=False).sma_indicator()
+
+        @staticmethod
+        def rsi(series: pd.Series, length: int = 14) -> pd.Series:
+            return ta_lib.momentum.RSIIndicator(close=series, window=length, fillna=False).rsi()
+
+    ta = _TaWrapper()
 except Exception:
-    ta = _PandasTAFallback()
+    ta = _FallbackIndicatorAPI()
