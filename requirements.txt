@@ -2,7 +2,7 @@ yfinance
 fredapi
 pandas
 numpy
-pandas-ta
+pandas-ta==0.3.14b
 streamlit
 plotly
 requests

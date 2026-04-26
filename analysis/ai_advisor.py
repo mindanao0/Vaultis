@@ -11,12 +11,12 @@ from typing import Any
 
 from groq import Groq
 import pandas as pd
-import pandas_ta as ta
 from dotenv import load_dotenv
 
 from alerts.notifier import send_discord_webhook
 from analysis.correlation import calculate_correlation_matrix
 from analysis.macro import get_macro_data
+from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
 
 ROOT_DIR = Path(__file__).resolve().parents[1]

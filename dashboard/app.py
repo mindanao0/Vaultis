@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import pandas_ta as ta
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -22,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import get_monthly_advice
+from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
