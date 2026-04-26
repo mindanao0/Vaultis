@@ -82,6 +82,44 @@ def get_current_prices(tickers: list[str]) -> dict[str, float]:
         return {}
 
 
+def get_price_snapshots(tickers: list[str]) -> dict[str, dict[str, float]]:
+    """Fetch latest and previous close prices for given tickers."""
+    normalized = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
+    if not normalized:
+        return {}
+    try:
+        raw = yf.download(
+            tickers=normalized,
+            period="5d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+        )
+        snapshots: dict[str, dict[str, float]] = {}
+        for ticker in normalized:
+            if raw.empty:
+                continue
+            if isinstance(raw.columns, pd.MultiIndex):
+                if ticker not in raw.columns.get_level_values(0):
+                    continue
+                close_series = pd.to_numeric(raw[ticker]["Close"], errors="coerce").dropna()
+            else:
+                close_series = pd.to_numeric(raw.get("Close"), errors="coerce").dropna()
+            if close_series.empty:
+                continue
+
+            latest_price = float(close_series.iloc[-1])
+            previous_close = float(close_series.iloc[-2]) if len(close_series) >= 2 else latest_price
+            snapshots[ticker] = {
+                "latest_price": latest_price,
+                "previous_close": previous_close,
+            }
+        return snapshots
+    except Exception:
+        return {}
+
+
 def add_alert(ticker: str, alert_type: str, price: float, note: str = "") -> dict[str, Any]:
     """Add a new price alert."""
     normalized_ticker = str(ticker).strip().upper()
@@ -146,16 +184,56 @@ def _build_price_alert_message(alert: dict[str, Any], current_price: float) -> s
     )
 
 
+def _build_daily_status_message(
+    tracked_tickers: list[str],
+    snapshots: dict[str, dict[str, float]],
+    pending_count: int,
+    triggered_items: list[dict[str, Any]],
+) -> str:
+    date_text = datetime.now().strftime("%d/%m/%Y")
+    lines = [
+        f"📊 Daily Price Check — {date_text}",
+        "─────────────────────────────",
+    ]
+    for ticker in tracked_tickers:
+        snapshot = snapshots.get(ticker)
+        if not snapshot:
+            lines.append(f"{ticker:<4} N/A      🟡")
+            continue
+
+        latest_price = float(snapshot["latest_price"])
+        previous_close = float(snapshot["previous_close"])
+        if latest_price > previous_close:
+            status = "🟢"
+        elif latest_price < previous_close:
+            status = "🔴"
+        else:
+            status = "🟡"
+        lines.append(f"{ticker:<4} ${latest_price:>7.2f}  {status}")
+
+    lines.append("─────────────────────────────")
+    lines.append(f"⚠️ Alert ที่ตั้งไว้: {pending_count} รายการ")
+    if triggered_items:
+        lines.append(f"🚨 Trigger แล้ววันนี้: {len(triggered_items)} รายการ")
+    else:
+        lines.append("✅ ไม่มี Alert trigger วันนี้")
+    return "\n".join(lines)
+
+
 def check_alerts() -> dict[str, Any]:
-    """Check all pending alerts and send Discord notification on trigger."""
+    """Check alerts and always send a daily Discord status summary."""
+    config = load_config()
+    tracked_tickers = list(config["etf"]["tickers"])
+    webhook_url = str(config["notifications"]["discord_webhook_url"]).strip()
     alerts = _load_alerts()
     pending = [item for item in alerts if not bool(item.get("triggered"))]
-    if not pending:
-        return {"success": True, "checked": 0, "triggered": []}
+    pending_count = len(pending)
 
-    tickers = sorted({str(item.get("ticker", "")).strip().upper() for item in pending if item.get("ticker")})
-    latest_prices = get_current_prices(tickers)
-    webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
+    tickers = sorted(
+        {str(item.get("ticker", "")).strip().upper() for item in pending if item.get("ticker")} | set(tracked_tickers)
+    )
+    snapshots = get_price_snapshots(tickers)
+    latest_prices = {ticker: snapshot["latest_price"] for ticker, snapshot in snapshots.items()}
 
     triggered_items: list[dict[str, Any]] = []
     for alert in pending:
@@ -195,6 +273,28 @@ def check_alerts() -> dict[str, Any]:
                 embed_color=(0x2ECC71 if alert_type == "above" else 0xE74C3C),
             )
 
+    daily_summary = _build_daily_status_message(
+        tracked_tickers=tracked_tickers,
+        snapshots=snapshots,
+        pending_count=pending_count,
+        triggered_items=triggered_items,
+    )
+    daily_result: dict[str, Any] = {"success": False, "skipped": True, "error": "missing webhook_url"}
+    if webhook_url:
+        daily_result = send_discord_webhook(
+            webhook_url=webhook_url,
+            title="Daily Price Check",
+            description=daily_summary,
+            is_positive=(len(triggered_items) == 0),
+            embed_color=(0x3498DB if len(triggered_items) == 0 else 0xE67E22),
+        )
+
     _save_alerts(alerts)
-    return {"success": True, "checked": len(pending), "triggered": triggered_items}
+    return {
+        "success": True,
+        "checked": len(pending),
+        "triggered": triggered_items,
+        "daily_summary": daily_summary,
+        "daily_discord_result": daily_result,
+    }
 

@@ -244,7 +244,14 @@ if __name__ == "__main__":
     elif args.job == "monthly_advice":
         get_monthly_advice(budget_thb=5000)
     elif args.job == "price_alert":
-        check_alerts()
+        result = check_alerts()
+        daily_discord_result = result.get("daily_discord_result", {})
+        if daily_discord_result.get("success"):
+            print("ส่ง Daily Price Check ไป Discord สำเร็จ")
+        elif daily_discord_result.get("skipped"):
+            print("ข้าม Daily Price Check: ไม่ได้ตั้งค่า Discord webhook")
+        else:
+            print(f"ส่ง Daily Price Check ไม่สำเร็จ: {daily_discord_result.get('error')}")
     elif args.job == "all":
         # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)
         run_scheduler()
