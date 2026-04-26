@@ -18,14 +18,11 @@ from analysis.correlation import calculate_correlation_matrix
 from analysis.macro import get_macro_data
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
-from utils.config import load_config
+from utils.config import get_tickers, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-ADVISOR_TICKERS = load_config()["etf"]["tickers"]
-
 
 def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
     """คำนวณ RSI/MA/ผลตอบแทน 1M, 3M ของแต่ละ ETF."""
@@ -51,27 +48,28 @@ def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
     }
 
 
-def _build_advisor_payload(price_df: pd.DataFrame) -> dict[str, Any]:
+def _build_advisor_payload(price_df: pd.DataFrame, tickers: list[str]) -> dict[str, Any]:
     """จัดรูปข้อมูลสรุปตลาดเพื่อส่งให้ Gemini วิเคราะห์."""
     if price_df.empty:
         raise ValueError("ไม่พบข้อมูลราคา ETF")
 
-    price_df = price_df.reindex(columns=ADVISOR_TICKERS).sort_index().ffill()
+    price_df = price_df.reindex(columns=tickers).sort_index().ffill()
 
     ticker_snapshot: dict[str, dict[str, Any]] = {}
-    for ticker in ADVISOR_TICKERS:
+    for ticker in tickers:
         if ticker not in price_df.columns or price_df[ticker].dropna().empty:
             raise ValueError(f"ไม่พบข้อมูลราคาของ {ticker}")
         ticker_snapshot[ticker] = _format_ticker_snapshot(price_df[ticker])
 
-    corr = calculate_correlation_matrix(price_df[ADVISOR_TICKERS]).round(3)
+    corr = calculate_correlation_matrix(price_df[tickers]).round(3)
     corr_matrix = corr.to_dict()
     as_of_date = str(price_df.index[-1].date())
 
     return {"as_of": as_of_date, "tickers": ticker_snapshot, "correlation_matrix": corr_matrix}
 
 
-def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: float) -> str:
+def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: float, tickers: list[str]) -> str:
+    ticker_list_text = " ".join(tickers)
     compact_data = json.dumps(data, ensure_ascii=False, indent=2)
 
     def _macro_value(key: str, nested_key: str = "value") -> Any:
@@ -112,7 +110,7 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
 ─────────────────────────────
 📊 การวิเคราะห์:
 [ETF] — RSI [ค่า] [วิเคราะห์สั้นๆ] [✅/⚠️/❌]
-(ทำครบทุกตัว VOO SCHD QQQM XLV GLDM)
+(ทำครบทุกตัว {ticker_list_text})
 
 💰 แนะนำแบ่งเงิน {budget_text} บาท:
 [ETF] [จำนวนบาท] ([เปอร์เซ็นต์]%)
@@ -135,10 +133,11 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         if not api_key or api_key == "your_key_here":
             raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
 
-        price_df = fetch_adjusted_close_data(ADVISOR_TICKERS, years=10)
-        payload = _build_advisor_payload(price_df)
+        advisor_tickers = get_tickers()
+        price_df = fetch_adjusted_close_data(advisor_tickers, years=10)
+        payload = _build_advisor_payload(price_df=price_df, tickers=advisor_tickers)
         macro_data = get_macro_data()
-        prompt = _build_prompt(payload, macro_data=macro_data, budget_thb=budget_thb)
+        prompt = _build_prompt(payload, macro_data=macro_data, budget_thb=budget_thb, tickers=advisor_tickers)
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",

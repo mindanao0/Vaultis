@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+DEFAULT_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "dca": {
@@ -15,7 +16,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "day_of_month": 1,
     },
     "etf": {
-        "tickers": ["VOO", "SCHD", "QQQM", "XLV", "GLDM"],
+        "tickers": DEFAULT_TICKERS,
     },
     "notifications": {
         "discord_webhook_url": "",
@@ -87,3 +88,35 @@ def save_config(config: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_config(config if isinstance(config, dict) else {})
     CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return normalized
+
+
+def get_tickers() -> list[str]:
+    """Return ETF tickers from config.json."""
+    return list(load_config()["etf"]["tickers"])
+
+
+def add_ticker(ticker: str) -> list[str]:
+    """Add a ticker to config.json and return updated list."""
+    normalized_ticker = str(ticker).strip().upper()
+    if not normalized_ticker:
+        raise ValueError("ticker ห้ามว่าง")
+
+    config = load_config()
+    tickers = list(config["etf"]["tickers"])
+    if normalized_ticker not in tickers:
+        tickers.append(normalized_ticker)
+    config["etf"]["tickers"] = tickers
+    saved = save_config(config)
+    return list(saved["etf"]["tickers"])
+
+
+def remove_ticker(ticker: str) -> list[str]:
+    """Remove a ticker from config.json and return updated list."""
+    normalized_ticker = str(ticker).strip().upper()
+    config = load_config()
+    tickers = [item for item in config["etf"]["tickers"] if item != normalized_ticker]
+    if not tickers:
+        raise ValueError("ต้องมี ETF อย่างน้อย 1 ตัว")
+    config["etf"]["tickers"] = tickers
+    saved = save_config(config)
+    return list(saved["etf"]["tickers"])

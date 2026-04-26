@@ -23,10 +23,9 @@ from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
 from alerts.notifier import test_alert
-from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
+from data.fetcher import fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
-from portfolio.rebalance import check_rebalance_needed
 from portfolio.tracker import (
     add_transaction,
     estimate_dime_fee_thb,
@@ -35,7 +34,28 @@ from portfolio.tracker import (
     get_total_summary,
     get_transactions,
 )
-from utils.config import DEFAULT_CONFIG, load_config, save_config
+from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
+
+
+def _is_valid_etf_ticker(ticker: str) -> bool:
+    """Validate ticker by fetching 1-day data from yfinance."""
+    cleaned_ticker = str(ticker).strip().upper()
+    if not cleaned_ticker:
+        return False
+    try:
+        test_df = yf.download(
+            cleaned_ticker,
+            period="1d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+        )
+        if test_df.empty:
+            return False
+        close_series = pd.to_numeric(test_df.get("Close"), errors="coerce").dropna()
+        return not close_series.empty
+    except Exception:
+        return False
 
 
 def render_settings_page() -> None:
@@ -44,9 +64,7 @@ def render_settings_page() -> None:
     st.caption("ตั้งค่าการลงทุน, ETF, การแจ้งเตือน และการแสดงผลของแอป")
 
     config = load_config()
-    main_etfs = DEFAULT_CONFIG["etf"]["tickers"]
-    current_tickers = config["etf"]["tickers"]
-    additional_tickers = [ticker for ticker in current_tickers if ticker not in main_etfs]
+    current_tickers = get_tickers()
     page_options = ["Overview", "Portfolio", "Backtest", "DCA Simulator", "Technical Signals", "AI Advisor", "Macro", "Settings"]
 
     st.subheader("1) DCA Settings")
@@ -66,25 +84,37 @@ def render_settings_page() -> None:
     )
 
     st.divider()
-    st.subheader("2) ETF Settings")
-    st.caption("ETF หลัก: " + ", ".join(main_etfs))
-    etf_input = st.text_input(
-        "เพิ่ม ETF เพิ่มเติม (คั่นด้วย comma เช่น VT, IWM)",
-        value=", ".join(additional_tickers),
-    )
-    combined_tickers: list[str] = []
-    for ticker in [*main_etfs, *[item.strip().upper() for item in etf_input.split(",")]]:
-        if ticker and ticker not in combined_tickers:
-            combined_tickers.append(ticker)
+    st.subheader("2) ETF Management")
+    st.caption("ETF ปัจจุบันทั้งหมด")
+    for ticker in current_tickers:
+        col_ticker, col_remove = st.columns([4, 1])
+        with col_ticker:
+            st.text(ticker)
+        with col_remove:
+            if st.button("❌", key=f"remove_{ticker}"):
+                try:
+                    remove_ticker(ticker)
+                    st.success(f"ลบ ETF {ticker} สำเร็จ")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"ลบ ETF ไม่สำเร็จ: {exc}")
 
-    removable_tickers = st.multiselect(
-        "เลือก ETF ที่ต้องการลบออก",
-        options=combined_tickers,
-        default=[],
-    )
-    final_tickers = [ticker for ticker in combined_tickers if ticker not in removable_tickers]
-    if not final_tickers:
-        st.warning("ต้องมี ETF อย่างน้อย 1 ตัว")
+    new_ticker = st.text_input("ค้นหา ETF ใหม่", value="", placeholder="เช่น VTI")
+    if st.button("เพิ่ม ETF", type="secondary"):
+        candidate = new_ticker.strip().upper()
+        if not candidate:
+            st.warning("กรุณากรอก Ticker ก่อน")
+        elif candidate in current_tickers:
+            st.info(f"{candidate} มีอยู่แล้วในรายการ")
+        elif not _is_valid_etf_ticker(candidate):
+            st.error("ไม่พบ ETF นี้ กรุณาตรวจสอบ Ticker")
+        else:
+            try:
+                add_ticker(candidate)
+                st.success(f"เพิ่ม ETF {candidate} สำเร็จ")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"เพิ่ม ETF ไม่สำเร็จ: {exc}")
 
     st.divider()
     st.subheader("3) Notification Settings")
@@ -135,17 +165,13 @@ def render_settings_page() -> None:
     )
 
     if st.button("บันทึก Settings", type="primary"):
-        if not final_tickers:
-            st.error("บันทึกไม่ได้: ต้องมี ETF อย่างน้อย 1 ตัว")
-            return
-
         updated_config = {
             **config,
             "dca": {
                 "monthly_budget_thb": float(dca_budget),
                 "day_of_month": int(dca_day),
             },
-            "etf": {"tickers": final_tickers},
+            "etf": {"tickers": get_tickers()},
             "notifications": {
                 "discord_webhook_url": webhook_url.strip(),
                 "weekly_summary": bool(weekly_summary_enabled),
@@ -237,7 +263,10 @@ def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
     """หน้า Technical Signals แบบกราฟ Candlestick + RSI + Signal Cards."""
     st.header("Technical Signals")
-    technical_tickers = DEFAULT_TICKERS
+    technical_tickers = get_tickers()
+    if not technical_tickers:
+        st.warning("ยังไม่มี ETF ในระบบ กรุณาเพิ่มใน Settings")
+        return
 
     selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
 
@@ -389,10 +418,11 @@ def _build_weight_sliders(
     return {k: v / total_weight for k, v in raw_weights.items()}
 
 
-def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]) -> None:
+def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
     """หน้า Backtest แบบโต้ตอบ."""
     st.header("Backtest")
-    st.caption("กำหนดเงินลงทุนเริ่มต้น + สัดส่วน ETF แล้วรันเพื่อดูผลเทียบ VOO")
+    benchmark_ticker = "VOO" if "VOO" in tickers else tickers[0]
+    st.caption(f"กำหนดเงินลงทุนเริ่มต้น + สัดส่วน ETF แล้วรันเพื่อดูผลเทียบ {benchmark_ticker}")
 
     initial_capital = st.number_input(
         "เงินลงทุนเริ่มต้น (USD)",
@@ -402,36 +432,37 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
         format="%.2f",
     )
     st.markdown("**สัดส่วน ETF**")
-    normalized_weights = _build_weight_sliders(DEFAULT_TICKERS, default_weights, "backtest_weight")
+    normalized_weights = _build_weight_sliders(tickers, default_weights, "backtest_weight")
 
     if st.button("Run Backtest", type="primary"):
         backtest_df = run_portfolio_backtest(prices, normalized_weights, initial_capital=initial_capital)
 
-        benchmark = (prices["VOO"].ffill().dropna() / prices["VOO"].ffill().dropna().iloc[0]) * initial_capital
+        benchmark_prices = prices[benchmark_ticker].ffill().dropna()
+        benchmark = (benchmark_prices / benchmark_prices.iloc[0]) * initial_capital
         comparison_df = backtest_df[["Portfolio Value"]].join(
-            benchmark.rename("Benchmark (VOO)"), how="inner"
+            benchmark.rename(f"Benchmark ({benchmark_ticker})"), how="inner"
         )
 
         st.plotly_chart(
             px.line(
                 comparison_df,
                 x=comparison_df.index,
-                y=["Portfolio Value", "Benchmark (VOO)"],
-                title="Portfolio vs Benchmark (VOO)",
+                y=["Portfolio Value", f"Benchmark ({benchmark_ticker})"],
+                title=f"Portfolio vs Benchmark ({benchmark_ticker})",
             ),
             use_container_width=True,
         )
 
         final_portfolio = float(comparison_df["Portfolio Value"].iloc[-1])
-        final_benchmark = float(comparison_df["Benchmark (VOO)"].iloc[-1])
+        final_benchmark = float(comparison_df[f"Benchmark ({benchmark_ticker})"].iloc[-1])
         col1, col2 = st.columns(2)
         col1.metric("Final Portfolio Value", f"${final_portfolio:,.2f}")
-        col2.metric("Final Benchmark (VOO)", f"${final_benchmark:,.2f}")
+        col2.metric(f"Final Benchmark ({benchmark_ticker})", f"${final_benchmark:,.2f}")
     else:
         st.info("ปรับค่าแล้วกด Run Backtest เพื่อดูผล")
 
 
-def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, float]) -> None:
+def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
     """หน้า DCA Simulator แบบโต้ตอบ."""
     st.header("DCA Simulator")
     st.caption("จำลองลงทุนแบบ DCA รายเดือนพร้อมสรุปผลพอร์ต")
@@ -444,7 +475,7 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
         format="%.2f",
     )
     st.markdown("**สัดส่วน ETF**")
-    normalized_weights = _build_weight_sliders(DEFAULT_TICKERS, default_weights, "dca_weight")
+    normalized_weights = _build_weight_sliders(tickers, default_weights, "dca_weight")
 
     dca_df = simulate_monthly_dca(prices, normalized_weights, monthly_investment=monthly_investment)
 
@@ -876,7 +907,8 @@ def render_dashboard() -> None:
     try:
         st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
         st.title("Vaultis - Long-term ETF Analyzer")
-        st.caption(f"วิเคราะห์ ETF: {', '.join(DEFAULT_TICKERS)} (ย้อนหลัง 10 ปี)")
+        tickers = get_tickers()
+        st.caption(f"วิเคราะห์ ETF: {', '.join(tickers)} (ย้อนหลัง 10 ปี)")
 
         if st.button("🔄 Refresh ข้อมูล"):
             st.cache_data.clear()
@@ -884,13 +916,13 @@ def render_dashboard() -> None:
             st.rerun()
 
         with st.spinner("กำลังโหลดข้อมูล..."):
-            prices = fetch_adjusted_close_data(DEFAULT_TICKERS, years=10)
+            prices = fetch_adjusted_close_data(tickers, years=10)
         if prices.empty:
             st.error("ไม่พบข้อมูล ETF")
             return
 
         base_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}
-        default_weights = {ticker: base_weights.get(ticker, 1.0) for ticker in DEFAULT_TICKERS}
+        default_weights = {ticker: base_weights.get(ticker, 1.0) for ticker in tickers}
         total = sum(default_weights.values())
         default_weights = {ticker: value / total for ticker, value in default_weights.items()}
         config = load_config()
@@ -910,11 +942,11 @@ def render_dashboard() -> None:
             return
 
         if page == "Backtest":
-            render_backtest_page(prices, default_weights)
+            render_backtest_page(prices, default_weights, tickers)
             return
 
         if page == "DCA Simulator":
-            render_dca_simulator_page(prices, default_weights)
+            render_dca_simulator_page(prices, default_weights, tickers)
             return
 
         if page == "Technical Signals":
@@ -963,7 +995,11 @@ def render_dashboard() -> None:
         if corr_df.empty:
             st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
             return
-        corr_for_display = corr_df.loc[DEFAULT_TICKERS, DEFAULT_TICKERS]
+        available_tickers = [ticker for ticker in tickers if ticker in corr_df.index and ticker in corr_df.columns]
+        if len(available_tickers) < 2:
+            st.warning("ข้อมูล correlation ยังไม่พอสำหรับ ETF ที่เลือก")
+            return
+        corr_for_display = corr_df.loc[available_tickers, available_tickers]
         heatmap = px.imshow(
             corr_for_display,
             color_continuous_scale=[

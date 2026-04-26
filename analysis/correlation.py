@@ -7,11 +7,8 @@ import pandas as pd
 import streamlit as st
 
 from utils.cache import cache_data_1h
-from utils.config import load_config
+from utils.config import get_tickers
 import yfinance as yf
-
-TICKERS: list[str] = load_config()["etf"]["tickers"]
-
 
 def _extract_adj_close(raw_data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
     """แปลงข้อมูลดิบจาก yfinance ให้เหลือราคาปิดแบบปรับแล้วของแต่ละ ETF."""
@@ -34,15 +31,16 @@ def _extract_adj_close(raw_data: pd.DataFrame, tickers: list[str]) -> pd.DataFra
 def calculate_correlation(period: str = "10y") -> pd.DataFrame:
     """ดึงข้อมูล ETF 5 ตัวและคำนวณ Correlation Matrix จากผลตอบแทนรายวัน."""
     try:
+        tickers = get_tickers()
         raw_data = yf.download(
-            tickers=TICKERS,
+            tickers=tickers,
             period=period,
             interval="1d",
             auto_adjust=False,
             progress=False,
             group_by="ticker",
         )
-        prices = _extract_adj_close(raw_data, TICKERS)
+        prices = _extract_adj_close(raw_data, tickers)
         daily_returns = prices.pct_change().dropna(how="all")
         if daily_returns.empty:
             raise ValueError("ผลตอบแทนรายวันว่าง ไม่สามารถคำนวณ Correlation ได้")

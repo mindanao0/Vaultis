@@ -11,10 +11,10 @@ import streamlit as st
 import yfinance as yf
 
 from utils.cache import cache_data_1h
-from utils.config import load_config
+from utils.config import get_tickers
 
 
-DEFAULT_TICKERS: List[str] = load_config()["etf"]["tickers"]
+DEFAULT_TICKERS: List[str] = get_tickers()
 
 
 @cache_data_1h
@@ -24,7 +24,7 @@ def fetch_adjusted_close_data(
     interval: str = "1d",
 ) -> pd.DataFrame:
     """ดึงข้อมูลราคาปิดแบบปรับแล้ว (Adjusted Close) ของ ETF หลายตัว."""
-    selected_tickers: List[str] = tickers or DEFAULT_TICKERS
+    selected_tickers: List[str] = tickers or get_tickers()
     end_date = datetime.today()
     start_date = end_date - timedelta(days=365 * years)
 
