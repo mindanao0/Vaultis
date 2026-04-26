@@ -9,6 +9,9 @@ from typing import Any
 from dotenv import load_dotenv
 from fredapi import Fred
 import pandas as pd
+import streamlit as st
+
+from utils.cache import cache_data_1h
 import yfinance as yf
 
 
@@ -64,21 +67,27 @@ def _fetch_fred_series(fred: Fred, series_id: str) -> pd.Series:
 
 def _fetch_yf_series(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.Series:
     """ดึงราคาปิดล่าสุดจาก yfinance."""
-    df = yf.download(
-        tickers=symbol,
-        period=period,
-        interval=interval,
-        progress=False,
-        auto_adjust=False,
-    )
+    try:
+        df = yf.download(
+            tickers=symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+        )
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return pd.Series(dtype=float)
     if df.empty or "Close" not in df.columns:
-        raise ValueError(f"ไม่พบข้อมูลจาก yfinance สำหรับ {symbol}")
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return pd.Series(dtype=float)
 
     close_data = df["Close"]
     # yfinance may return a DataFrame (multi-ticker shaped columns) even for one symbol.
     if isinstance(close_data, pd.DataFrame):
         if close_data.empty:
-            raise ValueError(f"ไม่พบข้อมูลราคาปิดจาก yfinance สำหรับ {symbol}")
+            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+            return pd.Series(dtype=float)
         close_series = close_data.iloc[:, 0]
     else:
         close_series = close_data
@@ -86,6 +95,7 @@ def _fetch_yf_series(symbol: str, period: str = "6mo", interval: str = "1d") -> 
     return close_series.dropna().sort_index()
 
 
+@cache_data_1h
 def get_macro_data() -> dict[str, Any]:
     """ดึงข้อมูล Macro ทั้งหมดและสรุปค่าปัจจุบันกับแนวโน้ม."""
     try:
@@ -100,6 +110,8 @@ def get_macro_data() -> dict[str, Any]:
         tnx_series = _fetch_yf_series(_YF_SYMBOLS["us10y_yield"])
         dxy_series = _fetch_yf_series(_YF_SYMBOLS["dxy"])
         vix_series = _fetch_yf_series(_YF_SYMBOLS["vix"])
+        if tnx_series.empty or dxy_series.empty or vix_series.empty:
+            return {}
 
         result = {
             "as_of": str(
@@ -138,13 +150,16 @@ def get_macro_data() -> dict[str, Any]:
             },
         }
         return result
-    except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการดึงข้อมูล Macro: {exc}") from exc
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return {}
 
 
 def get_macro_summary() -> str:
     """สรุปภาวะตลาดจากข้อมูล Macro เป็นข้อความไทยสั้นๆ 2-3 บรรทัด."""
     macro = get_macro_data()
+    if not macro:
+        return "ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่"
 
     rate_trend = macro["fed_funds_rate"]["trend"]
     vix_value = macro["vix_fear_index"]["value"]

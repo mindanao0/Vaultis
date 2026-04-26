@@ -6,6 +6,8 @@ from typing import Dict
 
 import pandas as pd
 
+from utils.cache import cache_data_1h
+
 
 RETURN_WINDOWS: Dict[str, int] = {
     "1M": 21,
@@ -18,6 +20,7 @@ RETURN_WINDOWS: Dict[str, int] = {
 }
 
 
+@cache_data_1h
 def calculate_period_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     """คำนวณผลตอบแทนย้อนหลังตามช่วงเวลาที่กำหนดให้ ETF แต่ละตัว."""
     try:

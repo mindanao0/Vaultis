@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import streamlit as st
 import yfinance as yf
 
 CSV_COLUMNS = ["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb", "fee_thb", "note"]
@@ -91,9 +92,11 @@ def _get_latest_prices(tickers: list[str]) -> dict[str, float]:
             group_by="ticker",
         )
     except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
         return {}
 
     if downloaded.empty:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
         return {}
 
     prices: dict[str, float] = {}
@@ -117,12 +120,15 @@ def _get_usdthb_rate() -> float:
     try:
         fx_df = yf.download("THB=X", period="1d", progress=False)
         if fx_df.empty:
+            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
             return DEFAULT_USDTHB
         close_series = pd.to_numeric(fx_df.get("Close"), errors="coerce").dropna()
         if close_series.empty:
+            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
             return DEFAULT_USDTHB
         return float(close_series.iloc[-1])
     except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
         return DEFAULT_USDTHB
 
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import streamlit as st
+
+from utils.cache import cache_data_1h
 import yfinance as yf
 
 TICKERS: list[str] = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
@@ -43,8 +46,9 @@ def calculate_correlation(period: str = "10y") -> pd.DataFrame:
         if daily_returns.empty:
             raise ValueError("ผลตอบแทนรายวันว่าง ไม่สามารถคำนวณ Correlation ได้")
         return daily_returns.corr()
-    except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Correlation: {exc}") from exc
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return pd.DataFrame()
 
 
 def get_correlation_insight(corr_matrix: pd.DataFrame) -> str:
@@ -75,6 +79,7 @@ def get_correlation_insight(corr_matrix: pd.DataFrame) -> str:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการสรุป Correlation Insight: {exc}") from exc
 
 
+@cache_data_1h
 def calculate_correlation_matrix(price_df: pd.DataFrame) -> pd.DataFrame:
     """คำนวณเมทริกซ์ความสัมพันธ์จากผลตอบแทนรายวัน."""
     try:

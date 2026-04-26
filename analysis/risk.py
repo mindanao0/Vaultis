@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from utils.cache import cache_data_1h
+
 
 def calculate_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     """คำนวณผลตอบแทนรายวันจากราคา Adjusted Close."""
@@ -55,6 +57,7 @@ def calculate_max_drawdown(price_df: pd.DataFrame) -> pd.Series:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Max Drawdown: {exc}") from exc
 
 
+@cache_data_1h
 def calculate_risk_metrics(price_df: pd.DataFrame, risk_free_rate: float = 0.02) -> pd.DataFrame:
     """รวมผลลัพธ์ตัวชี้วัดความเสี่ยงเป็นตารางเดียว."""
     try:

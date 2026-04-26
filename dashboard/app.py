@@ -106,17 +106,21 @@ def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlc_data(tickers: list[str], years: int = 10) -> dict[str, pd.DataFrame]:
     """ดึงข้อมูล OHLC ของ ETF หลายตัวสำหรับวาดกราฟ Candlestick."""
-    end_date = pd.Timestamp.today()
-    start_date = end_date - pd.DateOffset(years=years)
-    raw_data = yf.download(
-        tickers=tickers,
-        start=start_date.strftime("%Y-%m-%d"),
-        end=end_date.strftime("%Y-%m-%d"),
-        interval="1d",
-        auto_adjust=False,
-        progress=False,
-        group_by="ticker",
-    )
+    try:
+        end_date = pd.Timestamp.today()
+        start_date = end_date - pd.DateOffset(years=years)
+        raw_data = yf.download(
+            tickers=tickers,
+            start=start_date.strftime("%Y-%m-%d"),
+            end=end_date.strftime("%Y-%m-%d"),
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return {}
 
     if raw_data.empty:
         return {}
@@ -161,7 +165,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
 
     selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
 
-    ohlc_map = fetch_ohlc_data(technical_tickers, years=10)
+    with st.spinner("กำลังโหลดข้อมูล..."):
+        ohlc_map = fetch_ohlc_data(technical_tickers, years=10)
     selected_ohlc = ohlc_map.get(selected_ticker)
     if selected_ohlc is None or selected_ohlc.empty:
         st.warning(f"ไม่พบข้อมูล OHLC สำหรับ {selected_ticker}")
@@ -488,14 +493,18 @@ def fetch_macro_data() -> pd.DataFrame:
         "DXY Dollar Index": "DX-Y.NYB",
         "VIX Fear Index": "^VIX",
     }
-    downloaded = yf.download(
-        tickers=list(macro_tickers.values()),
-        period="1y",
-        interval="1d",
-        auto_adjust=False,
-        progress=False,
-        group_by="ticker",
-    )
+    try:
+        downloaded = yf.download(
+            tickers=list(macro_tickers.values()),
+            period="1y",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return pd.DataFrame()
 
     if downloaded.empty:
         return pd.DataFrame()
@@ -533,7 +542,8 @@ def render_macro_page() -> None:
     st.header("Macro")
     st.caption("ติดตามตัวชี้วัดเศรษฐกิจหลักและดัชนีความกลัวของตลาด")
 
-    macro_df = fetch_macro_data()
+    with st.spinner("กำลังโหลดข้อมูล..."):
+        macro_df = fetch_macro_data()
     if macro_df.empty:
         st.error("ไม่สามารถดึงข้อมูล Macro ได้ในขณะนี้")
         return
@@ -622,7 +632,8 @@ def render_portfolio_page() -> None:
     st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
 
     st.subheader("เพิ่มรายการซื้อ")
-    today_fx_rate = get_today_fx_rate_thb()
+    with st.spinner("กำลังโหลดข้อมูล..."):
+        today_fx_rate = get_today_fx_rate_thb()
     with st.form("portfolio_buy_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -670,8 +681,9 @@ def render_portfolio_page() -> None:
 
     st.divider()
     st.subheader("สรุปพอร์ตปัจจุบัน")
-    holdings_df = get_portfolio_summary()
-    total_summary = get_total_summary()
+    with st.spinner("กำลังโหลดข้อมูล..."):
+        holdings_df = get_portfolio_summary()
+        total_summary = get_total_summary()
 
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("💰 เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
@@ -727,7 +739,8 @@ def render_portfolio_page() -> None:
 
     st.divider()
     st.subheader("ประวัติการซื้อขาย")
-    all_transactions = get_transactions()
+    with st.spinner("กำลังโหลดข้อมูล..."):
+        all_transactions = get_transactions()
     if all_transactions.empty:
         st.info("ยังไม่มีประวัติการซื้อขาย")
         return
@@ -771,7 +784,13 @@ def render_dashboard() -> None:
         st.title("Vaultis - Long-term ETF Analyzer")
         st.caption("วิเคราะห์ ETF หลัก: VOO, SCHD, QQQM, XLV, GLDM (ย้อนหลัง 10 ปี)")
 
-        prices = fetch_adjusted_close_data(DEFAULT_TICKERS, years=10)
+        if st.button("🔄 Refresh ข้อมูล"):
+            st.cache_data.clear()
+            st.success("ล้างแคชเรียบร้อย กำลังโหลดข้อมูลใหม่...")
+            st.rerun()
+
+        with st.spinner("กำลังโหลดข้อมูล..."):
+            prices = fetch_adjusted_close_data(DEFAULT_TICKERS, years=10)
         if prices.empty:
             st.error("ไม่พบข้อมูล ETF")
             return
@@ -826,17 +845,23 @@ def render_dashboard() -> None:
 
         with col1:
             st.subheader("Return Analysis")
-            returns_df = calculate_period_returns(prices)
+            with st.spinner("กำลังโหลดข้อมูล..."):
+                returns_df = calculate_period_returns(prices)
             st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
             st.caption("*QQQM เริ่ม Trading ปี 2020")
 
         with col2:
             st.subheader("Risk Metrics")
-            risk_df = calculate_risk_metrics(prices)
+            with st.spinner("กำลังโหลดข้อมูล..."):
+                risk_df = calculate_risk_metrics(prices)
             st.dataframe(risk_df.style.format("{:.4f}"))
 
         st.subheader("Correlation Heatmap")
-        corr_df = calculate_correlation_matrix(prices)
+        with st.spinner("กำลังโหลดข้อมูล..."):
+            corr_df = calculate_correlation_matrix(prices)
+        if corr_df.empty:
+            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+            return
         corr_for_display = corr_df.loc[DEFAULT_TICKERS, DEFAULT_TICKERS]
         heatmap = px.imshow(
             corr_for_display,

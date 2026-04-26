@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
+import streamlit as st
+
+from utils.cache import cache_data_1h
 
 from data.fetcher import fetch_adjusted_close_data
 
@@ -70,6 +73,7 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ RSI: {exc}") from exc
 
 
+@cache_data_1h
 def get_signals(ticker: str) -> dict[str, Any]:
     """สรุปสถานะ MA และ RSI ของ ticker ปัจจุบัน."""
     try:
@@ -98,5 +102,6 @@ def get_signals(ticker: str) -> dict[str, Any]:
             "rsi_signal": rsi_zone,
             "zone": zone,
         }
-    except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการสรุปสัญญาณของ {ticker}: {exc}") from exc
+    except Exception:
+        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        return {}
