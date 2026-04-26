@@ -10,14 +10,12 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from utils.cache import cache_data_1h
 from utils.config import get_tickers
 
 
 DEFAULT_TICKERS: List[str] = get_tickers()
 
 
-@cache_data_1h
 def fetch_adjusted_close_data(
     tickers: List[str] | None = None,
     years: int = 10,

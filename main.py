@@ -245,6 +245,7 @@ if __name__ == "__main__":
         get_monthly_advice(budget_thb=5000)
     elif args.job == "price_alert":
         result = check_alerts()
+        print(result.get("daily_summary", ""))
         daily_discord_result = result.get("daily_discord_result", {})
         if daily_discord_result.get("success"):
             print("ส่ง Daily Price Check ไป Discord สำเร็จ")

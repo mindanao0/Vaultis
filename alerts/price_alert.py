@@ -16,6 +16,7 @@ from utils.config import load_config
 
 ALERTS_PATH = Path(__file__).resolve().parent / "data" / "price_alerts.json"
 ALLOWED_ALERT_TYPES = {"above", "below"}
+DAILY_CHECK_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
 
 def _ensure_storage() -> None:
@@ -187,7 +188,6 @@ def _build_price_alert_message(alert: dict[str, Any], current_price: float) -> s
 def _build_daily_status_message(
     tracked_tickers: list[str],
     snapshots: dict[str, dict[str, float]],
-    pending_count: int,
     triggered_items: list[dict[str, Any]],
 ) -> str:
     date_text = datetime.now().strftime("%d/%m/%Y")
@@ -198,36 +198,34 @@ def _build_daily_status_message(
     for ticker in tracked_tickers:
         snapshot = snapshots.get(ticker)
         if not snapshot:
-            lines.append(f"{ticker:<4} N/A      🟡")
+            lines.append(f"{ticker:<4}  N/A  🟡 (0.00%)")
             continue
 
         latest_price = float(snapshot["latest_price"])
         previous_close = float(snapshot["previous_close"])
+        change_pct = 0.0
+        if previous_close != 0:
+            change_pct = ((latest_price - previous_close) / previous_close) * 100.0
         if latest_price > previous_close:
             status = "🟢"
         elif latest_price < previous_close:
             status = "🔴"
         else:
             status = "🟡"
-        lines.append(f"{ticker:<4} ${latest_price:>7.2f}  {status}")
+        lines.append(f"{ticker:<4}  ${latest_price:,.2f}  {status} ({change_pct:+.2f}%)")
 
     lines.append("─────────────────────────────")
-    lines.append(f"⚠️ Alert ที่ตั้งไว้: {pending_count} รายการ")
-    if triggered_items:
-        lines.append(f"🚨 Trigger แล้ววันนี้: {len(triggered_items)} รายการ")
-    else:
-        lines.append("✅ ไม่มี Alert trigger วันนี้")
+    lines.append(f"⚠️ Price Alerts: {len(triggered_items)} รายการ")
     return "\n".join(lines)
 
 
 def check_alerts() -> dict[str, Any]:
     """Check alerts and always send a daily Discord status summary."""
     config = load_config()
-    tracked_tickers = list(config["etf"]["tickers"])
+    tracked_tickers = DAILY_CHECK_TICKERS.copy()
     webhook_url = str(config["notifications"]["discord_webhook_url"]).strip()
     alerts = _load_alerts()
     pending = [item for item in alerts if not bool(item.get("triggered"))]
-    pending_count = len(pending)
 
     tickers = sorted(
         {str(item.get("ticker", "")).strip().upper() for item in pending if item.get("ticker")} | set(tracked_tickers)
@@ -276,7 +274,6 @@ def check_alerts() -> dict[str, Any]:
     daily_summary = _build_daily_status_message(
         tracked_tickers=tracked_tickers,
         snapshots=snapshots,
-        pending_count=pending_count,
         triggered_items=triggered_items,
     )
     daily_result: dict[str, Any] = {"success": False, "skipped": True, "error": "missing webhook_url"}
