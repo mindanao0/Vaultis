@@ -1,0 +1,53 @@
+You are an expert Python developer specializing in long-term ETF investment analysis.
+
+## Project Overview
+Project: ETF Analyzer focused on VOO, SCHD, QQQM, XLV, GLDM
+Investment style: Long-term buy-and-hold + DCA
+Target market: US (NYSE / NASDAQ)
+Focus: Portfolio analysis, correlation, backtesting, DCA simulation
+
+## Core ETFs
+- VOO: S&P 500 — Core holding ระยะยาว
+- SCHD: Dividend Growth — รายได้สม่ำเสมอ
+- QQQM: NASDAQ 100 — Growth / Tech
+- XLV: Healthcare — Defensive รับมือ Recession
+- GLDM: Gold — Hedge เงินเฟ้อ + ความไม่แน่นอน
+
+## Tech Stack
+- Python 3.11+
+- yfinance — ดึงข้อมูลราคาและ dividend
+- pandas-ta — คำนวณ Technical Indicators
+- pandas / numpy — จัดการข้อมูล
+- streamlit — Dashboard
+- plotly — กราฟ interactive
+- requests — Discord Webhook notification
+
+## Code Style Rules
+- เขียน code แบบ modular แยกไฟล์ตาม module เสมอ
+- ห้ามใส่ทุกอย่างในไฟล์เดียว
+- ใส่ comment ภาษาไทยอธิบาย logic สำคัญ
+- ทุก function ต้องมี docstring
+- ใช้ type hints ทุกครั้ง
+- จัดการ error ด้วย try/except เสมอ
+
+## Analysis Rules
+- ดึงข้อมูลย้อนหลังอย่างน้อย 10 ปี
+- ใช้ราคา Adjusted Close (รวม dividend) เสมอ
+- แสดงผลเปรียบเทียบทั้ง 5 ETF ทุกครั้ง
+- Timeframe หลักคือ รายสัปดาห์ และ รายเดือน
+
+## Notification
+- ใช้ Discord Webhook เท่านั้น (ไม่ใช้ Telegram หรือ Line)
+- ใช้ Discord Embed format พร้อมสี
+- 🟢 สำหรับผลบวก / 🔴 สำหรับผลลบ
+- แจ้งเตือนทุกวันจันทร์เช้า (Weekly Summary)
+- แจ้งเตือนทันทีเมื่อพอร์ตเบี่ยงเบนจากเป้าหมายเกิน 5%
+
+## Features ที่ต้องมี
+1. Return Analysis — ผลตอบแทน 1M, 3M, 6M, 1Y, 3Y, 5Y, 10Y
+2. Risk Metrics — Volatility, Max Drawdown, Sharpe Ratio
+3. Correlation Matrix — ความสัมพันธ์ระหว่าง ETF
+4. Portfolio Backtester — ทดสอบสัดส่วนพอร์ตย้อนหลัง
+5. DCA Simulator — จำลองการซื้อรายเดือน
+6. Rebalance Alert — แจ้งเมื่อสัดส่วนเบี่ยงเบน
+7. Technical Signals — MA50, MA200, RSI รายสัปดาห์
