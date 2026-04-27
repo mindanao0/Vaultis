@@ -36,7 +36,7 @@ def get_price_and_change(ticker):
     else:
         pct_change = ((float(current_price) - float(prev_close)) / float(prev_close)) * 100
 
-    return float(current_price), float(pct_change)
+    return float(current_price), float(prev_close), float(pct_change)
 
 
 def run():
@@ -49,22 +49,33 @@ def run():
     daily_data = {}
     for ticker in TICKERS:
         try:
-            price, pct_change = get_price_and_change(ticker)
-            daily_data[ticker] = {"price": price, "pct_change": pct_change}
+            price, prev_close, pct_change = get_price_and_change(ticker)
+            daily_data[ticker] = {
+                "price": price,
+                "prev_close": prev_close,
+                "pct_change": pct_change,
+            }
             print(f"{ticker}: ${price:.2f} ({pct_change:+.2f}%)")
         except Exception as e:
             print(f"{ticker}: Error - {e}")
-            daily_data[ticker] = {"price": 0.0, "pct_change": 0.0}
+            daily_data[ticker] = {"price": 0.0, "prev_close": 0.0, "pct_change": 0.0}
 
     # ส่ง Discord
     today = datetime.now().strftime("%d/%m/%Y")
     lines = [f"📊 Daily Price Check — {today}", "─" * 32]
     for ticker in TICKERS:
         price = daily_data[ticker]["price"]
+        prev_close = daily_data[ticker]["prev_close"]
         pct_change = daily_data[ticker]["pct_change"]
         color_icon = "🟢" if pct_change >= 0 else "🔴"
         pct_text = f"({pct_change:+.2f}%)"
-        lines.append(f"{ticker:<5} ${price:>7.2f}  {pct_text} {color_icon}")
+        if price in (None, 0):
+            latest_price = prev_close if prev_close not in (None, 0) else 0.0
+            lines.append(
+                f"{ticker:<5} ⏰ ตลาดปิดอยู่ ราคาล่าสุดที่มี: ${latest_price:.2f}"
+            )
+        else:
+            lines.append(f"{ticker:<5} ${price:>7.2f}  {pct_text} {color_icon}")
 
     lines.extend(["─" * 32, "⚠️ Price Alerts: 0 รายการ"])
     message = "\n".join(lines)
