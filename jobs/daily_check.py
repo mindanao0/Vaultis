@@ -1,40 +1,43 @@
-"""Daily market price check job for CLI/GitHub Actions."""
-
-from __future__ import annotations
-
 import os
-from datetime import datetime
-
 import requests
 import yfinance as yf
+from datetime import datetime
 
+TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
-TICKERS = ("VOO", "SCHD", "QQQM", "XLV", "GLDM")
-
-
-def _get_last_price(ticker: str) -> float:
-    """Fetch latest last_price from yfinance fast_info."""
-    info = yf.Ticker(ticker).fast_info
-    price = info.get("last_price")
-    if price is None:
-        raise ValueError(f"ไม่พบราคาปัจจุบันของ {ticker}")
-    return float(price)
-
-
-def run_daily_check() -> dict[str, object]:
-    """Send daily ETF prices to Discord webhook from environment."""
-    webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
-    if not webhook_url:
-        return {"success": False, "error": "DISCORD_WEBHOOK_URL is not set"}
-
-    prices: dict[str, float] = {}
+def run():
+    print("เริ่ม daily check...")
+    
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    print(f"Webhook: {'✅' if webhook_url else '❌ ไม่มี'}")
+    
+    # ดึงราคา
+    prices = {}
     for ticker in TICKERS:
-        prices[ticker] = _get_last_price(ticker)
+        try:
+            t = yf.Ticker(ticker)
+            price = t.fast_info["last_price"]
+            prices[ticker] = price
+            print(f"{ticker}: ${price:.2f}")
+        except Exception as e:
+            print(f"{ticker}: Error - {e}")
+            prices[ticker] = 0
+    
+    # ส่ง Discord
+    today = datetime.now().strftime("%d/%m/%Y")
+    lines = [f"📊 Daily Price Check — {today}", "─" * 30]
+    for ticker, price in prices.items():
+        lines.append(f"{ticker:<6} ${price:.2f}")
+    
+    message = "\n".join(lines)
+    print(f"\nส่งข้อความ:\n{message}")
+    
+    if webhook_url:
+        payload = {"content": f"```\n{message}\n```"}
+        r = requests.post(webhook_url, json=payload)
+        print(f"Discord status: {r.status_code}")
+    else:
+        print("❌ ไม่มี DISCORD_WEBHOOK_URL")
 
-    date_text = datetime.now().strftime("%Y-%m-%d")
-    lines = [f"📊 Daily Check — {date_text}"] + [f"{ticker} ${prices[ticker]:.2f}" for ticker in TICKERS]
-    content = "\n".join(lines)
-
-    response = requests.post(webhook_url, json={"content": content}, timeout=20)
-    response.raise_for_status()
-    return {"success": True, "message": content}
+if __name__ == "__main__":
+    run()

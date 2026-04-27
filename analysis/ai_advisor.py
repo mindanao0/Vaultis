@@ -22,7 +22,14 @@ from utils.config import get_tickers, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+
+def _get_groq_client() -> Groq:
+    """สร้าง Groq client แบบ lazy เพื่อไม่ให้ error ตั้งแต่ตอน import."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key or api_key == "your_key_here":
+        raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
+    return Groq(api_key=api_key)
 
 def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
     """คำนวณ RSI/MA/ผลตอบแทน 1M, 3M ของแต่ละ ETF."""
@@ -129,9 +136,7 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         if budget_thb <= 0:
             raise ValueError("budget_thb ต้องมากกว่า 0")
 
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-        if not api_key or api_key == "your_key_here":
-            raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
+        client = _get_groq_client()
 
         advisor_tickers = get_tickers()
         price_df = fetch_adjusted_close_data(advisor_tickers, years=10)

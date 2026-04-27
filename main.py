@@ -14,7 +14,7 @@ from alerts.price_alert import check_alerts
 from analysis.ai_advisor import get_monthly_advice
 from analysis.returns import calculate_period_returns
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
-from jobs.daily_check import run_daily_check
+from jobs.daily_check import run
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
 from utils.config import load_config
@@ -245,11 +245,7 @@ if __name__ == "__main__":
     elif args.job == "monthly_advice":
         get_monthly_advice(budget_thb=5000)
     elif args.job == "price_alert":
-        result = run_daily_check()
-        if result.get("success"):
-            print("ส่ง Daily Price Check ไป Discord สำเร็จ")
-        else:
-            print(f"ส่ง Daily Price Check ไม่สำเร็จ: {result.get('error')}")
+        run()
     elif args.job == "all":
         # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)
         run_scheduler()
