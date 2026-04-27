@@ -132,9 +132,10 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
 สุดท้ายให้แสดง JSON allocations ในรูปแบบนี้เสมอ:
 ALLOCATIONS_JSON:
 [
-  {{"ticker": "SCHD", "percent": 50, "amount_thb": 2500}},
-  {{"ticker": "GLDM", "percent": 30, "amount_thb": 1500}},
-  {{"ticker": "VOO", "percent": 20, "amount_thb": 1000}}
+  {{"ticker": "VOO", "percent": 30, "amount_thb": 1500}},
+  {{"ticker": "SCHD", "percent": 30, "amount_thb": 1500}},
+  {{"ticker": "QQQM", "percent": 20, "amount_thb": 1000}},
+  {{"ticker": "GLDM", "percent": 20, "amount_thb": 1000}}
 ]"""
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -733,20 +734,36 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
 
     marker = "ALLOCATIONS_JSON:"
     marker_idx = advice_text.find(marker)
-    if marker_idx < 0:
-        return pd.DataFrame()
+    allocations: list[dict] = []
+    if marker_idx >= 0:
+        json_tail = advice_text[marker_idx + len(marker):].strip()
+        start_idx = json_tail.find("[")
+        end_idx = json_tail.rfind("]")
+        if start_idx >= 0 and end_idx > start_idx:
+            json_text = json_tail[start_idx : end_idx + 1]
+            try:
+                parsed = json.loads(json_text)
+                if isinstance(parsed, list):
+                    allocations = parsed
+            except (json.JSONDecodeError, TypeError, ValueError):
+                allocations = []
 
-    json_text = advice_text[marker_idx + len(marker):].strip()
-    if not json_text:
-        return pd.DataFrame()
-
-    try:
-        allocations = json.loads(json_text)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return pd.DataFrame()
-
-    if not isinstance(allocations, list):
-        return pd.DataFrame()
+    if not allocations:
+        pattern = r"(?im)\b([A-Z]{2,10})\b\s+([\d,]+(?:\.\d+)?)\s*บาท\s*\(([\d.]+)\s*%\)"
+        regex_rows = re.findall(pattern, advice_text)
+        for ticker, amount_text, percent_text in regex_rows:
+            try:
+                amount_value = float(amount_text.replace(",", ""))
+                percent_value = float(percent_text)
+            except ValueError:
+                continue
+            allocations.append(
+                {
+                    "ticker": ticker.strip().upper(),
+                    "percent": percent_value,
+                    "amount_thb": amount_value,
+                }
+            )
 
     rows: list[dict] = []
     for item in allocations:
