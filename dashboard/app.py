@@ -45,6 +45,365 @@ from utils.pdf_export import generate_monthly_report
 
 load_dotenv()
 
+THEME = {
+    "main_bg": "#0F1117",
+    "sidebar_bg": "#161B22",
+    "card_bg": "#1C2128",
+    "border": "#30363D",
+    "text_primary": "#E6EDF3",
+    "text_secondary": "#7D8590",
+    "accent": "#388BFD",
+    "positive": "#3FB950",
+    "negative": "#F85149",
+    "grid": "#21262D",
+}
+
+NAV_GROUPS = [
+    ("Main", ["Overview", "Portfolio"]),
+    ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation"]),
+    ("AI & Alerts", ["AI Advisor", "Macro", "Price Alerts"]),
+    ("System", ["Settings"]),
+]
+
+NAV_ITEMS = [item for _, group_items in NAV_GROUPS for item in group_items]
+
+
+def _inject_premium_theme() -> None:
+    st.markdown(
+        f"""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        .stApp {{
+            background-color: {THEME["main_bg"]};
+            color: {THEME["text_primary"]};
+            font-family: 'Inter', sans-serif;
+        }}
+        [data-testid="stSidebar"] {{
+            background-color: {THEME["sidebar_bg"]};
+            border-right: 1px solid {THEME["border"]};
+            min-width: 220px;
+            max-width: 220px;
+        }}
+        /* ลด gap ระหว่าง radio items */
+        [data-testid="stSidebar"] [role="radiogroup"] {{
+            gap: 0px !important;
+        }}
+        /* แต่ละ radio item */
+        [data-testid="stSidebar"] label {{
+            padding: 6px 12px !important;
+            margin: 0px !important;
+            border-radius: 6px !important;
+            font-size: 14px !important;
+            cursor: pointer !important;
+        }}
+        /* ซ่อน radio circle */
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {{
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
+        /* ซ่อน default radio button dot */
+        [data-testid="stSidebar"] input[type="radio"] {{
+            display: none !important;
+        }}
+        /* ลด padding ทั่วไปใน sidebar */
+        [data-testid="stSidebar"] .block-container {{
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }}
+        [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{
+            gap: 0rem !important;
+        }}
+        h1, h2, h3 {{
+            font-family: 'Inter', sans-serif !important;
+            color: {THEME["text_primary"]} !important;
+            font-weight: 600 !important;
+            letter-spacing: 0;
+        }}
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p {{
+            color: {THEME["text_primary"]};
+        }}
+        .logo {{
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            color: #E6EDF3 !important;
+            padding: 8px 0 16px 0 !important;
+            margin: 0 !important;
+        }}
+        .nav-group {{
+            font-size: 10px !important;
+            color: #7D8590 !important;
+            letter-spacing: 0.08em !important;
+            text-transform: uppercase !important;
+            padding: 12px 0 2px 0 !important;
+            margin: 0 !important;
+        }}
+        [data-testid="stSidebar"] .sidebar-footer {{
+            border-top: 1px solid {THEME["border"]};
+            margin-top: 12px;
+            padding: 12px 16px;
+            color: {THEME["text_secondary"]};
+            font-size: 11px;
+            line-height: 1.4;
+        }}
+        [data-testid="stSidebar"] .stButton button {{
+            background: transparent !important;
+            border: none !important;
+            color: #7D8590 !important;
+            text-align: left !important;
+            padding: 6px 8px !important;
+            font-size: 14px !important;
+            border-radius: 6px !important;
+            width: 100% !important;
+            margin: 1px 0 !important;
+        }}
+        [data-testid="stSidebar"] .stButton button:hover {{
+            background: #1C2128 !important;
+            color: #E6EDF3 !important;
+        }}
+        div[data-testid="stButton"] > button {{
+            background: {THEME["card_bg"]};
+            border: 1px solid {THEME["border"]};
+            color: {THEME["text_primary"]};
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }}
+        div[data-testid="stButton"] > button:hover {{
+            border-color: {THEME["accent"]};
+            color: {THEME["accent"]};
+        }}
+        .metric-card {{
+            background: {THEME["card_bg"]};
+            border: 1px solid {THEME["border"]};
+            border-radius: 12px;
+            padding: 1rem 1.1rem;
+            min-height: 122px;
+            opacity: 0;
+            transform: translateY(14px);
+            animation: metricFadeIn 0.75s ease-out forwards;
+        }}
+        .metric-title {{
+            color: {THEME["text_secondary"]};
+            font-size: 0.85rem;
+            margin-bottom: 0.35rem;
+        }}
+        .metric-value {{
+            color: {THEME["text_primary"]};
+            font-size: 1.65rem;
+            font-weight: 700;
+            line-height: 1.1;
+        }}
+        .metric-change-positive {{ color: {THEME["positive"]}; font-weight: 600; font-size: 0.95rem; }}
+        .metric-change-negative {{ color: {THEME["negative"]}; font-weight: 600; font-size: 0.95rem; }}
+        .metric-change-neutral {{ color: {THEME["text_secondary"]}; font-weight: 600; font-size: 0.95rem; }}
+        @keyframes metricFadeIn {{
+            from {{
+                opacity: 0;
+                transform: translateY(14px) scale(0.985);
+            }}
+            to {{
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }}
+        }}
+        .ticker-wrap {{
+            overflow: hidden;
+            border: 1px solid {THEME["border"]};
+            border-radius: 10px;
+            background: {THEME["sidebar_bg"]};
+            margin-bottom: 1rem;
+            padding: 0.55rem 0;
+        }}
+        .ticker-track {{
+            white-space: nowrap;
+            display: inline-block;
+            animation: vaultis-ticker 20s linear infinite;
+            color: {THEME["text_primary"]};
+            font-size: 0.92rem;
+        }}
+        @keyframes vaultis-ticker {{
+            from {{ transform: translateX(100%); }}
+            to {{ transform: translateX(-100%); }}
+        }}
+        [data-testid="stDataFrame"] div[role="columnheader"] {{
+            color: {THEME["accent"]} !important;
+            background-color: {THEME["sidebar_bg"]} !important;
+        }}
+        [data-testid="stDataFrame"] div[role="gridcell"] {{
+            background-color: {THEME["card_bg"]};
+            color: {THEME["text_primary"]};
+        }}
+        [data-testid="stDataFrame"] [aria-rowindex="2"] div[role="gridcell"],
+        [data-testid="stDataFrame"] [aria-rowindex="4"] div[role="gridcell"],
+        [data-testid="stDataFrame"] [aria-rowindex="6"] div[role="gridcell"] {{
+            background-color: {THEME["main_bg"]};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _apply_plotly_dark_theme(fig: go.Figure) -> go.Figure:
+    fig.update_layout(
+        plot_bgcolor=THEME["main_bg"],
+        paper_bgcolor=THEME["main_bg"],
+        font=dict(color=THEME["text_primary"], family="Inter"),
+        title_font=dict(color=THEME["text_primary"], family="Inter"),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
+    fig.update_yaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
+    return fig
+
+
+def _render_custom_sidebar(default_page: str) -> str:
+    if "page" not in st.session_state:
+        st.session_state["page"] = default_page if default_page in NAV_ITEMS else "Overview"
+
+    with st.sidebar:
+        st.markdown('<p class="logo">VAULTIS</p>', unsafe_allow_html=True)
+
+        st.markdown('<p class="nav-group">MAIN</p>', unsafe_allow_html=True)
+        if st.button("Overview", key="nav_overview", use_container_width=True):
+            st.session_state["page"] = "Overview"
+        if st.button("Portfolio", key="nav_portfolio", use_container_width=True):
+            st.session_state["page"] = "Portfolio"
+
+        st.markdown('<p class="nav-group">ANALYSIS</p>', unsafe_allow_html=True)
+        if st.button("Backtest", key="nav_backtest", use_container_width=True):
+            st.session_state["page"] = "Backtest"
+        if st.button("DCA Simulator", key="nav_dca_simulator", use_container_width=True):
+            st.session_state["page"] = "DCA Simulator"
+        if st.button("Technical Signals", key="nav_technical_signals", use_container_width=True):
+            st.session_state["page"] = "Technical Signals"
+        if st.button("Correlation", key="nav_correlation", use_container_width=True):
+            st.session_state["page"] = "Correlation"
+
+        st.markdown('<p class="nav-group">AI & ALERTS</p>', unsafe_allow_html=True)
+        if st.button("AI Advisor", key="nav_ai_advisor", use_container_width=True):
+            st.session_state["page"] = "AI Advisor"
+        if st.button("Macro", key="nav_macro", use_container_width=True):
+            st.session_state["page"] = "Macro"
+        if st.button("Price Alerts", key="nav_price_alerts", use_container_width=True):
+            st.session_state["page"] = "Price Alerts"
+
+        st.markdown('<p class="nav-group">SYSTEM</p>', unsafe_allow_html=True)
+        if st.button("Settings", key="nav_settings", use_container_width=True):
+            st.session_state["page"] = "Settings"
+
+        st.markdown(
+            '<div class="sidebar-footer">Vaultis v1.0</div>',
+            unsafe_allow_html=True,
+        )
+
+    return str(st.session_state.get("page", "Overview"))
+
+
+def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
+    snippets: list[str] = []
+    for ticker in tickers[:5]:
+        series = prices[ticker].dropna() if ticker in prices.columns else pd.Series(dtype=float)
+        if len(series) < 2:
+            snippets.append(f"{ticker} N/A")
+            continue
+        last_px = float(series.iloc[-1])
+        prev_px = float(series.iloc[-2])
+        pct = ((last_px - prev_px) / prev_px) * 100 if prev_px else 0.0
+        arrow = "▲" if pct >= 0 else "▼"
+        color = THEME["positive"] if pct >= 0 else THEME["negative"]
+        snippets.append(
+            f'{ticker} ${last_px:,.2f} <span style="color:{color};font-weight:600;">{arrow} {pct:+.2f}%</span>'
+        )
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    content = f"{timestamp} &nbsp;&nbsp;&nbsp; " + " &nbsp;&nbsp;&nbsp; | &nbsp;&nbsp;&nbsp; ".join(snippets)
+    st.markdown(
+        f"""
+        <div class="ticker-wrap">
+            <div class="ticker-track">{content}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
+    return_df = calculate_period_returns(prices)
+    yearly_col = "1Y (%)" if "1Y (%)" in return_df.columns else return_df.columns[-1]
+    sortable = return_df[yearly_col].dropna()
+
+    total_return = 0.0
+    if len(prices.index) > 1:
+        base_idx = prices.ffill().dropna().index[0]
+        latest = prices.ffill().iloc[-1]
+        base = prices.ffill().loc[base_idx]
+        basket = (latest / base).mean()
+        total_return = (float(basket) - 1.0) * 100
+
+    best_etf = sortable.idxmax() if not sortable.empty else "-"
+    best_val = float(sortable.max()) if not sortable.empty else 0.0
+    worst_etf = sortable.idxmin() if not sortable.empty else "-"
+    worst_val = float(sortable.min()) if not sortable.empty else 0.0
+
+    vix_value = None
+    try:
+        macro_df = fetch_macro_data()
+        if "VIX Fear Index" in macro_df.columns and not macro_df["VIX Fear Index"].dropna().empty:
+            vix_value = float(macro_df["VIX Fear Index"].dropna().iloc[-1])
+    except Exception:
+        vix_value = None
+
+    total_return_class = "metric-change-positive" if total_return >= 0 else "metric-change-negative"
+    cards = st.columns(4)
+    with cards[0]:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+              <div class="metric-title">Total Return (Basket)</div>
+              <div class="metric-value">{total_return:+.2f}%</div>
+              <div class="{total_return_class}">10Y blended performance</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with cards[1]:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+              <div class="metric-title">Best ETF (1Y)</div>
+              <div class="metric-value">{best_etf}</div>
+              <div class="metric-change-positive">{best_val:+.2f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with cards[2]:
+        st.markdown(
+            f"""
+            <div class="metric-card">
+              <div class="metric-title">Worst ETF (1Y)</div>
+              <div class="metric-value">{worst_etf}</div>
+              <div class="metric-change-negative">{worst_val:+.2f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with cards[3]:
+        vix_text = f"{vix_value:.2f}" if vix_value is not None else "N/A"
+        vix_class = "metric-change-neutral"
+        if vix_value is not None:
+            vix_class = "metric-change-negative" if vix_value >= 30 else "metric-change-positive"
+        st.markdown(
+            f"""
+            <div class="metric-card">
+              <div class="metric-title">VIX</div>
+              <div class="metric-value">{vix_text}</div>
+              <div class="{vix_class}">Market volatility index</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
     """Render monthly PDF export controls with Streamlit download button."""
@@ -142,7 +501,7 @@ def render_settings_page() -> None:
         with col_ticker:
             st.text(ticker)
         with col_remove:
-            if st.button("❌", key=f"remove_{ticker}"):
+            if st.button("Remove", key=f"remove_{ticker}"):
                 try:
                     remove_ticker(ticker)
                     st.success(f"ลบ ETF {ticker} สำเร็จ")
@@ -175,9 +534,9 @@ def render_settings_page() -> None:
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
 
     if webhook_url.strip():
-        st.success("✅ Discord Webhook: เชื่อมต่อแล้ว")
+        st.success("Discord Webhook: เชื่อมต่อแล้ว")
     else:
-        st.error("❌ Discord Webhook: ไม่พบ DISCORD_WEBHOOK_URL ใน .env")
+        st.error("Discord Webhook: ไม่พบ DISCORD_WEBHOOK_URL ใน .env")
 
     weekly_summary_enabled = st.checkbox(
         "Weekly Summary ทุกวันจันทร์",
@@ -482,10 +841,10 @@ def _rsi_status(rsi_value: float) -> str:
 
 def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -> str:
     if rsi_value > 70:
-        return "🔴 Overbought"
+        return "Overbought"
     if price >= ma50 and price >= ma200 and rsi_value <= 70:
-        return "🟢 Buy Zone"
-    return "🟡 Neutral"
+        return "Buy Zone"
+    return "Neutral"
 
 
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
@@ -592,7 +951,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
     fig.update_layout(height=850, xaxis_rangeslider_visible=False, legend_title_text="Indicators")
     fig.update_yaxes(title_text="Price (USD)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(_apply_plotly_dark_theme(fig), use_container_width=True)
 
     st.subheader("Signal Summary Cards")
     columns = st.columns(len(technical_tickers))
@@ -671,15 +1030,13 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
             benchmark.rename(f"Benchmark ({benchmark_ticker})"), how="inner"
         )
 
-        st.plotly_chart(
-            px.line(
-                comparison_df,
-                x=comparison_df.index,
-                y=["Portfolio Value", f"Benchmark ({benchmark_ticker})"],
-                title=f"Portfolio vs Benchmark ({benchmark_ticker})",
-            ),
-            use_container_width=True,
+        comparison_fig = px.line(
+            comparison_df,
+            x=comparison_df.index,
+            y=["Portfolio Value", f"Benchmark ({benchmark_ticker})"],
+            title=f"Portfolio vs Benchmark ({benchmark_ticker})",
         )
+        st.plotly_chart(_apply_plotly_dark_theme(comparison_fig), use_container_width=True)
 
         final_portfolio = float(comparison_df["Portfolio Value"].iloc[-1])
         final_benchmark = float(comparison_df[f"Benchmark ({benchmark_ticker})"].iloc[-1])
@@ -707,15 +1064,13 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
 
     dca_df = simulate_monthly_dca(prices, normalized_weights, monthly_investment=monthly_investment)
 
-    st.plotly_chart(
-        px.line(
-            dca_df,
-            x=dca_df.index,
-            y=["Total Invested", "Portfolio Value"],
-            title="เงินสะสม vs มูลค่าพอร์ต",
-        ),
-        use_container_width=True,
+    dca_fig = px.line(
+        dca_df,
+        x=dca_df.index,
+        y=["Total Invested", "Portfolio Value"],
+        title="เงินสะสม vs มูลค่าพอร์ต",
     )
+    st.plotly_chart(_apply_plotly_dark_theme(dca_fig), use_container_width=True)
 
     total_invested = float(dca_df["Total Invested"].iloc[-1])
     current_value = float(dca_df["Portfolio Value"].iloc[-1])
@@ -841,7 +1196,7 @@ def render_ai_advisor_page() -> None:
                 title="Recommended DCA Allocation",
                 hole=0.35,
             )
-            st.plotly_chart(pie, use_container_width=True)
+            st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
         else:
             st.warning("ไม่พบ JSON allocations ที่ parse ได้จากคำตอบ AI จึงยังไม่สามารถวาด Pie Chart")
     else:
@@ -896,10 +1251,10 @@ def fetch_macro_data() -> pd.DataFrame:
 
 def _vix_regime_text(vix_value: float) -> str:
     if vix_value < 20:
-        return "🟢 สงบ"
+        return "สงบ"
     if vix_value <= 30:
-        return "🟡 ระวัง"
-    return "🔴 กลัว"
+        return "ระวัง"
+    return "กลัว"
 
 
 def render_macro_page() -> None:
@@ -947,9 +1302,7 @@ def render_macro_page() -> None:
             else:
                 st.metric(col_name, f"{latest:.2f}", delta_fmt)
 
-    st.markdown(
-        "เกณฑ์ VIX: 🟢 < 20 (สงบ) | 🟡 20-30 (ระวัง) | 🔴 > 30 (กลัว)"
-    )
+    st.markdown("เกณฑ์ VIX: < 20 (สงบ) | 20-30 (ระวัง) | > 30 (กลัว)")
 
     vix_series = macro_df["VIX Fear Index"].dropna()
     if vix_series.empty:
@@ -962,9 +1315,9 @@ def render_macro_page() -> None:
             labels={"x": "Date", "y": "VIX"},
             title="VIX Fear Index - 1Y",
         )
-        vix_fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="Calm")
-        vix_fig.add_hline(y=30, line_dash="dash", line_color="orange", annotation_text="Caution")
-        st.plotly_chart(vix_fig, use_container_width=True)
+        vix_fig.add_hline(y=20, line_dash="dash", line_color=THEME["positive"], annotation_text="Calm")
+        vix_fig.add_hline(y=30, line_dash="dash", line_color=THEME["accent"], annotation_text="Caution")
+        st.plotly_chart(_apply_plotly_dark_theme(vix_fig), use_container_width=True)
 
     if all(metric in latest_values for metric in required_cols):
         fed = latest_values["Fed Rate"]
@@ -997,7 +1350,7 @@ def render_portfolio_page() -> None:
     st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
     _render_pdf_export_panel(
         section_key="portfolio",
-        prepare_label="📄 Export Portfolio Report",
+        prepare_label="Export Portfolio Report",
         download_label="ดาวน์โหลด PDF พอร์ตปัจจุบัน",
     )
     st.divider()
@@ -1066,23 +1419,23 @@ def render_portfolio_page() -> None:
         invested = total_summary["total_invested_thb"] / today_fx_rate
         current = total_summary["current_value_thb"] / today_fx_rate
         pnl_value = total_summary["total_pnl_thb"] / today_fx_rate
-        m1.metric("💰 เงินลงทุนทั้งหมด (USD)", f"{invested:,.2f}")
-        m2.metric("📈 มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
+        m1.metric("เงินลงทุนทั้งหมด (USD)", f"{invested:,.2f}")
+        m2.metric("มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
         m3.metric(
-            "✅ กำไร/ขาดทุน (USD)",
+            "กำไร/ขาดทุน (USD)",
             f"{pnl_value:,.2f}",
             delta=f"{total_summary['total_return_pct']:.2f}%",
         )
     else:
-        m1.metric("💰 เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
-        m2.metric("📈 มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
+        m1.metric("เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
+        m2.metric("มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
         m3.metric(
-            "✅ กำไร/ขาดทุน (THB)",
+            "กำไร/ขาดทุน (THB)",
             f"{total_summary['total_pnl_thb']:,.2f}",
             delta=f"{total_summary['total_return_pct']:.2f}%",
         )
-    m4.metric("💱 FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
-    m5.metric("💸 ค่าธรรมเนียมรวมทั้งหมด (THB)", f"{total_summary['total_fee_thb']:,.2f}")
+    m4.metric("FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
+    m5.metric("ค่าธรรมเนียมรวมทั้งหมด (THB)", f"{total_summary['total_fee_thb']:,.2f}")
 
     if holdings_df.empty:
         st.info("ยังไม่มีรายการซื้อในพอร์ต")
@@ -1123,7 +1476,7 @@ def render_portfolio_page() -> None:
             title="สัดส่วนพอร์ตปัจจุบัน (ตามมูลค่า THB)",
             hole=0.35,
         )
-        st.plotly_chart(pie_fig, use_container_width=True)
+        st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
 
     st.divider()
     st.subheader("ประวัติการซื้อขาย")
@@ -1169,11 +1522,12 @@ def render_dashboard() -> None:
     """แสดงผล dashboard หลักของ Vaultis."""
     try:
         st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
-        st.title("Vaultis - Long-term ETF Analyzer")
+        _inject_premium_theme()
+        st.title("Vaultis Premium Financial Dashboard")
         tickers = get_tickers()
-        st.caption(f"วิเคราะห์ ETF: {', '.join(tickers)} (ย้อนหลัง 10 ปี)")
+        st.caption(f"Dark & Luxury Finance view | ETF Universe: {', '.join(tickers)}")
 
-        if st.button("🔄 Refresh ข้อมูล"):
+        if st.button("Refresh ข้อมูล"):
             st.cache_data.clear()
             st.success("ล้างแคชเรียบร้อย กำลังโหลดข้อมูลใหม่...")
             st.rerun()
@@ -1190,72 +1544,54 @@ def render_dashboard() -> None:
         default_weights = {ticker: value / total for ticker, value in default_weights.items()}
         config = load_config()
 
-        st.sidebar.header("Pages")
-        page_options = [
-            "Overview",
-            "Portfolio",
-            "Backtest",
-            "DCA Simulator",
-            "Technical Signals",
-            "AI Advisor",
-            "Macro",
-            "Price Alerts",
-            "Settings",
-        ]
         default_page = str(config["display"]["default_page"])
-        default_page_index = page_options.index(default_page) if default_page in page_options else 0
-        page = st.sidebar.radio(
-            "เลือกหน้า",
-            page_options,
-            index=default_page_index,
-        )
+        _render_custom_sidebar(default_page)
+        page = st.session_state.get("page", "Overview")
 
-        if page == "Portfolio":
+        if page == "Overview":
+            pass
+        elif page == "Portfolio":
             render_portfolio_page()
             return
-
-        if page == "Backtest":
+        elif page == "Backtest":
             render_backtest_page(prices, default_weights, tickers)
             return
-
-        if page == "DCA Simulator":
+        elif page == "DCA Simulator":
             render_dca_simulator_page(prices, default_weights, tickers)
             return
-
-        if page == "Technical Signals":
+        elif page == "Technical Signals":
             render_technical_signals_page(prices)
             return
-
-        if page == "AI Advisor":
+        elif page == "Correlation":
+            pass
+        elif page == "AI Advisor":
             render_ai_advisor_page()
             return
-
-        if page == "Macro":
+        elif page == "Macro":
             render_macro_page()
             return
-
-        if page == "Price Alerts":
+        elif page == "Price Alerts":
             render_price_alerts_page()
             return
-
-        if page == "Settings":
+        elif page == "Settings":
             render_settings_page()
             return
 
         _render_pdf_export_panel(
             section_key="overview",
-            prepare_label="📄 Export รายงานเดือนนี้",
+            prepare_label="Export รายงานเดือนนี้",
             download_label="ดาวน์โหลด PDF รายงานเดือนนี้",
         )
         st.divider()
+        _render_market_ticker_bar(tickers, prices)
+        _render_overview_metrics(prices, tickers)
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.subheader("Price Trend (Normalized = 100)")
         normalized_prices = prices.ffill().apply(
             lambda series: (series / series.dropna().iloc[0]) * 100 if not series.dropna().empty else series
         )
-        st.plotly_chart(
-            px.line(normalized_prices, x=normalized_prices.index, y=normalized_prices.columns),
-            use_container_width=True,
-        )
+        price_trend_fig = px.line(normalized_prices, x=normalized_prices.index, y=normalized_prices.columns)
+        st.plotly_chart(_apply_plotly_dark_theme(price_trend_fig), use_container_width=True)
 
         col1, col2 = st.columns(2)
 
@@ -1286,9 +1622,9 @@ def render_dashboard() -> None:
         heatmap = px.imshow(
             corr_for_display,
             color_continuous_scale=[
-                [0.0, "#2b6cb0"],   # น้ำเงิน = correlation ต่ำ (-1)
-                [0.5, "#ffffff"],   # ขาว = correlation กลาง (0)
-                [1.0, "#c53030"],   # แดง = correlation สูง (1)
+                [0.0, THEME["negative"]],
+                [0.5, THEME["text_primary"]],
+                [1.0, THEME["positive"]],
             ],
             zmin=-1,
             zmax=1,
@@ -1296,7 +1632,7 @@ def render_dashboard() -> None:
             text_auto=".2f",
         )
         heatmap.update_layout(coloraxis_colorbar_title="Correlation")
-        st.plotly_chart(heatmap, use_container_width=True)
+        st.plotly_chart(_apply_plotly_dark_theme(heatmap), use_container_width=True)
 
         corr_pairs = corr_for_display.where(
             pd.DataFrame(
