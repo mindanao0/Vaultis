@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from dotenv import load_dotenv
 from plotly.subplots import make_subplots
 
 # เพิ่ม path ของ root โปรเจกต์เพื่อให้ import โมดูลข้ามโฟลเดอร์ได้เมื่อรันผ่าน Streamlit
@@ -38,6 +40,8 @@ from portfolio.tracker import (
 )
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
 from utils.pdf_export import generate_monthly_report
+
+load_dotenv()
 
 
 def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
@@ -163,11 +167,16 @@ def render_settings_page() -> None:
 
     st.divider()
     st.subheader("3) Notification Settings")
-    webhook_url = st.text_input(
-        "Discord Webhook URL",
-        value=str(config["notifications"]["discord_webhook_url"]),
-        type="password",
-    )
+    try:
+        webhook_url = st.secrets["DISCORD_WEBHOOK_URL"]
+    except Exception:
+        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+
+    if webhook_url.strip():
+        st.success("✅ Discord Webhook: เชื่อมต่อแล้ว")
+    else:
+        st.error("❌ Discord Webhook: ไม่พบ DISCORD_WEBHOOK_URL ใน .env")
+
     weekly_summary_enabled = st.checkbox(
         "Weekly Summary ทุกวันจันทร์",
         value=bool(config["notifications"]["weekly_summary"]),
@@ -181,11 +190,14 @@ def render_settings_page() -> None:
         value=bool(config["notifications"]["rsi_alert"]),
     )
     if st.button("ทดสอบส่ง Discord"):
-        test_result = test_alert(webhook_url=webhook_url)
-        if test_result.get("success"):
-            st.success("ส่งข้อความทดสอบไป Discord สำเร็จ")
+        if not webhook_url.strip():
+            st.error("ไม่พบ DISCORD_WEBHOOK_URL จึงไม่สามารถทดสอบส่ง Discord ได้")
         else:
-            st.error(f"ส่งข้อความทดสอบไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
+            test_result = test_alert(webhook_url=webhook_url)
+            if test_result.get("success"):
+                st.success("ส่งข้อความทดสอบไป Discord สำเร็จ")
+            else:
+                st.error(f"ส่งข้อความทดสอบไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
 
     st.divider()
     st.subheader("4) Display Settings")
@@ -218,7 +230,7 @@ def render_settings_page() -> None:
             },
             "etf": {"tickers": get_tickers()},
             "notifications": {
-                "discord_webhook_url": webhook_url.strip(),
+                "discord_webhook_url": str(config["notifications"].get("discord_webhook_url", "")),
                 "weekly_summary": bool(weekly_summary_enabled),
                 "dca_reminder": bool(dca_reminder_enabled),
                 "rsi_alert": bool(rsi_alert_enabled),
