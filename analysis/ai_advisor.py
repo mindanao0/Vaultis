@@ -127,7 +127,15 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
 [อธิบาย 1-2 บรรทัด]
 
 📅 แนะนำวันที่ควรซื้อ:
-[แนะนำช่วงเวลาที่เหมาะสม]"""
+[แนะนำช่วงเวลาที่เหมาะสม]
+
+สุดท้ายให้แสดง JSON allocations ในรูปแบบนี้เสมอ:
+ALLOCATIONS_JSON:
+[
+  {{"ticker": "SCHD", "percent": 50, "amount_thb": 2500}},
+  {{"ticker": "GLDM", "percent": 30, "amount_thb": 1500}},
+  {{"ticker": "VOO", "percent": 20, "amount_thb": 1000}}
+]"""
 
 
 def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:

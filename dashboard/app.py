@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import os
 import sys
 from pathlib import Path
@@ -725,12 +726,25 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
     col3.metric("Profit", f"${profit:,.2f}", delta=f"{(profit / total_invested) * 100:.2f}%")
 
 
-def _extract_allocation_df(parsed_advice: dict | None) -> pd.DataFrame:
-    """แปลง JSON allocations จาก Claude ให้เป็น DataFrame."""
-    if not parsed_advice or "allocations" not in parsed_advice:
+def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
+    """แปลง ALLOCATIONS_JSON จากข้อความ AI ให้เป็น DataFrame."""
+    if not advice_text:
         return pd.DataFrame()
 
-    allocations = parsed_advice.get("allocations", [])
+    marker = "ALLOCATIONS_JSON:"
+    marker_idx = advice_text.find(marker)
+    if marker_idx < 0:
+        return pd.DataFrame()
+
+    json_text = advice_text[marker_idx + len(marker):].strip()
+    if not json_text:
+        return pd.DataFrame()
+
+    try:
+        allocations = json.loads(json_text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return pd.DataFrame()
+
     if not isinstance(allocations, list):
         return pd.DataFrame()
 
@@ -792,7 +806,7 @@ def render_ai_advisor_page() -> None:
         elif not discord_result.get("skipped"):
             st.warning(f"ส่ง Discord ไม่สำเร็จ: {discord_result.get('error', 'unknown error')}")
 
-        allocation_df = _extract_allocation_df(result.get("parsed_advice"))
+        allocation_df = _extract_allocation_df(result.get("advice_text"))
         if not allocation_df.empty:
             st.markdown("### สัดส่วนที่แนะนำ")
             st.dataframe(
