@@ -8,7 +8,7 @@ TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 def run():
     print("เริ่ม daily check...")
     
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
     print(f"Webhook: {'✅' if webhook_url else '❌ ไม่มี'}")
     
     # ดึงราคา
@@ -16,7 +16,14 @@ def run():
     for ticker in TICKERS:
         try:
             t = yf.Ticker(ticker)
-            price = t.fast_info["last_price"]
+            fast_info = t.fast_info or {}
+            price = fast_info.get("last_price")
+            if price is None:
+                hist = t.history(period="1d")
+                if not hist.empty and "Close" in hist.columns:
+                    price = float(hist["Close"].iloc[-1])
+                else:
+                    raise ValueError("last_price not available")
             prices[ticker] = price
             print(f"{ticker}: ${price:.2f}")
         except Exception as e:
@@ -33,9 +40,16 @@ def run():
     print(f"\nส่งข้อความ:\n{message}")
     
     if webhook_url:
+        if not webhook_url.startswith(("http://", "https://")):
+            print("❌ DISCORD_WEBHOOK_URL ไม่ถูกต้อง (ต้องขึ้นต้นด้วย http/https)")
+            return
         payload = {"content": f"```\n{message}\n```"}
-        r = requests.post(webhook_url, json=payload)
-        print(f"Discord status: {r.status_code}")
+        try:
+            r = requests.post(webhook_url, json=payload, timeout=15)
+            print(f"Discord status: {r.status_code}")
+        except requests.RequestException as e:
+            # Avoid failing CI job when webhook/network is temporarily unavailable.
+            print(f"Discord send failed: {e}")
     else:
         print("❌ ไม่มี DISCORD_WEBHOOK_URL")
 
