@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import json
 from datetime import datetime
 
@@ -57,3 +58,23 @@ def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
 @router.get("/history")
 def ai_history(db: Session = Depends(get_db)):
     return {"data": _get_history(db)}
+=======
+"""AI router endpoints."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException
+
+from analysis.ai_advisor import ai_suggest_alerts
+
+router = APIRouter(prefix="/api/ai", tags=["ai"])
+
+
+@router.post("/suggest-alerts")
+def suggest_alerts() -> dict:
+    """Suggest price alerts with AI analysis."""
+    try:
+        return ai_suggest_alerts()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"suggest-alerts failed: {exc}") from exc
+>>>>>>> 2e136b0841b9b6f56b13f65995d33f9eea5fd827

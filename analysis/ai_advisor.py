@@ -22,7 +22,14 @@ from utils.config import get_tickers, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+
+def _get_groq_client() -> Groq:
+    """สร้าง Groq client แบบ lazy เพื่อไม่ให้ error ตั้งแต่ตอน import."""
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key or api_key == "your_key_here":
+        raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
+    return Groq(api_key=api_key)
 
 def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
     """คำนวณ RSI/MA/ผลตอบแทน 1M, 3M ของแต่ละ ETF."""
@@ -120,7 +127,157 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
 [อธิบาย 1-2 บรรทัด]
 
 📅 แนะนำวันที่ควรซื้อ:
-[แนะนำช่วงเวลาที่เหมาะสม]"""
+[แนะนำช่วงเวลาที่เหมาะสม]
+
+สุดท้ายให้แสดง JSON allocations ในรูปแบบนี้เสมอ:
+ALLOCATIONS_JSON:
+[
+  {{"ticker": "VOO", "percent": 30, "amount_thb": 1500}},
+  {{"ticker": "SCHD", "percent": 30, "amount_thb": 1500}},
+  {{"ticker": "QQQM", "percent": 20, "amount_thb": 1000}},
+  {{"ticker": "GLDM", "percent": 20, "amount_thb": 1000}}
+]"""
+
+
+def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tuple[float, float]:
+    """คำนวณแนวรับ/แนวต้านแบบง่ายจากช่วงราคาย้อนหลัง."""
+    cleaned = pd.to_numeric(price_series, errors="coerce").dropna()
+    if cleaned.empty:
+        raise ValueError("ไม่มีข้อมูลราคาสำหรับคำนวณแนวรับ/แนวต้าน")
+    lookback = cleaned.tail(window)
+    support = float(lookback.min())
+    resistance = float(lookback.max())
+    return round(support, 2), round(resistance, 2)
+
+
+def _build_price_alerts_payload(price_df: pd.DataFrame, tickers: list[str]) -> dict[str, Any]:
+    """เตรียมข้อมูลล่าสุดของ ETF สำหรับให้ AI แนะนำ price alerts."""
+    if price_df.empty:
+        raise ValueError("ไม่พบข้อมูลราคา ETF สำหรับสร้าง price alerts")
+
+    prepared = price_df.reindex(columns=tickers).sort_index().ffill()
+    snapshots: list[dict[str, Any]] = []
+    for ticker in tickers:
+        if ticker not in prepared.columns or prepared[ticker].dropna().empty:
+            raise ValueError(f"ไม่พบข้อมูลราคาของ {ticker}")
+        series = prepared[ticker]
+        latest_price = float(series.dropna().iloc[-1])
+        ma50 = float(ta.sma(series, length=50).iloc[-1])
+        ma200 = float(ta.sma(series, length=200).iloc[-1])
+        rsi14 = float(ta.rsi(series, length=14).iloc[-1])
+        support, resistance = _compute_support_resistance(series, window=60)
+        snapshots.append(
+            {
+                "ticker": ticker,
+                "price": round(latest_price, 2),
+                "rsi14": round(rsi14, 2),
+                "ma50": round(ma50, 2),
+                "ma200": round(ma200, 2),
+                "support": support,
+                "resistance": resistance,
+            }
+        )
+    return {
+        "as_of": str(prepared.index[-1].date()),
+        "etfs": snapshots,
+    }
+
+
+def ai_suggest_alerts() -> dict[str, Any]:
+    """ให้ AI วิเคราะห์และแนะนำ Buy/Warning price alert สำหรับ ETF หลัก."""
+    try:
+        client = _get_groq_client()
+        target_tickers = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+        price_df = fetch_adjusted_close_data(target_tickers, years=10)
+        payload = _build_price_alerts_payload(price_df, target_tickers)
+        compact_data = json.dumps(payload, ensure_ascii=False, indent=2)
+        prompt = f"""วิเคราะห์ ETF แต่ละตัวและแนะนำ Price Alert
+ที่เหมาะสมสำหรับนักลงทุนระยะยาวที่ DCA รายเดือน
+
+ข้อมูล: {compact_data}
+
+สำหรับแต่ละ ETF ให้แนะนำ:
+1. Buy Alert — ราคาที่น่าซื้อเพิ่ม (เช่น ใกล้ Support)
+2. Warning Alert — ราคาที่ควรระวัง (เช่น Overbought)
+3. เหตุผลสั้นๆ
+
+ตอบในรูปแบบ JSON เท่านั้น:
+{{
+  "alerts": [
+    {{
+      "ticker": "VOO",
+      "buy_alert": 620.00,
+      "warning_alert": 680.00,
+      "buy_reason": "ใกล้ MA200 จังหวะสะสม",
+      "warning_reason": "RSI สูงกว่า 75 ระวังปรับฐาน"
+    }}
+  ]
+}}"""
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_text = (response.choices[0].message.content or "").strip()
+        if not raw_text:
+            raise RuntimeError("Groq ไม่ได้ส่งคำแนะนำ alerts กลับมา")
+
+        parsed: dict[str, Any] | None = None
+        try:
+            parsed_candidate = json.loads(raw_text)
+            if isinstance(parsed_candidate, dict):
+                parsed = parsed_candidate
+        except json.JSONDecodeError:
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            if start >= 0 and end > start:
+                parsed_candidate = json.loads(raw_text[start : end + 1])
+                if isinstance(parsed_candidate, dict):
+                    parsed = parsed_candidate
+        if not parsed:
+            raise RuntimeError("ไม่สามารถแปลงผลลัพธ์จาก Groq เป็น JSON ได้")
+
+        raw_alerts = parsed.get("alerts", [])
+        if not isinstance(raw_alerts, list):
+            raise RuntimeError("รูปแบบ JSON จาก Groq ไม่ถูกต้อง (missing alerts list)")
+
+        alerts: list[dict[str, Any]] = []
+        for item in raw_alerts:
+            if not isinstance(item, dict):
+                continue
+            ticker = str(item.get("ticker", "")).strip().upper()
+            if ticker not in target_tickers:
+                continue
+            try:
+                buy_alert = float(item.get("buy_alert"))
+                warning_alert = float(item.get("warning_alert"))
+            except (TypeError, ValueError):
+                continue
+            alerts.append(
+                {
+                    "ticker": ticker,
+                    "current_price": next(
+                        (entry["price"] for entry in payload["etfs"] if entry["ticker"] == ticker),
+                        None,
+                    ),
+                    "buy_alert": round(buy_alert, 2),
+                    "warning_alert": round(warning_alert, 2),
+                    "buy_reason": str(item.get("buy_reason", "")).strip(),
+                    "warning_reason": str(item.get("warning_reason", "")).strip(),
+                }
+            )
+
+        alerts = sorted(alerts, key=lambda row: target_tickers.index(row["ticker"]))
+        if not alerts:
+            raise RuntimeError("Groq ไม่ได้ส่ง alerts ที่ใช้งานได้กลับมา")
+
+        return {
+            "as_of": payload["as_of"],
+            "source_data": payload,
+            "alerts": alerts,
+        }
+    except Exception as exc:
+        raise RuntimeError(f"เกิดข้อผิดพลาดในการแนะนำ Price Alerts: {exc}") from exc
 
 
 def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:
@@ -129,9 +286,7 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         if budget_thb <= 0:
             raise ValueError("budget_thb ต้องมากกว่า 0")
 
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-        if not api_key or api_key == "your_key_here":
-            raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
+        client = _get_groq_client()
 
         advisor_tickers = get_tickers()
         price_df = fetch_adjusted_close_data(advisor_tickers, years=10)

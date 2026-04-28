@@ -150,12 +150,72 @@ def add_alert(ticker: str, alert_type: str, price: float, note: str = "") -> dic
     return record
 
 
+def add_or_update_alert(ticker: str, alert_type: str, price: float, note: str = "") -> dict[str, Any]:
+    """Add new alert or update existing pending alert with same ticker+type."""
+    normalized_ticker = str(ticker).strip().upper()
+    normalized_type = str(alert_type).strip().lower()
+    target_price = float(price)
+    if not normalized_ticker:
+        raise ValueError("ticker ห้ามว่าง")
+    if normalized_type not in ALLOWED_ALERT_TYPES:
+        raise ValueError("alert_type ต้องเป็น 'above' หรือ 'below'")
+    if target_price <= 0:
+        raise ValueError("price ต้องมากกว่า 0")
+
+    alerts = _load_alerts()
+    for item in alerts:
+        if bool(item.get("triggered")):
+            continue
+        if str(item.get("ticker", "")).strip().upper() != normalized_ticker:
+            continue
+        if str(item.get("alert_type", "")).strip().lower() != normalized_type:
+            continue
+        item["price"] = target_price
+        item["note"] = str(note).strip()
+        item["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _save_alerts(alerts)
+        return item
+
+    return add_alert(ticker=normalized_ticker, alert_type=normalized_type, price=target_price, note=note)
+
+
 def list_alerts(include_triggered: bool = True) -> list[dict[str, Any]]:
     """List alerts from storage."""
     alerts = _load_alerts()
     if include_triggered:
         return alerts
     return [item for item in alerts if not bool(item.get("triggered"))]
+
+
+def get_active_alerts_with_distance(near_threshold_pct: float = 2.0) -> list[dict[str, Any]]:
+    """Return pending alerts with current price distance and near-trigger flag."""
+    pending = list_alerts(include_triggered=False)
+    if not pending:
+        return []
+    tickers = sorted({str(item.get("ticker", "")).strip().upper() for item in pending if item.get("ticker")})
+    current_prices = get_current_prices(tickers)
+    rows: list[dict[str, Any]] = []
+    for alert in pending:
+        ticker = str(alert.get("ticker", "")).strip().upper()
+        alert_type = str(alert.get("alert_type", "")).strip().lower()
+        target = float(alert.get("price", 0.0))
+        now_price = current_prices.get(ticker)
+        distance_pct: float | None = None
+        if now_price is not None and target > 0:
+            if alert_type == "below":
+                distance_pct = ((now_price - target) / target) * 100.0
+            elif alert_type == "above":
+                distance_pct = ((target - now_price) / target) * 100.0
+        is_near = bool(distance_pct is not None and 0 <= distance_pct <= near_threshold_pct)
+        rows.append(
+            {
+                **alert,
+                "current_price": now_price,
+                "distance_pct": distance_pct,
+                "is_near_trigger": is_near,
+            }
+        )
+    return rows
 
 
 def delete_alert(alert_id: str) -> bool:

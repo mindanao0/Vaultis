@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '0 1 * * 1' # ทุกวันจันทร์ 08:00 Thailand
     - cron: '0 1 1 * *' # วันที่ 1 ทุกเดือน 08:00 Thailand
-    - cron: '0 2 * * *' # ทุกวัน 09:00 Thailand
+    - cron: '0 15 * * 1-5' # จันทร์-ศุกร์ 22:00 Thailand (หลัง US market เปิด 30 นาที)
   workflow_dispatch:
 
 jobs:
@@ -33,10 +33,11 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Run Price Alert (ทุกวัน)
+      - name: Run Price Alert (จันทร์-ศุกร์)
+        if: github.event.schedule == '0 15 * * 1-5'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-        run: python main.py --job price_alert
+        run: python jobs/daily_check.py
