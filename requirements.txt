@@ -11,3 +11,4 @@ python-dotenv
 groq
 google-genai
 reportlab
+fastapi

@@ -23,12 +23,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from analysis.correlation import calculate_correlation_matrix
-from analysis.ai_advisor import get_monthly_advice
+from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
 from alerts.notifier import test_alert
-from alerts.price_alert import add_alert, check_alerts, delete_alert, get_current_prices, list_alerts
+from alerts.price_alert import (
+    add_alert,
+    add_or_update_alert,
+    check_alerts,
+    delete_alert,
+    get_active_alerts_with_distance,
+    get_current_prices,
+    list_alerts,
+)
 from data.fetcher import fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
@@ -621,7 +629,7 @@ def _style_alert_rows(row: pd.Series) -> list[str]:
 
 
 def render_price_alerts_page() -> None:
-    """หน้า Price Alerts: ตั้งเงื่อนไขราคา, ติดตามสถานะ, และดูประวัติที่ trigger แล้ว."""
+    """หน้า Price Alerts: AI แนะนำ, ตั้งเอง, และติดตาม active alerts."""
     st.header("Price Alerts")
     tickers = get_tickers()
     if not tickers:
@@ -629,16 +637,76 @@ def render_price_alerts_page() -> None:
         return
 
     all_alerts = list_alerts(include_triggered=True)
-    pending_alerts = [item for item in all_alerts if not bool(item.get("triggered"))]
     history_alerts = [item for item in all_alerts if bool(item.get("triggered"))]
+    active_alerts = get_active_alerts_with_distance(near_threshold_pct=2.0)
+    latest_prices = get_current_prices(tickers)
 
-    watch_tickers = sorted(
-        set(tickers)
-        | {str(item.get("ticker", "")).strip().upper() for item in all_alerts if str(item.get("ticker", "")).strip()}
-    )
-    latest_prices = get_current_prices(watch_tickers)
+    st.subheader("1) AI Suggest Alerts")
+    if "ai_alert_suggestions" not in st.session_state:
+        st.session_state["ai_alert_suggestions"] = []
 
-    st.subheader("1) เพิ่ม Alert ใหม่")
+    if st.button("🤖 ให้ AI แนะนำ Price Alerts", type="primary", key="ai_suggest_alerts_btn"):
+        with st.spinner("กำลังวิเคราะห์ราคา ETF ด้วย AI..."):
+            try:
+                ai_result = ai_suggest_alerts()
+                st.session_state["ai_alert_suggestions"] = ai_result.get("alerts", [])
+                st.success("AI แนะนำ Price Alerts เรียบร้อยแล้ว")
+            except Exception as exc:
+                st.error(f"AI วิเคราะห์ไม่สำเร็จ: {exc}")
+
+    suggested_alerts = st.session_state.get("ai_alert_suggestions", [])
+    if suggested_alerts:
+        for alert in suggested_alerts:
+            ticker = str(alert.get("ticker", "")).upper()
+            current_price = alert.get("current_price")
+            if current_price is None:
+                current_price = latest_prices.get(ticker)
+            buy_alert = float(alert.get("buy_alert", 0.0))
+            warning_alert = float(alert.get("warning_alert", 0.0))
+            buy_reason = str(alert.get("buy_reason", "")).strip() or "-"
+            warning_reason = str(alert.get("warning_reason", "")).strip() or "-"
+
+            with st.container(border=True):
+                st.markdown(f"### {ticker}")
+                if current_price is not None:
+                    st.markdown(f"ราคาปัจจุบัน: **${float(current_price):,.2f}**")
+                else:
+                    st.markdown("ราคาปัจจุบัน: **N/A**")
+                st.markdown(f"🟢 Buy Alert: **${buy_alert:,.2f}** — {buy_reason}")
+                st.markdown(f"🔴 Warning Alert: **${warning_alert:,.2f}** — {warning_reason}")
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("ตั้ง Alert นี้ (Buy)", key=f"set_ai_buy_{ticker}"):
+                        try:
+                            add_or_update_alert(
+                                ticker=ticker,
+                                alert_type="below",
+                                price=buy_alert,
+                                note=f"AI Buy: {buy_reason}",
+                            )
+                            st.success(f"ตั้ง Buy Alert ของ {ticker} เรียบร้อย")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"ตั้ง Buy Alert ไม่สำเร็จ: {exc}")
+                with c2:
+                    if st.button("ตั้ง Alert นี้ (Warning)", key=f"set_ai_warn_{ticker}"):
+                        try:
+                            add_or_update_alert(
+                                ticker=ticker,
+                                alert_type="above",
+                                price=warning_alert,
+                                note=f"AI Warning: {warning_reason}",
+                            )
+                            st.success(f"ตั้ง Warning Alert ของ {ticker} เรียบร้อย")
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"ตั้ง Warning Alert ไม่สำเร็จ: {exc}")
+    else:
+        st.info("กดปุ่มให้ AI วิเคราะห์เพื่อแนะนำ Buy/Warning alerts สำหรับ ETF หลัก")
+
+    st.divider()
+    st.subheader("2) Manual Alert")
     col_ticker, col_type, col_price = st.columns([2, 2, 2])
     with col_ticker:
         selected_ticker = st.selectbox("เลือก ETF", tickers, key="price_alert_ticker")
@@ -684,24 +752,18 @@ def render_price_alerts_page() -> None:
         st.rerun()
 
     st.divider()
-    st.subheader("2) Alert ที่ตั้งไว้")
-    if not pending_alerts:
-        st.info("ยังไม่มี Alert ที่รอ trigger")
+    st.subheader("3) Active Alerts")
+    if not active_alerts:
+        st.info("ยังไม่มี Active Alerts")
     else:
-        pending_rows: list[dict[str, object]] = []
-        for item in pending_alerts:
+        active_rows: list[dict[str, object]] = []
+        for item in active_alerts:
             ticker = str(item.get("ticker", "")).strip().upper()
             alert_type = str(item.get("alert_type", "")).lower()
             target = float(item.get("price", 0.0))
-            now_price = latest_prices.get(ticker)
-            if now_price is None:
-                distance = None
-            elif alert_type == "below":
-                distance = ((now_price - target) / target) * 100.0
-            else:
-                distance = ((target - now_price) / target) * 100.0
-
-            pending_rows.append(
+            now_price = item.get("current_price")
+            distance = item.get("distance_pct")
+            active_rows.append(
                 {
                     "ID": item.get("id"),
                     "ETF": ticker,
@@ -709,13 +771,13 @@ def render_price_alerts_page() -> None:
                     "ราคาเป้า (USD)": target,
                     "ราคาปัจจุบัน (USD)": now_price,
                     "Distance %": distance,
-                    "Status": "Triggered" if now_price is not None and distance is not None and distance <= 0 else "Pending",
+                    "Status": "🔴 Near Trigger" if bool(item.get("is_near_trigger")) else "Pending",
                     "หมายเหตุ": str(item.get("note", "")).strip() or "-",
                     "สร้างเมื่อ": str(item.get("created_at", "")),
                 }
             )
 
-        pending_df = pd.DataFrame(pending_rows)
+        pending_df = pd.DataFrame(active_rows)
         show_cols = [
             "ETF",
             "เงื่อนไข",
@@ -749,7 +811,7 @@ def render_price_alerts_page() -> None:
                 st.warning("ไม่พบ Alert ที่เลือก")
 
     st.divider()
-    st.subheader("3) Alert History")
+    st.subheader("4) Alert History")
     if not history_alerts:
         st.info("ยังไม่มีประวัติ Alert ที่ trigger")
     else:
