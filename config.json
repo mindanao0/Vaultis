@@ -1,0 +1,26 @@
+{
+  "dca": {
+    "monthly_budget_thb": 5000.0,
+    "day_of_month": 1
+  },
+  "etf": {
+    "tickers": [
+      "VOO",
+      "SCHD",
+      "QQQM",
+      "XLV",
+      "GLDM"
+    ]
+  },
+  "notifications": {
+    "discord_webhook_url": "https://discordapp.com/api/webhooks/1497852498453598269/F-vbyJpk_ywEpNUY_NvNFqv6rKSDJQcg6AReCetYsyr_otiKip2eJrb59znW0lqj_7Kz",
+    "weekly_summary": true,
+    "dca_reminder": true,
+    "rsi_alert": true
+  },
+  "display": {
+    "default_page": "Overview",
+    "currency": "THB",
+    "default_fx_rate": 33.5
+  }
+}

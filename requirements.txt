@@ -11,3 +11,7 @@ python-dotenv
 groq
 google-genai
 reportlab
+fastapi
+uvicorn
+sqlalchemy
+pydantic
