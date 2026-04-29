@@ -33,7 +33,7 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Run Price Alert (จันทร์-ศุกร์)
+      - name: Run Price Alert (ทุกวัน)
         if: github.event.schedule == '0 15 * * 1-5'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}

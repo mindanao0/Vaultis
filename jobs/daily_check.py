@@ -1,18 +1,4 @@
-import sys
 import os
-from pathlib import Path
-
-# โหลด .env จาก root โปรเจกต์
-from dotenv import load_dotenv
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT_DIR / ".env", override=True)
-
-# Debug print เช็คว่าโหลดได้ไหม
-print(f"Webhook: {'✅' if os.environ.get('DISCORD_WEBHOOK_URL') else '❌ ไม่มี'}")
-print(f"ROOT_DIR: {ROOT_DIR}")
-print(f".env exists: {(ROOT_DIR / '.env').exists()}")
-
 import random
 import time
 import requests
@@ -68,7 +54,18 @@ def is_market_open():
 def run():
     print("เริ่ม daily check...")
 
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+    # GitHub Actions ส่งมาเป็น env var โดยตรง
+    # ไม่ต้องใช้ dotenv
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+    # dotenv เฉพาะตอนรันในเครื่องเท่านั้น
+    if not webhook_url:
+        from dotenv import load_dotenv
+        from pathlib import Path
+
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
     print(f"Webhook: {'✅' if webhook_url else '❌ ไม่มี'}")
 
     # ดึงราคา + % เปลี่ยนแปลง
