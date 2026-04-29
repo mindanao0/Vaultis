@@ -1,4 +1,18 @@
+import sys
 import os
+from pathlib import Path
+
+# โหลด .env จาก root โปรเจกต์
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env", override=True)
+
+# Debug print เช็คว่าโหลดได้ไหม
+print(f"Webhook: {'✅' if os.environ.get('DISCORD_WEBHOOK_URL') else '❌ ไม่มี'}")
+print(f"ROOT_DIR: {ROOT_DIR}")
+print(f".env exists: {(ROOT_DIR / '.env').exists()}")
+
 import random
 import time
 import requests
