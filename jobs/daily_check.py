@@ -8,38 +8,62 @@ from datetime import datetime, timezone
 
 TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
+session = requests.Session()
+session.headers.update(
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+)
+
+
+def _fetch_price_from_chart_api(ticker):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    meta = data["chart"]["result"][0]["meta"]
+    timestamps = data["chart"]["result"][0].get("timestamp", [])
+    price = float(meta["regularMarketPrice"])
+    prev = float(meta["previousClose"])
+    change_pct = (price - prev) / prev * 100 if prev else 0.0
+    if timestamps:
+        last_dt = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
+        date_str = last_dt.strftime("%d/%m/%Y")
+    else:
+        date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    return price, change_pct, date_str
+
 
 def fetch_price_with_retry(ticker, max_retries=3):
     for attempt in range(max_retries):
         try:
             # Randomized jitter helps avoid concurrent request bursts.
             time.sleep(random.uniform(1, 3))
-            hist = yf.download(
-                ticker,
-                period="5d",
-                interval="1d",
-                progress=False,
-                auto_adjust=True,
-            )
-            if hist.empty or "Close" not in hist.columns:
-                raise ValueError("No data")
-
-            closes = hist["Close"].dropna()
-            if len(closes) < 2:
-                raise ValueError("Not enough close prices")
-
-            price = float(closes.iloc[-1])
-            prev = float(closes.iloc[-2])
-            change_pct = (price - prev) / prev * 100 if prev else 0.0
-            latest_idx = pd.to_datetime(closes.index[-1]).to_pydatetime()
-            date_str = latest_idx.strftime("%d/%m/%Y")
-            return price, change_pct, date_str
+            t = yf.Ticker(ticker, session=session)
+            fast_info = t.fast_info
+            price = fast_info.get("last_price")
+            prev = fast_info.get("previous_close")
+            if price and prev and price > 0:
+                change_pct = (price - prev) / prev * 100
+                hist = t.history(period="5d", interval="1d", auto_adjust=False)
+                if not hist.empty:
+                    latest_idx = pd.to_datetime(hist.index[-1]).to_pydatetime()
+                    date_str = latest_idx.strftime("%d/%m/%Y")
+                else:
+                    date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+                return float(price), float(change_pct), date_str
+            raise ValueError("Invalid fast_info data")
         except Exception as e:
             print(f"{ticker} attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(3)
 
-    return 0.0, 0.0, "N/A"
+    try:
+        return _fetch_price_from_chart_api(ticker)
+    except Exception as e:
+        print(f"{ticker} fallback failed: {e}")
+        return 0.0, 0.0, "N/A"
 
 
 def is_market_open():
