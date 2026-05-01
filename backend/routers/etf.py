@@ -17,6 +17,17 @@ def get_prices():
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.get("/daily-snapshot")
+def get_daily_snapshot():
+    try:
+        return JSONResponse(
+            content={"data": etf_service.get_etf_daily_eod_snapshot()},
+            media_type="application/json; charset=utf-8",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/returns")
 def get_returns():
     try:

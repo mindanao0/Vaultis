@@ -21,6 +21,35 @@ def get_etf_prices() -> dict[str, float]:
     return get_current_prices(tickers)
 
 
+def get_etf_daily_eod_snapshot() -> dict[str, dict[str, float | str]]:
+    """Latest vs prior trading row from adjusted-close history (EOD)."""
+    prices = _prices_df()
+    if prices.empty or len(prices) < 2:
+        return {}
+    latest = prices.iloc[-1]
+    prior = prices.iloc[-2]
+    bar_date = pd.Timestamp(prices.index[-1]).strftime("%d/%m/%Y")
+    out: dict[str, dict[str, float | str]] = {}
+    for ticker in prices.columns:
+        key = str(ticker).strip().upper()
+        try:
+            p_t = float(latest[ticker])
+            p_y = float(prior[ticker])
+            if p_y > 0:
+                chg = (p_t - p_y) / p_y * 100.0
+            else:
+                chg = 0.0
+            out[key] = {
+                "price": round(p_t, 2),
+                "previous_close": round(p_y, 2),
+                "change_pct": round(chg, 4),
+                "date": bar_date,
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def get_etf_returns() -> dict:
     prices = _prices_df()
     result = calculate_period_returns(prices)
