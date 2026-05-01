@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
+from analysis.financial_model import run_full_analysis
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
@@ -74,7 +75,7 @@ THEME = {
 
 NAV_GROUPS = [
     ("Main", ["Overview", "Portfolio"]),
-    ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation"]),
+    ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "Price Alerts"]),
     ("System", ["Settings"]),
 ]
@@ -293,6 +294,8 @@ def _render_custom_sidebar(default_page: str) -> str:
             st.session_state["page"] = "Technical Signals"
         if st.button("Correlation", key="nav_correlation", use_container_width=True):
             st.session_state["page"] = "Correlation"
+        if st.button("DCF Analysis", key="nav_dcf_analysis", use_container_width=True):
+            st.session_state["page"] = "DCF Analysis"
 
         st.markdown('<p class="nav-group">AI & ALERTS</p>', unsafe_allow_html=True)
         if st.button("AI Advisor", key="nav_ai_advisor", use_container_width=True):
@@ -550,6 +553,7 @@ def render_settings_page() -> None:
         "Backtest",
         "DCA Simulator",
         "Technical Signals",
+        "DCF Analysis",
         "AI Advisor",
         "Macro",
         "Price Alerts",
@@ -1333,6 +1337,110 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def render_dcf_analysis_page() -> None:
+    """DCF analysis page with ETF drill-down and full heatmap."""
+    st.header("DCF Analysis")
+    st.caption("Model-driven DCF details, score breakdown, and full ETF heatmap")
+
+    config = load_config()
+    budget_thb = st.number_input(
+        "Monthly Budget (THB)",
+        min_value=500.0,
+        value=float(config["dca"]["monthly_budget_thb"]),
+        step=500.0,
+        format="%.0f",
+        key="dcf_analysis_budget",
+    )
+
+    if "dcf_full_analysis" not in st.session_state:
+        with st.spinner("Running full analysis..."):
+            st.session_state["dcf_full_analysis"] = run_full_analysis(budget_thb=float(budget_thb))
+
+    if st.button("Run Full Analysis", type="primary", key="dcf_run_full"):
+        with st.spinner("Running all ETF analysis..."):
+            st.session_state["dcf_full_analysis"] = run_full_analysis(budget_thb=float(budget_thb))
+        st.success("Full analysis completed.")
+
+    full_analysis = st.session_state.get("dcf_full_analysis")
+    score_df = _full_analysis_score_dcf_df(full_analysis if isinstance(full_analysis, dict) else None)
+    if score_df.empty:
+        st.warning("No DCF analysis data available.")
+        return
+
+    selected_ticker = st.selectbox("Select ETF", options=score_df["Ticker"].tolist(), key="dcf_selected_ticker")
+    selected_row = score_df.loc[score_df["Ticker"] == selected_ticker].iloc[0]
+    selected_raw = full_analysis["analysis"].get(selected_ticker, {})
+    selected_dcf = selected_raw.get("dcf", {}) if isinstance(selected_raw, dict) else {}
+
+    cards = st.columns(4)
+    cards[0].metric("Current Price", f"${float(selected_row['Current (USD)']):,.2f}")
+    cards[1].metric("DCF Intrinsic Value", f"${float(selected_row['DCF intrinsic (USD)']):,.2f}")
+    cards[2].metric("Margin of Safety %", f"{float(selected_row['Margin of Safety %']):.2f}%")
+    cards[3].metric("Signal", str(selected_row["Signal"]))
+
+    st.subheader("Score Breakdown")
+    breakdown_map = {
+        "Technical Score": float(selected_row["Technical"]),
+        "MA Score": float(selected_row["MA"]),
+        "DCF Score": float(selected_row["DCF pts"]),
+        "Momentum Score": float(selected_row["Momentum"]),
+        "Dividend Score": float(selected_raw.get("dividend_score", 0) if isinstance(selected_raw, dict) else 0),
+    }
+    breakdown_df = pd.DataFrame(
+        {"Metric": list(breakdown_map.keys()), "Score": list(breakdown_map.values())}
+    ).sort_values("Score", ascending=True)
+    bar_fig = px.bar(
+        breakdown_df,
+        x="Score",
+        y="Metric",
+        orientation="h",
+        color="Score",
+        color_continuous_scale=[THEME["negative"], THEME["accent"], THEME["positive"]],
+        title=f"{selected_ticker} Score Breakdown",
+    )
+    bar_fig.update_layout(coloraxis_showscale=False)
+    st.plotly_chart(_apply_plotly_dark_theme(bar_fig), use_container_width=True)
+
+    st.subheader("DCF Cash Flow Table (10 Years)")
+    cash_flows = selected_dcf.get("cash_flows", []) if isinstance(selected_dcf, dict) else []
+    if cash_flows:
+        cash_flow_df = pd.DataFrame(cash_flows).rename(
+            columns={"year": "Year", "cash_flow": "Cash Flow", "present_value": "Present Value"}
+        )
+        st.dataframe(
+            cash_flow_df[["Year", "Cash Flow", "Present Value"]].style.format(
+                {"Cash Flow": "${:,.2f}", "Present Value": "${:,.2f}"}
+            ),
+            use_container_width=True,
+        )
+    else:
+        st.info("No cash flow data available for this ETF.")
+
+    st.subheader("DCF Assumptions")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("WACC %", f"{float(selected_dcf.get('wacc', 0)):.2f}%")
+    a2.metric("Growth Rate %", f"{float(selected_dcf.get('growth_rate', 0)):.2f}%")
+    a3.metric("Terminal Growth %", f"{float(selected_dcf.get('terminal_growth', 0)):.2f}%")
+    a4.metric("Beta", f"{float(selected_dcf.get('beta', 0)):.2f}")
+
+    st.subheader("Heatmap Score (All ETFs)")
+    heatmap_df = score_df.set_index("Ticker")[["Total", "Technical", "MA", "DCF pts", "Momentum"]]
+    heatmap_fig = px.imshow(
+        heatmap_df,
+        color_continuous_scale=[
+            [0.0, THEME["negative"]],
+            [0.5, THEME["text_primary"]],
+            [1.0, THEME["positive"]],
+        ],
+        text_auto=".0f",
+        aspect="auto",
+        zmin=0,
+        zmax=max(100.0, float(heatmap_df.to_numpy().max())),
+    )
+    heatmap_fig.update_layout(coloraxis_colorbar_title="Score")
+    st.plotly_chart(_apply_plotly_dark_theme(heatmap_fig), use_container_width=True)
+
+
 def render_ai_advisor_page() -> None:
     """  AI Advisor:   DCA   Claude."""
     st.header("AI Advisor")
@@ -1353,6 +1461,11 @@ def render_ai_advisor_page() -> None:
 
         st.success("Analysis completed.")
         full = result.get("full_analysis")
+        if not isinstance(full, dict):
+            full = {
+                "analysis": result.get("analysis", {}),
+                "allocation": result.get("allocation", {}),
+            }
         score_dcf_df = _full_analysis_score_dcf_df(full if isinstance(full, dict) else None)
         if not score_dcf_df.empty:
             st.subheader("Score breakdown (0–100)")
@@ -1406,7 +1519,8 @@ def render_ai_advisor_page() -> None:
             st.plotly_chart(_apply_plotly_dark_theme(mos_fig), use_container_width=True)
 
         st.markdown("### คำอธิบายจาก AI")
-        st.markdown(result["advice_text"])
+        advice_text = str(result.get("advice_text") or result.get("advice") or "")
+        st.markdown(advice_text)
 
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
@@ -1416,7 +1530,7 @@ def render_ai_advisor_page() -> None:
 
         allocation_df = _allocation_from_full_analysis(full if isinstance(full, dict) else None)
         if allocation_df.empty:
-            allocation_df = _extract_allocation_df(result.get("advice_text"))
+            allocation_df = _extract_allocation_df(advice_text)
         if not allocation_df.empty:
             st.markdown("### การจัดสรร DCA (จากโมเดล)")
             st.dataframe(
@@ -1799,6 +1913,9 @@ def render_dashboard() -> None:
             return
         elif page == "Technical Signals":
             render_technical_signals_page(prices)
+            return
+        elif page == "DCF Analysis":
+            render_dcf_analysis_page()
             return
         elif page == "Correlation":
             pass

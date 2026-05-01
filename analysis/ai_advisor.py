@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 
 from alerts.notifier import send_discord_webhook
 from analysis.financial_model import run_full_analysis
-from analysis.macro import get_macro_data
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
 from utils.config import load_config
@@ -33,50 +32,52 @@ def _get_groq_client() -> Groq:
         raise ValueError(" GROQ_API_KEY  .env")
     return Groq(api_key=api_key)
 
-def _build_explanation_prompt(full_analysis: dict[str, Any], macro_data: dict[str, Any], budget_thb: float) -> str:
-    """Prompt: model only narrates; all numbers come from full_analysis JSON."""
-    payload_text = json.dumps(full_analysis, ensure_ascii=False, indent=2)
-    macro_text = json.dumps(macro_data, ensure_ascii=False, indent=2)
-    budget_text = f"{budget_thb:,.0f}"
-    now = datetime.now()
-    month_name = now.strftime("%B")
-    year = now.year
-    return f"""You are a professional ETF investment advisor for long-term investors.
+def _build_explanation_prompt(full_analysis: dict[str, Any], budget_thb: float) -> str:
+    """Build strict prompt so AI only explains model output."""
+    summary: list[str] = []
+    for ticker, data in full_analysis["analysis"].items():
+        dcf = data["dcf"]
+        summary.append(
+            f"{ticker}: Score={data['total_score']}/100"
+            f" RSI={data['rsi']}"
+            f" DCF_Value=${dcf['intrinsic_value']}"
+            f" Price=${dcf['current_price']}"
+            f" MoS={dcf['margin_of_safety']}%"
+            f" Signal={data['signal']}"
+        )
 
-The JSON below is the COMPLETE quantitative output from Vaultis (scores, DCF, allocation). Treat it as ground truth.
+    alloc_text: list[str] = []
+    for ticker, alloc in full_analysis["allocation"].items():
+        alloc_text.append(f"{ticker}: {alloc['amount_thb']} THB ({alloc['percent']}%)")
 
-RULES:
-- Explain in Thai only. Do NOT recalculate, change, or contradict any numbers from the JSON.
-- Do not invent new RSI, MA, intrinsic value, margin of safety, or allocation amounts.
-- Reference the provided figures when you explain *why* each ETF scored as it did.
+    return f"""
+You are a financial advisor explaining ETF analysis results in Thai.
+The following results were calculated by our financial model.
+DO NOT change any numbers. Only explain WHY in simple Thai.
 
-FULL_ANALYSIS_JSON:
-{payload_text}
+Analysis Results:
+{chr(10).join(summary)}
 
-MACRO_CONTEXT_JSON:
-{macro_text}
+Recommended Allocation for {budget_thb} THB:
+{chr(10).join(alloc_text)}
 
-DCA budget: {budget_text} THB/month (day 1 of each month).
+Please explain in Thai with this EXACT format:
 
-Respond in Thai with this structure (narrative prose is fine under each heading; use the exact headings):
+🤖 Vaultis AI Advisor — [เดือน ปี]
+งบ DCA: {budget_thb} บาท
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 การวิเคราะห์:
+[สำหรับแต่ละ ETF อธิบาย 1 บรรทัด ว่าทำไมถึงได้ signal นี้]
 
-🤖 Vaultis AI Advisor — {month_name} {year}
-งบ DCA: {budget_text} บาท
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 สรุปความหมายของคะแนน (อ้างอิง JSON เท่านั้น)
-(ครอบคลุมทุก ETF ใน analysis)
+💰 แนะนำแบ่งเงิน {budget_thb} บาท:
+[คัดลอกจาก allocation ข้างบนทุกบรรทัด ห้ามเปลี่ยน]
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 แนวคิดการจัดสรร {budget_text} บาท
-(อธิบายเหตุผลของสัดส่วนใน allocation — ห้ามคำนวณใหม่)
+⚠️ ความเสี่ยงเดือนนี้:
+[2-3 บรรทัด]
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ ความเสี่ยงเดือนนี้
-(2-3 ข้อ จาก macro context)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 แนะนำจังหวะ DCA
-(เช่น ซื้อวันที่ 1 ของเดือน และข้อควรระวังสั้นๆ)"""
+📅 แนะนำวันที่ควรซื้อ:
+[แนะนำช่วงเวลา]
+"""
 
 
 def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tuple[float, float]:
@@ -231,14 +232,13 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         client = _get_groq_client()
 
         full_analysis = run_full_analysis(budget_thb=budget_thb)
-        macro_data = get_macro_data()
-        prompt = _build_explanation_prompt(full_analysis, macro_data=macro_data, budget_thb=budget_thb)
+        prompt = _build_explanation_prompt(full_analysis, budget_thb=budget_thb)
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=2000,
+            temperature=0.1,
+            max_tokens=1500,
         )
 
         result = response.choices[0].message.content
@@ -262,10 +262,9 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
             )
 
         return {
-            "budget_thb": budget_thb,
-            "full_analysis": full_analysis,
-            "macro_data": macro_data,
-            "advice_text": advice_text,
+            "advice": advice_text,
+            "analysis": full_analysis["analysis"],
+            "allocation": full_analysis["allocation"],
             "discord_result": discord_result,
         }
     except Exception as exc:
