@@ -16,11 +16,11 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from alerts.notifier import send_discord_webhook
-from analysis.correlation import calculate_correlation_matrix
+from analysis.financial_model import run_full_analysis
 from analysis.macro import get_macro_data
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
-from utils.config import get_tickers, load_config
+from utils.config import load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
@@ -33,142 +33,50 @@ def _get_groq_client() -> Groq:
         raise ValueError(" GROQ_API_KEY  .env")
     return Groq(api_key=api_key)
 
-def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
-    """ RSI/MA/ 1M, 3M  ETF."""
-    cleaned = price_series.ffill().dropna()
-    if len(cleaned) < 200:
-        raise ValueError(" MA200")
-
-    latest_price = float(cleaned.iloc[-1])
-    ma50 = float(ta.sma(cleaned, length=50).iloc[-1])
-    ma200 = float(ta.sma(cleaned, length=200).iloc[-1])
-    rsi14 = float(ta.rsi(cleaned, length=14).iloc[-1])
-
-    ret_1m = float((cleaned.iloc[-1] / cleaned.iloc[-22] - 1.0) * 100.0) if len(cleaned) > 21 else 0.0
-    ret_3m = float((cleaned.iloc[-1] / cleaned.iloc[-64] - 1.0) * 100.0) if len(cleaned) > 63 else 0.0
-
-    return {
-        "price": round(latest_price, 2),
-        "rsi14": round(rsi14, 2),
-        "ma50": round(ma50, 2),
-        "ma200": round(ma200, 2),
-        "ma50_status": "Above" if latest_price >= ma50 else "Below",
-        "ma200_status": "Above" if latest_price >= ma200 else "Below",
-        "price_vs_ma50_position": "above" if latest_price >= ma50 else "below",
-        "price_vs_ma200_position": "above" if latest_price >= ma200 else "below",
-        "return_1m_pct": round(ret_1m, 2),
-        "return_3m_pct": round(ret_3m, 2),
-    }
-
-
-def _build_advisor_payload(price_df: pd.DataFrame, tickers: list[str]) -> dict[str, Any]:
-    """ Gemini ."""
-    if price_df.empty:
-        raise ValueError(" ETF")
-
-    price_df = price_df.reindex(columns=tickers).sort_index().ffill()
-
-    ticker_snapshot: dict[str, dict[str, Any]] = {}
-    for ticker in tickers:
-        if ticker not in price_df.columns or price_df[ticker].dropna().empty:
-            raise ValueError(f" {ticker}")
-        ticker_snapshot[ticker] = _format_ticker_snapshot(price_df[ticker])
-
-    corr = calculate_correlation_matrix(price_df[tickers]).round(3)
-    corr_matrix = corr.to_dict()
-    as_of_date = str(price_df.index[-1].date())
-
-    return {"as_of": as_of_date, "tickers": ticker_snapshot, "correlation_matrix": corr_matrix}
-
-
-def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: float, tickers: list[str]) -> str:
-    def _macro_value(key: str, nested_key: str = "value") -> Any:
-        value = macro_data.get(key, "N/A")
-        if isinstance(value, dict):
-            return value.get(nested_key, "N/A")
-        return value
-
-    fed_rate = _macro_value("fed_funds_rate")
-    dxy = _macro_value("dxy_dollar_index")
-    vix = _macro_value("vix_fear_index")
+def _build_explanation_prompt(full_analysis: dict[str, Any], macro_data: dict[str, Any], budget_thb: float) -> str:
+    """Prompt: model only narrates; all numbers come from full_analysis JSON."""
+    payload_text = json.dumps(full_analysis, ensure_ascii=False, indent=2)
+    macro_text = json.dumps(macro_data, ensure_ascii=False, indent=2)
     budget_text = f"{budget_thb:,.0f}"
     now = datetime.now()
     month_name = now.strftime("%B")
     year = now.year
-    prompt_data = {
-        "etf_data": data,
-        "macro_data": {
-            "vix_current": vix,
-            "dxy_current": dxy,
-            "fed_rate_current": fed_rate,
-        },
-    }
-    prompt_data_text = json.dumps(prompt_data, ensure_ascii=False, indent=2)
     return f"""You are a professional ETF investment advisor for long-term investors.
-Analyze the following ETF data and provide consistent, data-driven advice.
 
-Current Data:
-{prompt_data_text}
+The JSON below is the COMPLETE quantitative output from Vaultis (scores, DCF, allocation). Treat it as ground truth.
 
-ANALYSIS FRAMEWORK (use this exact framework every time):
+RULES:
+- Explain in Thai only. Do NOT recalculate, change, or contradict any numbers from the JSON.
+- Do not invent new RSI, MA, intrinsic value, margin of safety, or allocation amounts.
+- Reference the provided figures when you explain *why* each ETF scored as it did.
 
-1. RSI Analysis:
-   - RSI < 30: Oversold -> Strong Buy signal
-   - RSI 30-45: Low -> Buy signal
-   - RSI 45-55: Neutral -> Hold
-   - RSI 55-70: High -> Caution
-   - RSI > 70: Overbought -> Avoid / Wait
+FULL_ANALYSIS_JSON:
+{payload_text}
 
-2. MA Signal:
-   - Price above MA50 AND MA200: Strong uptrend
-   - Price above MA50, below MA200: Weak trend
-   - Price below MA50 AND MA200: Downtrend
+MACRO_CONTEXT_JSON:
+{macro_text}
 
-3. Combined Signal Score (0-10):
-   RSI score + MA score + Momentum score
-   8-10: Strong Buy
-   6-7: Buy
-   4-5: Neutral
-   2-3: Caution
-   0-1: Avoid
+DCA budget: {budget_text} THB/month (day 1 of each month).
 
-For each ETF provide:
-- Exact RSI value and zone
-- MA50/MA200 status
-- Signal Score (0-10)
-- Recommendation with clear reason
-
-Budget: {budget_text} THB/month
-DCA Day: 1st of each month
-
-Respond in Thai language with this EXACT format:
+Respond in Thai with this structure (narrative prose is fine under each heading; use the exact headings):
 
 🤖 Vaultis AI Advisor — {month_name} {year}
 งบ DCA: {budget_text} บาท
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 การวิเคราะห์:
+📊 สรุปความหมายของคะแนน (อ้างอิง JSON เท่านั้น)
+(ครอบคลุมทุก ETF ใน analysis)
 
-[ETF] — RSI [value] ([zone]) | MA: [status] | Score: [x]/10
-→ [recommendation in Thai]
-
-(repeat for all 5 ETFs)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 แนะนำแบ่งเงิน {budget_text} บาท:
-(list only ETFs with Score >= 5)
-[ETF] [amount] บาท ([percent]%)
+💰 แนวคิดการจัดสรร {budget_text} บาท
+(อธิบายเหตุผลของสัดส่วนใน allocation — ห้ามคำนวณใหม่)
 
-⚠️ ความเสี่ยงเดือนนี้:
-[2-3 bullet points based on current macro data]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ ความเสี่ยงเดือนนี้
+(2-3 ข้อ จาก macro context)
 
-📅 แนะนำวันที่ควรซื้อ:
-[specific date recommendation based on market conditions]
-
-IMPORTANT RULES:
-- Always use the scoring framework above
-- Never skip any ETF in the analysis
-- Budget allocation must sum to exactly {budget_text} THB
-- Be consistent - same data should give same recommendation
-- Include specific numbers (RSI, MA values) always"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 แนะนำจังหวะ DCA
+(เช่น ซื้อวันที่ 1 ของเดือน และข้อควรระวังสั้นๆ)"""
 
 
 def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tuple[float, float]:
@@ -322,15 +230,15 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
 
         client = _get_groq_client()
 
-        advisor_tickers = get_tickers()
-        price_df = fetch_adjusted_close_data(advisor_tickers, years=10)
-        payload = _build_advisor_payload(price_df=price_df, tickers=advisor_tickers)
+        full_analysis = run_full_analysis(budget_thb=budget_thb)
         macro_data = get_macro_data()
-        prompt = _build_prompt(payload, macro_data=macro_data, budget_thb=budget_thb, tickers=advisor_tickers)
+        prompt = _build_explanation_prompt(full_analysis, macro_data=macro_data, budget_thb=budget_thb)
 
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2000,
         )
 
         result = response.choices[0].message.content
@@ -355,7 +263,7 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
 
         return {
             "budget_thb": budget_thb,
-            "market_data": payload,
+            "full_analysis": full_analysis,
             "macro_data": macro_data,
             "advice_text": advice_text,
             "discord_result": discord_result,

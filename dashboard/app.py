@@ -1215,6 +1215,56 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
     col3.metric("Profit", f"${profit:,.2f}", delta=f"{(profit / total_invested) * 100:.2f}%")
 
 
+def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
+    """Flatten financial_model.run_full_analysis() for tables and charts."""
+    if not full_analysis or not isinstance(full_analysis.get("analysis"), dict):
+        return pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    for ticker, payload in full_analysis["analysis"].items():
+        if not isinstance(payload, dict):
+            continue
+        dcf = payload.get("dcf") if isinstance(payload.get("dcf"), dict) else {}
+        rows.append(
+            {
+                "Ticker": str(ticker).upper(),
+                "Total": int(payload.get("total_score", 0) or 0),
+                "Technical": int(payload.get("technical_score", 0) or 0),
+                "MA": int(payload.get("ma_score", 0) or 0),
+                "DCF pts": int(payload.get("dcf_score", 0) or 0),
+                "Momentum": int(payload.get("momentum_score", 0) or 0),
+                "RSI": float(payload.get("rsi", 0) or 0),
+                "Signal": str(payload.get("signal", "")),
+                "Current (USD)": float(dcf.get("current_price", 0) or 0),
+                "DCF intrinsic (USD)": float(dcf.get("intrinsic_value", 0) or 0),
+                "Margin of Safety %": float(dcf.get("margin_of_safety", 0) or 0),
+                "DCF signal": str(dcf.get("signal", "")),
+            }
+        )
+    order = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+    rows.sort(key=lambda r: order.index(str(r["Ticker"])) if str(r["Ticker"]) in order else 99)
+    return pd.DataFrame(rows)
+
+
+def _allocation_from_full_analysis(full_analysis: dict | None) -> pd.DataFrame:
+    if not full_analysis or not isinstance(full_analysis.get("allocation"), dict):
+        return pd.DataFrame()
+    rows: list[dict[str, object]] = []
+    for ticker, payload in full_analysis["allocation"].items():
+        if not isinstance(payload, dict):
+            continue
+        rows.append(
+            {
+                "Ticker": str(ticker).upper(),
+                "Percent": float(payload.get("percent", 0) or 0),
+                "Amount (THB)": float(payload.get("amount_thb", 0) or 0),
+                "Score": int(payload.get("score", 0) or 0),
+            }
+        )
+    order = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+    rows.sort(key=lambda r: order.index(str(r["Ticker"])) if str(r["Ticker"]) in order else 99)
+    return pd.DataFrame(rows)
+
+
 def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
     """  ALLOCATIONS_JSON   AI   DataFrame."""
     if not advice_text:
@@ -1286,7 +1336,7 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
 def render_ai_advisor_page() -> None:
     """  AI Advisor:   DCA   Claude."""
     st.header("AI Advisor")
-    st.caption("  ETF   Claude   DCA  ")
+    st.caption("คะแนนและ DCF คำนวณในระบบ — Groq ใช้เพื่ออธิบายเหตุผลเท่านั้น")
     config = load_config()
 
     budget_thb = st.number_input(
@@ -1298,11 +1348,64 @@ def render_ai_advisor_page() -> None:
     )
 
     if st.button("Analyze This Month", type="primary"):
-        with st.spinner("  ETF   Claude..."):
+        with st.spinner("กำลังรัน Financial Model + Groq (อาจใช้เวลาสักครู่)..."):
             result = get_monthly_advice(budget_thb=float(budget_thb))
 
         st.success("Analysis completed.")
-        st.markdown("###   AI")
+        full = result.get("full_analysis")
+        score_dcf_df = _full_analysis_score_dcf_df(full if isinstance(full, dict) else None)
+        if not score_dcf_df.empty:
+            st.subheader("Score breakdown (0–100)")
+            st.dataframe(
+                score_dcf_df[
+                    [
+                        "Ticker",
+                        "Total",
+                        "Technical",
+                        "MA",
+                        "DCF pts",
+                        "Momentum",
+                        "RSI",
+                        "Signal",
+                    ]
+                ].style.format({"RSI": "{:.2f}"}),
+                use_container_width=True,
+            )
+            st.subheader("DCF: intrinsic value vs current price (USD)")
+            iv_fig = go.Figure(
+                data=[
+                    go.Bar(
+                        name="Current price",
+                        x=score_dcf_df["Ticker"],
+                        y=score_dcf_df["Current (USD)"],
+                        marker_color=THEME["text_secondary"],
+                    ),
+                    go.Bar(
+                        name="DCF intrinsic",
+                        x=score_dcf_df["Ticker"],
+                        y=score_dcf_df["DCF intrinsic (USD)"],
+                        marker_color=THEME["accent"],
+                    ),
+                ]
+            )
+            iv_fig.update_layout(barmode="group", legend_title_text="")
+            iv_fig.update_yaxes(title_text="USD")
+            st.plotly_chart(_apply_plotly_dark_theme(iv_fig), use_container_width=True)
+
+            st.subheader("Margin of safety (%)")
+            mos_fig = go.Figure(
+                data=[
+                    go.Bar(
+                        x=score_dcf_df["Ticker"],
+                        y=score_dcf_df["Margin of Safety %"],
+                        marker_color=THEME["positive"],
+                    )
+                ]
+            )
+            mos_fig.update_yaxes(title_text="%")
+            st.plotly_chart(_apply_plotly_dark_theme(mos_fig), use_container_width=True)
+
+        st.markdown("### คำอธิบายจาก AI")
         st.markdown(result["advice_text"])
 
         discord_result = result.get("discord_result", {})
@@ -1311,9 +1414,11 @@ def render_ai_advisor_page() -> None:
         elif not discord_result.get("skipped"):
             st.warning(f"  Discord  : {discord_result.get('error', 'unknown error')}")
 
-        allocation_df = _extract_allocation_df(result.get("advice_text"))
+        allocation_df = _allocation_from_full_analysis(full if isinstance(full, dict) else None)
+        if allocation_df.empty:
+            allocation_df = _extract_allocation_df(result.get("advice_text"))
         if not allocation_df.empty:
-            st.markdown("###  ")
+            st.markdown("### การจัดสรร DCA (จากโมเดล)")
             st.dataframe(
                 allocation_df.style.format(
                     {
@@ -1325,13 +1430,13 @@ def render_ai_advisor_page() -> None:
             pie = px.pie(
                 allocation_df,
                 names="Ticker",
-                values="Percent",
-                title="Recommended DCA Allocation",
+                values="Amount (THB)",
+                title="DCA allocation (THB)",
                 hole=0.35,
             )
             st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
         else:
-            st.warning("  JSON allocations   parse   AI   Pie Chart")
+            st.warning("ไม่พบข้อมูล allocation — ลองรันใหม่หรือตรวจสอบการเชื่อมต่อ")
     else:
         st.info("    ' '")
 
