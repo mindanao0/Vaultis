@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูล Backtest พอร์ต ETF ย้อนหลัง."""
 
 from __future__ import annotations

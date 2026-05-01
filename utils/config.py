@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Utilities for loading and saving application configuration."""
 
 from __future__ import annotations

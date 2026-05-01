@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลตรวจสอบความเบี่ยงเบนของสัดส่วนพอร์ต."""
 
 from __future__ import annotations

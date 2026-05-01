@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลแจ้งเตือนผ่าน Discord Webhook."""
 
 from __future__ import annotations

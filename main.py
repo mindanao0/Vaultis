@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """จุดเริ่มต้นสำหรับการตั้ง schedule แจ้งเตือนรายวัน/รายสัปดาห์/รายเดือน."""
 
 from __future__ import annotations

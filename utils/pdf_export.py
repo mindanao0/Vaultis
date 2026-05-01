@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """PDF export utilities for monthly portfolio report."""
 
 from __future__ import annotations

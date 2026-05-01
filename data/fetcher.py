@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลสำหรับดึงข้อมูล ETF ย้อนหลัง 10 ปีจาก yfinance."""
 
 from __future__ import annotations

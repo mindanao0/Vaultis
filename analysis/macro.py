@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลดึงข้อมูล Macro Economics จาก FRED และ yfinance."""
 
 from __future__ import annotations

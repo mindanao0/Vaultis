@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Price alert storage, evaluation, and Discord notification."""
 
 from __future__ import annotations

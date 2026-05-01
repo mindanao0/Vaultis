@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลคำนวณผลตอบแทนหลายช่วงเวลา."""
 
 from __future__ import annotations

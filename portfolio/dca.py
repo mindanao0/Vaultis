@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลจำลองการลงทุนแบบ DCA รายเดือน."""
 
 from __future__ import annotations

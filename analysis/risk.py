@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลคำนวณตัวชี้วัดความเสี่ยงของ ETF."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูล AI Advisor สำหรับแนะนำ DCA ETF รายเดือนด้วย Groq API."""
 
 import sys

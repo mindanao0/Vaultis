@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Portfolio tracker: เก็บธุรกรรมและสรุปพอร์ตจากไฟล์ CSV."""
 
 from __future__ import annotations

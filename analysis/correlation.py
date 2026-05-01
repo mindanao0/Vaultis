@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """โมดูลคำนวณ Correlation Matrix ระหว่าง ETF."""
 
 from __future__ import annotations
