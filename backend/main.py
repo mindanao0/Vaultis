@@ -8,7 +8,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Vaultis API",
-    description="ETF Analysis Backend",
+    description="ETF Analysis Backend for Vaultis",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
