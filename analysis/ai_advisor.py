@@ -3,6 +3,7 @@
 
 import sys
 import os
+from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -49,8 +50,12 @@ def _format_ticker_snapshot(price_series: pd.Series) -> dict[str, Any]:
     return {
         "price": round(latest_price, 2),
         "rsi14": round(rsi14, 2),
+        "ma50": round(ma50, 2),
+        "ma200": round(ma200, 2),
         "ma50_status": "Above" if latest_price >= ma50 else "Below",
         "ma200_status": "Above" if latest_price >= ma200 else "Below",
+        "price_vs_ma50_position": "above" if latest_price >= ma50 else "below",
+        "price_vs_ma200_position": "above" if latest_price >= ma200 else "below",
         "return_1m_pct": round(ret_1m, 2),
         "return_3m_pct": round(ret_3m, 2),
     }
@@ -77,9 +82,6 @@ def _build_advisor_payload(price_df: pd.DataFrame, tickers: list[str]) -> dict[s
 
 
 def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: float, tickers: list[str]) -> str:
-    ticker_list_text = " ".join(tickers)
-    compact_data = json.dumps(data, ensure_ascii=False, indent=2)
-
     def _macro_value(key: str, nested_key: str = "value") -> Any:
         value = macro_data.get(key, "N/A")
         if isinstance(value, dict):
@@ -87,57 +89,86 @@ def _build_prompt(data: dict[str, Any], macro_data: dict[str, Any], budget_thb: 
         return value
 
     fed_rate = _macro_value("fed_funds_rate")
-    cpi = _macro_value("inflation_cpi")
-    treasury = _macro_value("us10y_treasury_yield")
     dxy = _macro_value("dxy_dollar_index")
     vix = _macro_value("vix_fear_index")
-    vix_level = "" if isinstance(vix, (int, float)) and vix >= 25 else ""
     budget_text = f"{budget_thb:,.0f}"
-    return f""" AI  ETF 
- DCA {budget_text} 
+    now = datetime.now()
+    month_name = now.strftime("%B")
+    year = now.year
+    prompt_data = {
+        "etf_data": data,
+        "macro_data": {
+            "vix_current": vix,
+            "dxy_current": dxy,
+            "fed_rate_current": fed_rate,
+        },
+    }
+    prompt_data_text = json.dumps(prompt_data, ensure_ascii=False, indent=2)
+    return f"""You are a professional ETF investment advisor for long-term investors.
+Analyze the following ETF data and provide consistent, data-driven advice.
 
- Macro Economics :
-- Fed Rate: {fed_rate}%
-- Inflation CPI: {cpi}%
-- 10Y Yield: {treasury}%
-- DXY: {dxy}
-- VIX: {vix} ({vix_level})
+Current Data:
+{prompt_data_text}
 
- ETF:
-{compact_data}
+ANALYSIS FRAMEWORK (use this exact framework every time):
 
- Macro 
-  VIX    
- DXY   GLDM 
+1. RSI Analysis:
+   - RSI < 30: Oversold -> Strong Buy signal
+   - RSI 30-45: Low -> Buy signal
+   - RSI 45-55: Neutral -> Hold
+   - RSI 55-70: High -> Caution
+   - RSI > 70: Overbought -> Avoid / Wait
 
-  JSON  code block
-:
+2. MA Signal:
+   - Price above MA50 AND MA200: Strong uptrend
+   - Price above MA50, below MA200: Weak trend
+   - Price below MA50 AND MA200: Downtrend
 
- Vaultis AI Advisor  [ ]
- DCA: {budget_text} 
+3. Combined Signal Score (0-10):
+   RSI score + MA score + Momentum score
+   8-10: Strong Buy
+   6-7: Buy
+   4-5: Neutral
+   2-3: Caution
+   0-1: Avoid
 
- :
-[ETF]  RSI [] [] [//]
-( {ticker_list_text})
+For each ETF provide:
+- Exact RSI value and zone
+- MA50/MA200 status
+- Signal Score (0-10)
+- Recommendation with clear reason
 
-  {budget_text} :
-[ETF] [] ([]%)
-()
+Budget: {budget_text} THB/month
+DCA Day: 1st of each month
 
- :
-[ 1-2 ]
+Respond in Thai language with this EXACT format:
 
- :
-[]
+🤖 Vaultis AI Advisor — {month_name} {year}
+งบ DCA: {budget_text} บาท
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 การวิเคราะห์:
 
- JSON allocations :
-ALLOCATIONS_JSON:
-[
-  {{"ticker": "VOO", "percent": 30, "amount_thb": 1500}},
-  {{"ticker": "SCHD", "percent": 30, "amount_thb": 1500}},
-  {{"ticker": "QQQM", "percent": 20, "amount_thb": 1000}},
-  {{"ticker": "GLDM", "percent": 20, "amount_thb": 1000}}
-]"""
+[ETF] — RSI [value] ([zone]) | MA: [status] | Score: [x]/10
+→ [recommendation in Thai]
+
+(repeat for all 5 ETFs)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 แนะนำแบ่งเงิน {budget_text} บาท:
+(list only ETFs with Score >= 5)
+[ETF] [amount] บาท ([percent]%)
+
+⚠️ ความเสี่ยงเดือนนี้:
+[2-3 bullet points based on current macro data]
+
+📅 แนะนำวันที่ควรซื้อ:
+[specific date recommendation based on market conditions]
+
+IMPORTANT RULES:
+- Always use the scoring framework above
+- Never skip any ETF in the analysis
+- Budget allocation must sum to exactly {budget_text} THB
+- Be consistent - same data should give same recommendation
+- Include specific numbers (RSI, MA values) always"""
 
 
 def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tuple[float, float]:
@@ -218,6 +249,8 @@ def ai_suggest_alerts() -> dict[str, Any]:
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=2000,
         )
         raw_text = (response.choices[0].message.content or "").strip()
         if not raw_text:
