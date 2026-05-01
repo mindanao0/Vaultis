@@ -1,17 +1,21 @@
-<<<<<<< HEAD
+"""AI router endpoints."""
+
+from __future__ import annotations
+
 import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from analysis.ai_advisor import get_monthly_advice
+from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
 
 from ..database import get_db
 from ..models import Config
 from ..schemas import AiAdviceRequest
 
-router = APIRouter(prefix="/api/ai", tags=["AI"])
+router = APIRouter(prefix="/api/ai", tags=["ai"])
 AI_HISTORY_KEY = "ai_history"
 
 
@@ -50,31 +54,29 @@ def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
             },
         )
         _save_history(db, history[:20])
-        return {"data": result}
+        return JSONResponse(
+            content={"data": result},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/history")
 def ai_history(db: Session = Depends(get_db)):
-    return {"data": _get_history(db)}
-=======
-"""AI router endpoints."""
-
-from __future__ import annotations
-
-from fastapi import APIRouter, HTTPException
-
-from analysis.ai_advisor import ai_suggest_alerts
-
-router = APIRouter(prefix="/api/ai", tags=["ai"])
+    return JSONResponse(
+        content={"data": _get_history(db)},
+        media_type="application/json; charset=utf-8",
+    )
 
 
 @router.post("/suggest-alerts")
-def suggest_alerts() -> dict:
+def suggest_alerts():
     """Suggest price alerts with AI analysis."""
     try:
-        return ai_suggest_alerts()
+        return JSONResponse(
+            content=ai_suggest_alerts(),
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"suggest-alerts failed: {exc}") from exc
->>>>>>> 2e136b0841b9b6f56b13f65995d33f9eea5fd827

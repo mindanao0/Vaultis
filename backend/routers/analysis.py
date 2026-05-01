@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 from analysis.macro import get_macro_data
 from data.fetcher import fetch_adjusted_close_data
@@ -20,7 +21,10 @@ def run_backtest(payload: BacktestRequest):
             weights=payload.weights,
             initial_capital=payload.initial_capital,
         )
-        return {"data": result.reset_index().to_dict(orient="records")}
+        return JSONResponse(
+            content={"data": result.reset_index().to_dict(orient="records")},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -34,7 +38,10 @@ def run_dca_simulation(payload: DcaSimRequest):
             weights=payload.weights,
             monthly_investment=payload.monthly_investment,
         )
-        return {"data": result.reset_index().to_dict(orient="records")}
+        return JSONResponse(
+            content={"data": result.reset_index().to_dict(orient="records")},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -42,6 +49,9 @@ def run_dca_simulation(payload: DcaSimRequest):
 @router.get("/macro")
 def get_macro():
     try:
-        return {"data": get_macro_data()}
+        return JSONResponse(
+            content={"data": get_macro_data()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

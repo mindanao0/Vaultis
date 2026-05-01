@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 from ..services import etf_service
 
@@ -8,7 +9,10 @@ router = APIRouter(prefix="/api/etf", tags=["ETF"])
 @router.get("/prices")
 def get_prices():
     try:
-        return {"data": etf_service.get_etf_prices()}
+        return JSONResponse(
+            content={"data": etf_service.get_etf_prices()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -16,7 +20,10 @@ def get_prices():
 @router.get("/returns")
 def get_returns():
     try:
-        return {"data": etf_service.get_etf_returns()}
+        return JSONResponse(
+            content={"data": etf_service.get_etf_returns()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -24,7 +31,10 @@ def get_returns():
 @router.get("/risk")
 def get_risk():
     try:
-        return {"data": etf_service.get_etf_risk()}
+        return JSONResponse(
+            content={"data": etf_service.get_etf_risk()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -32,7 +42,10 @@ def get_risk():
 @router.get("/correlation")
 def get_correlation():
     try:
-        return {"data": etf_service.get_etf_correlation()}
+        return JSONResponse(
+            content={"data": etf_service.get_etf_correlation()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -40,6 +53,9 @@ def get_correlation():
 @router.get("/technical")
 def get_technical():
     try:
-        return {"data": etf_service.get_etf_technical()}
+        return JSONResponse(
+            content={"data": etf_service.get_etf_technical()},
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

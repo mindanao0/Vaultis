@@ -1,11 +1,7 @@
+"""Streamlit dashboard ??????????????????? ETF ???????."""
+
 from __future__ import annotations
 
-<<<<<<< HEAD
-import requests
-import streamlit as st
-
-API_BASE_URL = "http://localhost:8000"
-=======
 from datetime import datetime
 import json
 import os
@@ -17,11 +13,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 from dotenv import load_dotenv
 from plotly.subplots import make_subplots
 
-# เพิ่ม path ของ root โปรเจกต์เพื่อให้ import โมดูลข้ามโฟลเดอร์ได้เมื่อรันผ่าน Streamlit
+# ???????? path ????? root ??????????????????????????? import ?????????????????????????????????????????????????? Streamlit
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
@@ -54,7 +51,6 @@ from portfolio.tracker import (
 )
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
 from utils.pdf_export import generate_monthly_report
->>>>>>> 2e136b0841b9b6f56b13f65995d33f9eea5fd827
 
 load_dotenv()
 
@@ -98,11 +94,11 @@ def _inject_premium_theme() -> None:
             min-width: 220px;
             max-width: 220px;
         }}
-        /* ลด gap ระหว่าง radio items */
+        /* ??? gap ????????? radio items */
         [data-testid="stSidebar"] [role="radiogroup"] {{
             gap: 0px !important;
         }}
-        /* แต่ละ radio item */
+        /* ??????? radio item */
         [data-testid="stSidebar"] label {{
             padding: 6px 12px !important;
             margin: 0px !important;
@@ -110,16 +106,16 @@ def _inject_premium_theme() -> None:
             font-size: 14px !important;
             cursor: pointer !important;
         }}
-        /* ซ่อน radio circle */
+        /* ??????? radio circle */
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {{
             margin: 0 !important;
             padding: 0 !important;
         }}
-        /* ซ่อน default radio button dot */
+        /* ??????? default radio button dot */
         [data-testid="stSidebar"] input[type="radio"] {{
             display: none !important;
         }}
-        /* ลด padding ทั่วไปใน sidebar */
+        /* ??? padding ?????????????? sidebar */
         [data-testid="stSidebar"] .block-container {{
             padding-top: 1rem !important;
             padding-bottom: 1rem !important;
@@ -323,7 +319,7 @@ def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
         last_px = float(series.iloc[-1])
         prev_px = float(series.iloc[-2])
         pct = ((last_px - prev_px) / prev_px) * 100 if prev_px else 0.0
-        arrow = "▲" if pct >= 0 else "▼"
+        arrow = "???" if pct >= 0 else "???"
         color = THEME["positive"] if pct >= 0 else THEME["negative"]
         snippets.append(
             f'{ticker} ${last_px:,.2f} <span style="color:{color};font-weight:600;">{arrow} {pct:+.2f}%</span>'
@@ -338,6 +334,69 @@ def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _ws_prices_url() -> str:
+    """WebSocket URL for live prices (override with VAULTIS_WS_URL)."""
+    raw = os.getenv("VAULTIS_WS_URL", "ws://localhost:8000/ws/prices").strip()
+    return raw or "ws://localhost:8000/ws/prices"
+
+
+def _render_realtime_price_ticker_bar() -> None:
+    """Live ticker via backend WebSocket (iframe ? Streamlit strips <script> in st.markdown)."""
+    ws_url = json.dumps(_ws_prices_url(), ensure_ascii=False)
+    html = f"""
+<div id="ticker-bar" style="
+    background: #161B22;
+    border: 1px solid #30363D;
+    padding: 8px 16px;
+    border-radius: 8px;
+    display: flex;
+    gap: 24px;
+    font-size: 13px;
+    margin-bottom: 16px;
+    color: #E6EDF3;
+    font-family: Inter, sans-serif;
+">
+    <span id="price-VOO">VOO ?</span>
+    <span id="price-SCHD">SCHD ?</span>
+    <span id="price-QQQM">QQQM ?</span>
+    <span id="price-XLV">XLV ?</span>
+    <span id="price-GLDM">GLDM ?</span>
+</div>
+<script>
+(function () {{
+    const wsUrl = {ws_url};
+    const ws = new WebSocket(wsUrl);
+    ws.onmessage = function (event) {{
+        const raw = typeof event.data === "string"
+            ? event.data
+            : new TextDecoder("utf-8").decode(event.data);
+        const data = JSON.parse(raw);
+        console.log(data);
+        if (data.type === "price_update") {{
+            Object.entries(data.data).forEach(([ticker, info]) => {{
+                const el = document.getElementById("price-" + ticker);
+                if (el) {{
+                    const color = info.change_pct >= 0 ? "#3FB950" : "#F85149";
+                    const sign = info.change_pct >= 0 ? "+" : "";
+                    el.innerHTML = ticker + " $" + info.price +
+                        ' <span style="color:' + color + '">' +
+                        sign + info.change_pct + "%</span>";
+                }}
+            }});
+        }}
+    }};
+    ws.onerror = function () {{
+        ["VOO","SCHD","QQQM","XLV","GLDM"].forEach(function (t) {{
+            const el = document.getElementById("price-" + t);
+            if (el) el.textContent = t + " (WS error)";
+        }});
+    }};
+}})();
+</script>
+"""
+    components.html(html, height=70)
 
 
 def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
@@ -418,84 +477,97 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
         )
 
 
-def _api_get(path: str):
-    response = requests.get(f"{API_BASE_URL}{path}", timeout=20)
-    response.raise_for_status()
-    return response.json()
+def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
+    """Render monthly PDF export controls with Streamlit download button."""
+    config = load_config()
+    month_text = datetime.today().strftime("%B %Y")
+    default_budget = float(config["dca"]["monthly_budget_thb"])
+    budget_thb = st.number_input(
+        "???? DCA ??????? AI Summary (THB)",
+        min_value=500.0,
+        value=default_budget,
+        step=500.0,
+        format="%.0f",
+        key=f"{section_key}_pdf_budget",
+    )
+
+    cache_key = f"{section_key}_pdf_bytes"
+    file_key = f"{section_key}_pdf_filename"
+    if st.button(prepare_label, key=f"{section_key}_prepare_pdf"):
+        with st.spinner("????????????????????? PDF..."):
+            st.session_state[cache_key] = generate_monthly_report(month=month_text, budget_thb=float(budget_thb))
+            st.session_state[file_key] = f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"
+        st.success("??????????????????????????????????????? ????????????????????????????????????????????")
+
+    if cache_key in st.session_state:
+        st.download_button(
+            label=download_label,
+            data=st.session_state[cache_key],
+            file_name=st.session_state.get(file_key, f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"),
+            mime="application/pdf",
+            key=f"{section_key}_download_pdf",
+        )
 
 
-def _api_post(path: str, payload: dict):
-    response = requests.post(f"{API_BASE_URL}{path}", json=payload, timeout=30)
-    response.raise_for_status()
-    return response.json()
+def _is_valid_etf_ticker(ticker: str) -> bool:
+    """Validate ticker by fetching 1-day data from yfinance."""
+    cleaned_ticker = str(ticker).strip().upper()
+    if not cleaned_ticker:
+        return False
+    try:
+        test_df = yf.download(
+            cleaned_ticker,
+            period="1d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+        )
+        if test_df.empty:
+            return False
+        close_series = pd.to_numeric(test_df.get("Close"), errors="coerce").dropna()
+        return not close_series.empty
+    except Exception:
+        return False
 
 
-def _api_delete(path: str):
-    response = requests.delete(f"{API_BASE_URL}{path}", timeout=20)
-    response.raise_for_status()
-    return response.json()
+def render_settings_page() -> None:
+    """?????????????????????????????????????? config.json."""
+    st.header("Settings")
+    st.caption("???????????????????????, ETF, ?????????????????? ????????????????????????")
 
-
-def render_etf_page():
-    st.header("ETF Data")
-    cols = st.columns(5)
-    endpoints = [
-        ("/api/etf/prices", "Prices"),
-        ("/api/etf/returns", "Returns"),
-        ("/api/etf/risk", "Risk"),
-        ("/api/etf/correlation", "Correlation"),
-        ("/api/etf/technical", "Technical"),
+    config = load_config()
+    current_tickers = get_tickers()
+    page_options = [
+        "Overview",
+        "Portfolio",
+        "Backtest",
+        "DCA Simulator",
+        "Technical Signals",
+        "AI Advisor",
+        "Macro",
+        "Price Alerts",
+        "Settings",
     ]
-    for idx, (path, title) in enumerate(endpoints):
-        with cols[idx]:
-            if st.button(title, use_container_width=True):
-                st.session_state["etf_data"] = _api_get(path)
-                st.session_state["etf_title"] = title
-    if st.session_state.get("etf_data"):
-        st.subheader(st.session_state.get("etf_title", "Result"))
-        st.json(st.session_state["etf_data"])
 
+    st.subheader("1) DCA Settings")
+    dca_budget = st.number_input(
+        "???? DCA ????????????? (THB)",
+        min_value=100.0,
+        value=float(config["dca"]["monthly_budget_thb"]),
+        step=100.0,
+        format="%.0f",
+    )
+    dca_day = st.number_input(
+        "????????? DCA ????????????",
+        min_value=1,
+        max_value=31,
+        value=int(config["dca"]["day_of_month"]),
+        step=1,
+    )
 
-<<<<<<< HEAD
-def render_portfolio_page():
-    st.header("Portfolio")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("Summary", use_container_width=True):
-            st.session_state["portfolio_data"] = _api_get("/api/portfolio")
-    with c2:
-        if st.button("Holdings", use_container_width=True):
-            st.session_state["portfolio_data"] = _api_get("/api/portfolio/holdings")
-    with c3:
-        if st.button("History", use_container_width=True):
-            st.session_state["portfolio_data"] = _api_get("/api/portfolio/history")
-
-    with st.expander("Add transaction"):
-        date = st.text_input("date", value="2026-01-01")
-        ticker = st.text_input("ticker", value="VOO")
-        shares = st.number_input("shares", min_value=0.0001, value=1.0)
-        price_usd = st.number_input("price_usd", min_value=0.0001, value=100.0)
-        amount_thb = st.number_input("amount_thb", min_value=0.01, value=3500.0)
-        fx_rate = st.number_input("fx_rate", min_value=0.0001, value=35.0)
-        fee = st.number_input("fee", min_value=0.0, value=0.0)
-        note = st.text_input("note", value="")
-        if st.button("POST /api/portfolio/add"):
-            st.session_state["portfolio_data"] = _api_post(
-                "/api/portfolio/add",
-                {
-                    "date": date,
-                    "ticker": ticker,
-                    "shares": shares,
-                    "price_usd": price_usd,
-                    "amount_thb": amount_thb,
-                    "fx_rate": fx_rate,
-                    "fee": fee,
-                    "note": note,
-                },
-=======
     st.divider()
     st.subheader("2) ETF Management")
-    st.caption("ETF ปัจจุบันทั้งหมด")
+    st.caption("ETF ????????????????????????")
     for ticker in current_tickers:
         col_ticker, col_remove = st.columns([4, 1])
         with col_ticker:
@@ -504,27 +576,27 @@ def render_portfolio_page():
             if st.button("Remove", key=f"remove_{ticker}"):
                 try:
                     remove_ticker(ticker)
-                    st.success(f"ลบ ETF {ticker} สำเร็จ")
+                    st.success(f"??? ETF {ticker} ?????????")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"ลบ ETF ไม่สำเร็จ: {exc}")
+                    st.error(f"??? ETF ??????????????: {exc}")
 
-    new_ticker = st.text_input("ค้นหา ETF ใหม่", value="", placeholder="เช่น VTI")
-    if st.button("เพิ่ม ETF", type="secondary"):
+    new_ticker = st.text_input("???????? ETF ??????", value="", placeholder="???????? VTI")
+    if st.button("???????? ETF", type="secondary"):
         candidate = new_ticker.strip().upper()
         if not candidate:
-            st.warning("กรุณากรอก Ticker ก่อน")
+            st.warning("?????????? Ticker ??????")
         elif candidate in current_tickers:
-            st.info(f"{candidate} มีอยู่แล้วในรายการ")
+            st.info(f"{candidate} ??????????????????????")
         elif not _is_valid_etf_ticker(candidate):
-            st.error("ไม่พบ ETF นี้ กรุณาตรวจสอบ Ticker")
+            st.error("????????? ETF ????? ???????????????? Ticker")
         else:
             try:
                 add_ticker(candidate)
-                st.success(f"เพิ่ม ETF {candidate} สำเร็จ")
+                st.success(f"???????? ETF {candidate} ?????????")
                 st.rerun()
             except Exception as exc:
-                st.error(f"เพิ่ม ETF ไม่สำเร็จ: {exc}")
+                st.error(f"???????? ETF ??????????????: {exc}")
 
     st.divider()
     st.subheader("3) Notification Settings")
@@ -534,55 +606,55 @@ def render_portfolio_page():
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
 
     if webhook_url.strip():
-        st.success("Discord Webhook: เชื่อมต่อแล้ว")
+        st.success("Discord Webhook: ???????????????????")
     else:
-        st.error("Discord Webhook: ไม่พบ DISCORD_WEBHOOK_URL ใน .env")
+        st.error("Discord Webhook: ????????? DISCORD_WEBHOOK_URL ???? .env")
 
     weekly_summary_enabled = st.checkbox(
-        "Weekly Summary ทุกวันจันทร์",
+        "Weekly Summary ??????????????????",
         value=bool(config["notifications"]["weekly_summary"]),
     )
     dca_reminder_enabled = st.checkbox(
-        "DCA Reminder ก่อน 1 วัน",
+        "DCA Reminder ?????? 1 ????",
         value=bool(config["notifications"]["dca_reminder"]),
     )
     rsi_alert_enabled = st.checkbox(
-        "RSI Alert เมื่อ Oversold/Overbought",
+        "RSI Alert ??????? Oversold/Overbought",
         value=bool(config["notifications"]["rsi_alert"]),
     )
-    if st.button("ทดสอบส่ง Discord"):
+    if st.button("????????????? Discord"):
         if not webhook_url.strip():
-            st.error("ไม่พบ DISCORD_WEBHOOK_URL จึงไม่สามารถทดสอบส่ง Discord ได้")
+            st.error("????????? DISCORD_WEBHOOK_URL ?????????????????????????????? Discord ??????")
         else:
             test_result = test_alert(webhook_url=webhook_url)
             if test_result.get("success"):
-                st.success("ส่งข้อความทดสอบไป Discord สำเร็จ")
+                st.success("??????????????????????????? Discord ?????????")
             else:
-                st.error(f"ส่งข้อความทดสอบไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
+                st.error(f"?????????????????????????????????????: {test_result.get('error', 'unknown error')}")
 
     st.divider()
     st.subheader("4) Display Settings")
     current_default_page = str(config["display"]["default_page"])
     default_page = st.selectbox(
-        "Default Page เมื่อเปิดแอป",
+        "Default Page ??????????????????",
         page_options,
         index=page_options.index(current_default_page) if current_default_page in page_options else 0,
     )
     currency = st.radio(
-        "สกุลเงินหลัก",
+        "???????????????",
         options=["THB", "USD"],
         index=0 if str(config["display"]["currency"]).upper() == "THB" else 1,
         horizontal=True,
     )
     default_fx_rate = st.number_input(
-        "อัตราแลกเปลี่ยน Default (ถ้าดึงไม่ได้)",
+        "???????????????????? Default (?????????????????????)",
         min_value=1.0,
         value=float(config["display"]["default_fx_rate"]),
         step=0.1,
         format="%.4f",
     )
 
-    if st.button("บันทึก Settings", type="primary"):
+    if st.button("????????? Settings", type="primary"):
         updated_config = {
             **config,
             "dca": {
@@ -604,10 +676,10 @@ def render_portfolio_page():
         }
         try:
             save_config(updated_config)
-            st.success("บันทึก Settings ลง config.json เรียบร้อยแล้ว")
-            st.info("หากมี scheduler รันอยู่ ให้ restart เพื่อโหลดค่าใหม่")
+            st.success("????????? Settings ??? config.json ?????????????????")
+            st.info("????? scheduler ????????? ????? restart ?????????????????????????")
         except Exception as exc:
-            st.error(f"บันทึกค่าล้มเหลว: {exc}")
+            st.error(f"???????????????????????: {exc}")
 
 
 def _style_alert_rows(row: pd.Series) -> list[str]:
@@ -621,11 +693,11 @@ def _style_alert_rows(row: pd.Series) -> list[str]:
 
 
 def render_price_alerts_page() -> None:
-    """หน้า Price Alerts: AI แนะนำ, ตั้งเอง, และติดตาม active alerts."""
+    """?????? Price Alerts: AI ???????, ????????????, ???????????? active alerts."""
     st.header("Price Alerts")
     tickers = get_tickers()
     if not tickers:
-        st.warning("ยังไม่มี ETF ในระบบ กรุณาเพิ่มใน Settings")
+        st.warning("??????????? ETF ?????????? ?????????????????? Settings")
         return
 
     all_alerts = list_alerts(include_triggered=True)
@@ -637,14 +709,14 @@ def render_price_alerts_page() -> None:
     if "ai_alert_suggestions" not in st.session_state:
         st.session_state["ai_alert_suggestions"] = []
 
-    if st.button("🤖 ให้ AI แนะนำ Price Alerts", type="primary", key="ai_suggest_alerts_btn"):
-        with st.spinner("กำลังวิเคราะห์ราคา ETF ด้วย AI..."):
+    if st.button("???? ????? AI ??????? Price Alerts", type="primary", key="ai_suggest_alerts_btn"):
+        with st.spinner("??????????????????????? ETF ?????? AI..."):
             try:
                 ai_result = ai_suggest_alerts()
                 st.session_state["ai_alert_suggestions"] = ai_result.get("alerts", [])
-                st.success("AI แนะนำ Price Alerts เรียบร้อยแล้ว")
+                st.success("AI ??????? Price Alerts ?????????????????")
             except Exception as exc:
-                st.error(f"AI วิเคราะห์ไม่สำเร็จ: {exc}")
+                st.error(f"AI ??????????????????????????: {exc}")
 
     suggested_alerts = st.session_state.get("ai_alert_suggestions", [])
     if suggested_alerts:
@@ -661,15 +733,15 @@ def render_price_alerts_page() -> None:
             with st.container(border=True):
                 st.markdown(f"### {ticker}")
                 if current_price is not None:
-                    st.markdown(f"ราคาปัจจุบัน: **${float(current_price):,.2f}**")
+                    st.markdown(f"??????????????????: **${float(current_price):,.2f}**")
                 else:
-                    st.markdown("ราคาปัจจุบัน: **N/A**")
-                st.markdown(f"🟢 Buy Alert: **${buy_alert:,.2f}** — {buy_reason}")
-                st.markdown(f"🔴 Warning Alert: **${warning_alert:,.2f}** — {warning_reason}")
+                    st.markdown("??????????????????: **N/A**")
+                st.markdown(f"???? Buy Alert: **${buy_alert:,.2f}** ??? {buy_reason}")
+                st.markdown(f"???? Warning Alert: **${warning_alert:,.2f}** ??? {warning_reason}")
 
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("ตั้ง Alert นี้ (Buy)", key=f"set_ai_buy_{ticker}"):
+                    if st.button("??????? Alert ????? (Buy)", key=f"set_ai_buy_{ticker}"):
                         try:
                             add_or_update_alert(
                                 ticker=ticker,
@@ -677,12 +749,12 @@ def render_price_alerts_page() -> None:
                                 price=buy_alert,
                                 note=f"AI Buy: {buy_reason}",
                             )
-                            st.success(f"ตั้ง Buy Alert ของ {ticker} เรียบร้อย")
+                            st.success(f"??????? Buy Alert ????? {ticker} ????????????")
                             st.rerun()
                         except Exception as exc:
-                            st.error(f"ตั้ง Buy Alert ไม่สำเร็จ: {exc}")
+                            st.error(f"??????? Buy Alert ??????????????: {exc}")
                 with c2:
-                    if st.button("ตั้ง Alert นี้ (Warning)", key=f"set_ai_warn_{ticker}"):
+                    if st.button("??????? Alert ????? (Warning)", key=f"set_ai_warn_{ticker}"):
                         try:
                             add_or_update_alert(
                                 ticker=ticker,
@@ -690,36 +762,36 @@ def render_price_alerts_page() -> None:
                                 price=warning_alert,
                                 note=f"AI Warning: {warning_reason}",
                             )
-                            st.success(f"ตั้ง Warning Alert ของ {ticker} เรียบร้อย")
+                            st.success(f"??????? Warning Alert ????? {ticker} ????????????")
                             st.rerun()
                         except Exception as exc:
-                            st.error(f"ตั้ง Warning Alert ไม่สำเร็จ: {exc}")
+                            st.error(f"??????? Warning Alert ??????????????: {exc}")
     else:
-        st.info("กดปุ่มให้ AI วิเคราะห์เพื่อแนะนำ Buy/Warning alerts สำหรับ ETF หลัก")
+        st.info("?????????????? AI ??????????????????????????? Buy/Warning alerts ??????? ETF ????")
 
     st.divider()
     st.subheader("2) Manual Alert")
     col_ticker, col_type, col_price = st.columns([2, 2, 2])
     with col_ticker:
-        selected_ticker = st.selectbox("เลือก ETF", tickers, key="price_alert_ticker")
+        selected_ticker = st.selectbox("?????? ETF", tickers, key="price_alert_ticker")
     with col_type:
         selected_type = st.selectbox(
-            "เงื่อนไข",
+            "??????????????",
             options=["below", "above"],
-            format_func=lambda x: "Below (ต่ำกว่า)" if x == "below" else "Above (สูงกว่า)",
+            format_func=lambda x: "Below (??????????)" if x == "below" else "Above (?????????)",
             key="price_alert_type",
         )
     with col_price:
-        target_price = st.number_input("ราคาเป้าหมาย (USD)", min_value=0.01, value=100.0, step=0.5, format="%.2f")
-    note = st.text_input("หมายเหตุ", value="", placeholder="เช่น จังหวะ DCA เพิ่ม")
+        target_price = st.number_input("???????????????? (USD)", min_value=0.01, value=100.0, step=0.5, format="%.2f")
+    note = st.text_input("??????????", value="", placeholder="???????? ???????? DCA ????????")
 
     current_price = latest_prices.get(selected_ticker)
     if current_price is not None:
-        st.caption(f"ราคาปัจจุบันของ {selected_ticker}: ${current_price:,.2f}")
+        st.caption(f"??????????????????????? {selected_ticker}: ${current_price:,.2f}")
     else:
-        st.caption(f"ไม่พบราคาปัจจุบันของ {selected_ticker} ในขณะนี้")
+        st.caption(f"???????????????????????????????? {selected_ticker} ??????????????")
 
-    if st.button("ตั้ง Alert", type="primary"):
+    if st.button("??????? Alert", type="primary"):
         try:
             created = add_alert(
                 ticker=selected_ticker,
@@ -728,25 +800,25 @@ def render_price_alerts_page() -> None:
                 note=note,
             )
             st.success(
-                f"ตั้ง Alert สำเร็จ: {created['ticker']} {created['alert_type']} ${float(created['price']):,.2f}"
+                f"??????? Alert ?????????: {created['ticker']} {created['alert_type']} ${float(created['price']):,.2f}"
             )
             st.rerun()
         except Exception as exc:
-            st.error(f"ตั้ง Alert ไม่สำเร็จ: {exc}")
+            st.error(f"??????? Alert ??????????????: {exc}")
 
-    if st.button("เช็ค Alert ตอนนี้"):
+    if st.button("???????? Alert ??????????"):
         result = check_alerts()
         triggered_count = len(result.get("triggered", []))
         if triggered_count > 0:
-            st.success(f"พบ Alert trigger แล้ว {triggered_count} รายการ (มีการส่ง Discord แล้ว)")
+            st.success(f"???? Alert trigger ????? {triggered_count} ?????? (?????????? Discord ?????)")
         else:
-            st.info("ยังไม่มี Alert ที่เข้าเงื่อนไข")
+            st.info("??????????? Alert ??????????????????????????")
         st.rerun()
 
     st.divider()
     st.subheader("3) Active Alerts")
     if not active_alerts:
-        st.info("ยังไม่มี Active Alerts")
+        st.info("??????????? Active Alerts")
     else:
         active_rows: list[dict[str, object]] = []
         for item in active_alerts:
@@ -759,32 +831,32 @@ def render_price_alerts_page() -> None:
                 {
                     "ID": item.get("id"),
                     "ETF": ticker,
-                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
-                    "ราคาเป้า (USD)": target,
-                    "ราคาปัจจุบัน (USD)": now_price,
+                    "??????????????": "??????????" if alert_type == "below" else "?????????",
+                    "???????????? (USD)": target,
+                    "?????????????????? (USD)": now_price,
                     "Distance %": distance,
-                    "Status": "🔴 Near Trigger" if bool(item.get("is_near_trigger")) else "Pending",
-                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
-                    "สร้างเมื่อ": str(item.get("created_at", "")),
+                    "Status": "???? Near Trigger" if bool(item.get("is_near_trigger")) else "Pending",
+                    "??????????": str(item.get("note", "")).strip() or "-",
+                    "??????????????": str(item.get("created_at", "")),
                 }
             )
 
         pending_df = pd.DataFrame(active_rows)
         show_cols = [
             "ETF",
-            "เงื่อนไข",
-            "ราคาเป้า (USD)",
-            "ราคาปัจจุบัน (USD)",
+            "??????????????",
+            "???????????? (USD)",
+            "?????????????????? (USD)",
             "Distance %",
             "Status",
-            "หมายเหตุ",
-            "สร้างเมื่อ",
+            "??????????",
+            "??????????????",
         ]
         st.dataframe(
             pending_df[show_cols].style.format(
                 {
-                    "ราคาเป้า (USD)": "${:,.2f}",
-                    "ราคาปัจจุบัน (USD)": "${:,.2f}",
+                    "???????????? (USD)": "${:,.2f}",
+                    "?????????????????? (USD)": "${:,.2f}",
                     "Distance %": "{:+.2f}%",
                 },
                 na_rep="N/A",
@@ -792,20 +864,20 @@ def render_price_alerts_page() -> None:
             use_container_width=True,
         )
 
-        delete_options = {f"{row['ETF']} | {row['เงื่อนไข']} | ${row['ราคาเป้า (USD)']:,.2f}": row["ID"] for _, row in pending_df.iterrows()}
-        selected_delete_key = st.selectbox("เลือก Alert ที่ต้องการลบ", options=list(delete_options.keys()), key="delete_price_alert")
-        if st.button("ลบ Alert"):
+        delete_options = {f"{row['ETF']} | {row['??????????????']} | ${row['???????????? (USD)']:,.2f}": row["ID"] for _, row in pending_df.iterrows()}
+        selected_delete_key = st.selectbox("?????? Alert ??????????????????", options=list(delete_options.keys()), key="delete_price_alert")
+        if st.button("??? Alert"):
             selected_alert_id = delete_options.get(selected_delete_key)
             if selected_alert_id and delete_alert(str(selected_alert_id)):
-                st.success("ลบ Alert เรียบร้อยแล้ว")
+                st.success("??? Alert ?????????????????")
                 st.rerun()
             else:
-                st.warning("ไม่พบ Alert ที่เลือก")
+                st.warning("????????? Alert ???????????")
 
     st.divider()
     st.subheader("4) Alert History")
     if not history_alerts:
-        st.info("ยังไม่มีประวัติ Alert ที่ trigger")
+        st.info("???????????????????? Alert ????? trigger")
     else:
         history_rows: list[dict[str, object]] = []
         for item in history_alerts:
@@ -813,10 +885,10 @@ def render_price_alerts_page() -> None:
             history_rows.append(
                 {
                     "ETF": str(item.get("ticker", "")).strip().upper(),
-                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
-                    "ราคาเป้า (USD)": float(item.get("price", 0.0)),
-                    "ราคาที่ Trigger (USD)": item.get("triggered_price"),
-                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
+                    "??????????????": "??????????" if alert_type == "below" else "?????????",
+                    "???????????? (USD)": float(item.get("price", 0.0)),
+                    "?????????? Trigger (USD)": item.get("triggered_price"),
+                    "??????????": str(item.get("note", "")).strip() or "-",
                     "Triggered At": str(item.get("triggered_at", "")),
                 }
             )
@@ -824,8 +896,8 @@ def render_price_alerts_page() -> None:
         st.dataframe(
             history_df.style.format(
                 {
-                    "ราคาเป้า (USD)": "${:,.2f}",
-                    "ราคาที่ Trigger (USD)": "${:,.2f}",
+                    "???????????? (USD)": "${:,.2f}",
+                    "?????????? Trigger (USD)": "${:,.2f}",
                 },
                 na_rep="N/A",
             ),
@@ -834,7 +906,7 @@ def render_price_alerts_page() -> None:
 
 
 def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
-    """คำนวณสัญญาณเทคนิค MA50, MA200 และ RSI จากราคาปิดแบบปรับแล้ว."""
+    """?????????????????????????? MA50, MA200 ??? RSI ??????????????????????????????."""
     try:
         signals = pd.DataFrame(index=price_series.index)
         signals["Price"] = price_series
@@ -843,12 +915,12 @@ def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
         signals["RSI14"] = ta.rsi(price_series, length=14)
         return signals
     except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Technical Signals: {exc}") from exc
+        raise RuntimeError(f"????????????????????????????????????? Technical Signals: {exc}") from exc
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlc_data(tickers: list[str], years: int = 10) -> dict[str, pd.DataFrame]:
-    """ดึงข้อมูล OHLC ของ ETF หลายตัวสำหรับวาดกราฟ Candlestick."""
+    """????????????? OHLC ????? ETF ???????????????????????? Candlestick."""
     try:
         end_date = pd.Timestamp.today()
         start_date = end_date - pd.DateOffset(years=years)
@@ -862,7 +934,7 @@ def fetch_ohlc_data(tickers: list[str], years: int = 10) -> dict[str, pd.DataFra
             group_by="ticker",
         )
     except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        st.warning("??????????????????????????????? ?????????????????")
         return {}
 
     if raw_data.empty:
@@ -902,20 +974,20 @@ def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -
 
 
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
-    """หน้า Technical Signals แบบกราฟ Candlestick + RSI + Signal Cards."""
+    """?????? Technical Signals ?????????? Candlestick + RSI + Signal Cards."""
     st.header("Technical Signals")
     technical_tickers = get_tickers()
     if not technical_tickers:
-        st.warning("ยังไม่มี ETF ในระบบ กรุณาเพิ่มใน Settings")
+        st.warning("??????????? ETF ?????????? ?????????????????? Settings")
         return
 
-    selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
+    selected_ticker = st.selectbox("?????? ETF", technical_tickers, index=0)
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
+    with st.spinner("????????????????????..."):
         ohlc_map = fetch_ohlc_data(technical_tickers, years=10)
     selected_ohlc = ohlc_map.get(selected_ticker)
     if selected_ohlc is None or selected_ohlc.empty:
-        st.warning(f"ไม่พบข้อมูล OHLC สำหรับ {selected_ticker}")
+        st.warning(f"????????????????? OHLC ??????? {selected_ticker}")
         return
 
     selected_signals = calculate_technical_signals(prices[selected_ticker]).dropna(subset=["MA50", "MA200", "RSI14"])
@@ -1014,7 +1086,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         ticker_signals = calculate_technical_signals(ticker_prices).dropna(subset=["MA50", "MA200", "RSI14"])
         if ticker_signals.empty:
             with columns[idx]:
-                st.warning(f"{ticker}: ไม่พอข้อมูล")
+                st.warning(f"{ticker}: ????????????????")
             continue
 
         latest = ticker_signals.iloc[-1]
@@ -1040,7 +1112,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
 def _build_weight_sliders(
     tickers: list[str], default_weights: dict[str, float], key_prefix: str
 ) -> dict[str, float]:
-    """สร้าง slider ปรับสัดส่วนและ normalize ให้ผลรวมเท่ากับ 1."""
+    """??????? slider ??????????????????? normalize ?????????????????????? 1."""
     raw_weights: dict[str, float] = {}
     for ticker in tickers:
         raw_weights[ticker] = st.slider(
@@ -1054,25 +1126,25 @@ def _build_weight_sliders(
 
     total_weight = sum(raw_weights.values())
     if total_weight <= 0:
-        raise ValueError("น้ำหนักพอร์ตต้องมากกว่า 0")
+        raise ValueError("????????????????????????????????? 0")
 
     return {k: v / total_weight for k, v in raw_weights.items()}
 
 
 def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """หน้า Backtest แบบโต้ตอบ."""
+    """?????? Backtest ????????????????."""
     st.header("Backtest")
     benchmark_ticker = "VOO" if "VOO" in tickers else tickers[0]
-    st.caption(f"กำหนดเงินลงทุนเริ่มต้น + สัดส่วน ETF แล้วรันเพื่อดูผลเทียบ {benchmark_ticker}")
+    st.caption(f"??????????????????????????????????? + ?????????? ETF ??????????????????????????????? {benchmark_ticker}")
 
     initial_capital = st.number_input(
-        "เงินลงทุนเริ่มต้น (USD)",
+        "???????????????????????????? (USD)",
         min_value=100.0,
         value=10000.0,
         step=100.0,
         format="%.2f",
     )
-    st.markdown("**สัดส่วน ETF**")
+    st.markdown("**?????????? ETF**")
     normalized_weights = _build_weight_sliders(tickers, default_weights, "backtest_weight")
 
     if st.button("Run Backtest", type="primary"):
@@ -1098,22 +1170,22 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
         col1.metric("Final Portfolio Value", f"${final_portfolio:,.2f}")
         col2.metric(f"Final Benchmark ({benchmark_ticker})", f"${final_benchmark:,.2f}")
     else:
-        st.info("ปรับค่าแล้วกด Run Backtest เพื่อดูผล")
+        st.info("??????????????????? Run Backtest ??????????????")
 
 
 def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """หน้า DCA Simulator แบบโต้ตอบ."""
+    """?????? DCA Simulator ????????????????."""
     st.header("DCA Simulator")
-    st.caption("จำลองลงทุนแบบ DCA รายเดือนพร้อมสรุปผลพอร์ต")
+    st.caption("???????????????????? DCA ??????????????????????????????????")
 
     monthly_investment = st.number_input(
-        "จำนวนเงิน DCA ต่อเดือน (USD)",
+        "??????????????? DCA ????????????? (USD)",
         min_value=50.0,
         value=1000.0,
         step=50.0,
         format="%.2f",
     )
-    st.markdown("**สัดส่วน ETF**")
+    st.markdown("**?????????? ETF**")
     normalized_weights = _build_weight_sliders(tickers, default_weights, "dca_weight")
 
     dca_df = simulate_monthly_dca(prices, normalized_weights, monthly_investment=monthly_investment)
@@ -1122,7 +1194,7 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
         dca_df,
         x=dca_df.index,
         y=["Total Invested", "Portfolio Value"],
-        title="เงินสะสม vs มูลค่าพอร์ต",
+        title="??????????? vs ????????????????",
     )
     st.plotly_chart(_apply_plotly_dark_theme(dca_fig), use_container_width=True)
 
@@ -1137,7 +1209,7 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
 
 
 def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
-    """แปลง ALLOCATIONS_JSON จากข้อความ AI ให้เป็น DataFrame."""
+    """?????? ALLOCATIONS_JSON ?????????????? AI ????????????? DataFrame."""
     if not advice_text:
         return pd.DataFrame()
 
@@ -1158,7 +1230,7 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
                 allocations = []
 
     if not allocations:
-        pattern = r"(?im)\b([A-Z]{2,10})\b\s+([\d,]+(?:\.\d+)?)\s*บาท\s*\(([\d.]+)\s*%\)"
+        pattern = r"(?im)\b([A-Z]{2,10})\b\s+([\d,]+(?:\.\d+)?)\s*?????\s*\(([\d.]+)\s*%\)"
         regex_rows = re.findall(pattern, advice_text)
         for ticker, amount_text, percent_text in regex_rows:
             try:
@@ -1205,36 +1277,36 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
 
 
 def render_ai_advisor_page() -> None:
-    """หน้า AI Advisor: ขอคำแนะนำ DCA รายเดือนจาก Claude."""
+    """?????? AI Advisor: ????????????? DCA ??????????????? Claude."""
     st.header("AI Advisor")
-    st.caption("วิเคราะห์ ETF ปัจจุบันด้วย Claude และแนะนำแผน DCA รายเดือน")
+    st.caption("???????????? ETF ??????????????????? Claude ??????????????? DCA ???????????")
     config = load_config()
 
     budget_thb = st.number_input(
-        "งบ DCA รายเดือน (บาท)",
+        "???? DCA ??????????? (?????)",
         min_value=500.0,
         value=float(config["dca"]["monthly_budget_thb"]),
         step=500.0,
         format="%.0f",
     )
 
-    if st.button("วิเคราะห์เดือนนี้", type="primary"):
-        with st.spinner("กำลังดึงข้อมูล ETF และวิเคราะห์ด้วย Claude..."):
+    if st.button("?????????????????????????", type="primary"):
+        with st.spinner("??????????????????? ETF ????????????????????? Claude..."):
             result = get_monthly_advice(budget_thb=float(budget_thb))
 
-        st.success("วิเคราะห์เสร็จแล้ว")
-        st.markdown("### คำแนะนำจาก AI")
+        st.success("?????????????????????????")
+        st.markdown("### ?????????????? AI")
         st.markdown(result["advice_text"])
 
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
-            st.info("ส่งผลวิเคราะห์ไป Discord แล้ว")
+            st.info("???????????????????????? Discord ?????")
         elif not discord_result.get("skipped"):
-            st.warning(f"ส่ง Discord ไม่สำเร็จ: {discord_result.get('error', 'unknown error')}")
+            st.warning(f"????? Discord ??????????????: {discord_result.get('error', 'unknown error')}")
 
         allocation_df = _extract_allocation_df(result.get("advice_text"))
         if not allocation_df.empty:
-            st.markdown("### สัดส่วนที่แนะนำ")
+            st.markdown("### ??????????????????????")
             st.dataframe(
                 allocation_df.style.format(
                     {
@@ -1252,14 +1324,14 @@ def render_ai_advisor_page() -> None:
             )
             st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
         else:
-            st.warning("ไม่พบ JSON allocations ที่ parse ได้จากคำตอบ AI จึงยังไม่สามารถวาด Pie Chart")
+            st.warning("????????? JSON allocations ????? parse ?????????????????? AI ????????????????????????? Pie Chart")
     else:
-        st.info("ระบุงบประมาณ แล้วกดปุ่ม 'วิเคราะห์เดือนนี้'")
+        st.info("????????????????? ?????????????? '?????????????????????????'")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_macro_data() -> pd.DataFrame:
-    """ดึงข้อมูล Macro indicators สำหรับ 1 ปีย้อนหลัง."""
+    """????????????? Macro indicators ??????? 1 ??????????????."""
     macro_tickers = {
         "Fed Rate": "^IRX",
         "CPI Inflation": "CPIAUCSL",
@@ -1277,7 +1349,7 @@ def fetch_macro_data() -> pd.DataFrame:
             group_by="ticker",
         )
     except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        st.warning("??????????????????????????????? ?????????????????")
         return pd.DataFrame()
 
     if downloaded.empty:
@@ -1290,13 +1362,13 @@ def fetch_macro_data() -> pd.DataFrame:
             if ticker in downloaded.columns.get_level_values(0) and "Close" in downloaded[ticker]:
                 series = downloaded[ticker]["Close"]
         elif "Close" in downloaded.columns:
-            # กรณี yfinance ส่งโครงสร้างคอลัมน์แบบเดี่ยว
+            # ????? yfinance ???????????????????????????????????????????
             series = downloaded["Close"]
         close_df[label] = pd.to_numeric(series, errors="coerce")
 
     close_df = close_df.sort_index().ffill()
 
-    # ปรับหน่วยผลตอบแทนพันธบัตรให้เป็น % หากค่ามาในรูปแบบ x10
+    # ???????????????????????????????????????????????????? % ??????????????????????? x10
     if "10Y Treasury Yield" in close_df.columns and close_df["10Y Treasury Yield"].dropna().median() > 20:
         close_df["10Y Treasury Yield"] = close_df["10Y Treasury Yield"] / 10
 
@@ -1305,27 +1377,27 @@ def fetch_macro_data() -> pd.DataFrame:
 
 def _vix_regime_text(vix_value: float) -> str:
     if vix_value < 20:
-        return "สงบ"
+        return "?????"
     if vix_value <= 30:
-        return "ระวัง"
-    return "กลัว"
+        return "??????"
+    return "????"
 
 
 def render_macro_page() -> None:
-    """หน้า Macro: แสดงภาพรวมเศรษฐกิจมหภาคและระดับความเสี่ยงตลาด."""
+    """?????? Macro: ???????????????????????????????????????????????????????????."""
     st.header("Macro")
-    st.caption("ติดตามตัวชี้วัดเศรษฐกิจหลักและดัชนีความกลัวของตลาด")
+    st.caption("???????????????????????????????????????????????????????????????????")
 
-    with st.spinner("กำลังโหลดข้อมูล..."):
+    with st.spinner("????????????????????..."):
         macro_df = fetch_macro_data()
     if macro_df.empty:
-        st.error("ไม่สามารถดึงข้อมูล Macro ได้ในขณะนี้")
+        st.error("????????????????????????? Macro ????????????????????")
         return
 
     required_cols = ["Fed Rate", "CPI Inflation", "10Y Treasury Yield", "DXY Dollar Index", "VIX Fear Index"]
     available_cols = [col for col in required_cols if col in macro_df.columns]
     if len(available_cols) < len(required_cols):
-        st.warning("บางตัวชี้วัดอาจไม่พร้อมใช้งานจากแหล่งข้อมูล ณ ตอนนี้")
+        st.warning("???????????????????????????????????????????????????????????????? ?? ??????????")
 
     latest_values: dict[str, float] = {}
     previous_values: dict[str, float] = {}
@@ -1356,13 +1428,13 @@ def render_macro_page() -> None:
             else:
                 st.metric(col_name, f"{latest:.2f}", delta_fmt)
 
-    st.markdown("เกณฑ์ VIX: < 20 (สงบ) | 20-30 (ระวัง) | > 30 (กลัว)")
+    st.markdown("????????? VIX: < 20 (?????) | 20-30 (??????) | > 30 (????)")
 
     vix_series = macro_df["VIX Fear Index"].dropna()
     if vix_series.empty:
-        st.warning("ไม่พบข้อมูล VIX สำหรับแสดงกราฟ 1 ปี")
+        st.warning("????????????????? VIX ?????????????????? 1 ???")
     else:
-        st.subheader("VIX ย้อนหลัง 1 ปี")
+        st.subheader("VIX ??????????? 1 ???")
         vix_fig = px.line(
             x=vix_series.index,
             y=vix_series.values,
@@ -1382,51 +1454,51 @@ def render_macro_page() -> None:
         vix_regime = _vix_regime_text(vix)
         policy_gap = cpi - fed
 
-        st.subheader("สรุป Macro Environment")
+        st.subheader("????? Macro Environment")
         st.markdown(
             "\n".join(
                 [
-                    f"- Fed Rate ล่าสุดอยู่ที่ **{fed:.2f}%** ขณะที่ CPI อยู่ที่ **{cpi:.2f}%** (ช่องว่างเงินเฟ้อ-ดอกเบี้ย **{policy_gap:+.2f}%**).",
-                    f"- Bond Yield 10 ปีที่ **{ten_y:.2f}%** สะท้อนต้นทุนเงินระยะยาวของตลาดในปัจจุบัน.",
-                    f"- DXY ที่ **{dxy:.2f}** บ่งชี้ทิศทางค่าเงินดอลลาร์ และส่งผลต่อสินทรัพย์เสี่ยงทั่วโลก.",
-                    f"- VIX อยู่ที่ **{vix:.2f}** ในโหมด **{vix_regime}** ควรบริหารความเสี่ยงพอร์ตให้เหมาะกับความผันผวน.",
+                    f"- Fed Rate ?????????????????? **{fed:.2f}%** ?????????? CPI ?????????? **{cpi:.2f}%** (???????????????????????????-???????????? **{policy_gap:+.2f}%**).",
+                    f"- Bond Yield 10 ???????? **{ten_y:.2f}%** ??????????????????????????????????????????????????????????????.",
+                    f"- DXY ????? **{dxy:.2f}** ????????????????????????????????????????? ????????????????????????????????????????????????.",
+                    f"- VIX ?????????? **{vix:.2f}** ?????????? **{vix_regime}** ???????????????????????????????????????????????????????????????.",
                 ]
             )
         )
     else:
-        st.subheader("สรุป Macro Environment")
-        st.info("ข้อมูลยังไม่ครบทุกตัวชี้วัด จึงยังสรุปภาพรวมเชิงข้อความไม่ได้")
+        st.subheader("????? Macro Environment")
+        st.info("??????????????????????????????????????? ?????????????????????????????????????????????????")
 
 
 def render_portfolio_page() -> None:
-    """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ตปัจจุบัน."""
+    """?????? Portfolio: ??????????????????????????????????????????????."""
     st.header("Portfolio")
-    st.caption("บันทึกการซื้อ ETF และติดตามผลกำไร/ขาดทุนแบบปัจจุบัน")
+    st.caption("?????????????????? ETF ????????????????????/????????????????????????????")
     _render_pdf_export_panel(
         section_key="portfolio",
         prepare_label="Export Portfolio Report",
-        download_label="ดาวน์โหลด PDF พอร์ตปัจจุบัน",
+        download_label="?????????????? PDF ?????????????????????",
     )
     st.divider()
     config = load_config()
     primary_currency = str(config["display"]["currency"]).upper()
     default_fx_rate = float(config["display"]["default_fx_rate"])
 
-    st.subheader("เพิ่มรายการซื้อ")
-    with st.spinner("กำลังโหลดข้อมูล..."):
+    st.subheader("????????????????????")
+    with st.spinner("????????????????????..."):
         today_fx_rate = get_today_fx_rate_thb()
     if not today_fx_rate or today_fx_rate <= 0:
         today_fx_rate = default_fx_rate
     with st.form("portfolio_buy_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
-            buy_date = st.date_input("วันที่")
+            buy_date = st.date_input("?????????")
             ticker = st.text_input("ETF (Ticker)", value="VOO").strip().upper()
         with col2:
-            shares = st.number_input("จำนวน Shares", min_value=0.0001, value=1.0, step=0.1, format="%.4f")
-            price_usd = st.number_input("ราคา USD", min_value=0.0001, value=100.0, step=0.1, format="%.4f")
+            shares = st.number_input("???????? Shares", min_value=0.0001, value=1.0, step=0.1, format="%.4f")
+            price_usd = st.number_input("????? USD", min_value=0.0001, value=100.0, step=0.1, format="%.4f")
         with col3:
-            amount_thb = st.number_input("จำนวนเงิน THB", min_value=0.01, value=1000.0, step=10.0, format="%.2f")
+            amount_thb = st.number_input("??????????????? THB", min_value=0.01, value=1000.0, step=10.0, format="%.2f")
             fx_rate_thb = st.number_input(
                 "FX Rate (THB/USD)",
                 min_value=0.0001,
@@ -1434,7 +1506,7 @@ def render_portfolio_page() -> None:
                 step=0.01,
                 format="%.4f",
             )
-            note = st.text_input("หมายเหตุ", value="")
+            note = st.text_input("??????????", value="")
 
         trade_number, estimated_fee_thb = estimate_dime_fee_thb(
             trade_date=buy_date,
@@ -1442,10 +1514,10 @@ def render_portfolio_page() -> None:
             price_usd=float(price_usd),
             fx_rate_thb=float(fx_rate_thb),
         )
-        st.caption(f"เทรดที่ {trade_number} ของเดือนนี้")
-        st.caption(f"ค่าธรรมเนียมโดยประมาณ: {estimated_fee_thb:,.2f} บาท")
+        st.caption(f"???????????? {trade_number} ??????????????????")
+        st.caption(f"??????????????????????????????: {estimated_fee_thb:,.2f} ?????")
 
-        submitted = st.form_submit_button("บันทึกการซื้อ", type="primary")
+        submitted = st.form_submit_button("??????????????????", type="primary")
         if submitted:
             try:
                 add_transaction(
@@ -1457,14 +1529,14 @@ def render_portfolio_page() -> None:
                     amount_thb=float(amount_thb),
                     note=note,
                 )
-                st.success("บันทึกรายการซื้อเรียบร้อยแล้ว")
+                st.success("??????????????????????????????????????")
                 st.rerun()
             except Exception as exc:
-                st.error(f"บันทึกไม่สำเร็จ: {exc}")
+                st.error(f"???????????????????????: {exc}")
 
     st.divider()
-    st.subheader("สรุปพอร์ตปัจจุบัน")
-    with st.spinner("กำลังโหลดข้อมูล..."):
+    st.subheader("??????????????????????????")
+    with st.spinner("????????????????????..."):
         holdings_df = get_portfolio_summary()
         total_summary = get_total_summary()
 
@@ -1473,26 +1545,26 @@ def render_portfolio_page() -> None:
         invested = total_summary["total_invested_thb"] / today_fx_rate
         current = total_summary["current_value_thb"] / today_fx_rate
         pnl_value = total_summary["total_pnl_thb"] / today_fx_rate
-        m1.metric("เงินลงทุนทั้งหมด (USD)", f"{invested:,.2f}")
-        m2.metric("มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
+        m1.metric("?????????????????????????? (USD)", f"{invested:,.2f}")
+        m2.metric("????????????????????? (USD)", f"{current:,.2f}")
         m3.metric(
-            "กำไร/ขาดทุน (USD)",
+            "?????/?????????? (USD)",
             f"{pnl_value:,.2f}",
             delta=f"{total_summary['total_return_pct']:.2f}%",
         )
     else:
-        m1.metric("เงินลงทุนทั้งหมด (THB)", f"{total_summary['total_invested_thb']:,.2f}")
-        m2.metric("มูลค่าปัจจุบัน (THB)", f"{total_summary['current_value_thb']:,.2f}")
+        m1.metric("?????????????????????????? (THB)", f"{total_summary['total_invested_thb']:,.2f}")
+        m2.metric("????????????????????? (THB)", f"{total_summary['current_value_thb']:,.2f}")
         m3.metric(
-            "กำไร/ขาดทุน (THB)",
+            "?????/?????????? (THB)",
             f"{total_summary['total_pnl_thb']:,.2f}",
             delta=f"{total_summary['total_return_pct']:.2f}%",
         )
-    m4.metric("FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
-    m5.metric("ค่าธรรมเนียมรวมทั้งหมด (THB)", f"{total_summary['total_fee_thb']:,.2f}")
+    m4.metric("FX Rate ?????????", f"{today_fx_rate:.2f} THB/USD")
+    m5.metric("??????????????????????????????? (THB)", f"{total_summary['total_fee_thb']:,.2f}")
 
     if holdings_df.empty:
-        st.info("ยังไม่มีรายการซื้อในพอร์ต")
+        st.info("???????????????????????????????????")
     else:
         display_holdings = holdings_df[
             [
@@ -1527,23 +1599,23 @@ def render_portfolio_page() -> None:
             holdings_df,
             names="Ticker",
             values="Current Value (THB)",
-            title="สัดส่วนพอร์ตปัจจุบัน (ตามมูลค่า THB)",
+            title="??????????????????????????????? (???????????? THB)",
             hole=0.35,
         )
         st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
 
     st.divider()
-    st.subheader("ประวัติการซื้อขาย")
-    with st.spinner("กำลังโหลดข้อมูล..."):
+    st.subheader("??????????????????????")
+    with st.spinner("????????????????????..."):
         all_transactions = get_transactions()
     if all_transactions.empty:
-        st.info("ยังไม่มีประวัติการซื้อขาย")
+        st.info("?????????????????????????????????")
         return
 
-    ticker_options = ["ทั้งหมด"] + sorted(all_transactions["ticker"].dropna().astype(str).str.upper().unique().tolist())
-    selected_ticker = st.selectbox("กรองตาม ETF", ticker_options, index=0)
+    ticker_options = ["???????????"] + sorted(all_transactions["ticker"].dropna().astype(str).str.upper().unique().tolist())
+    selected_ticker = st.selectbox("????????? ETF", ticker_options, index=0)
     filtered_transactions = all_transactions.copy()
-    if selected_ticker != "ทั้งหมด":
+    if selected_ticker != "???????????":
         filtered_transactions = get_transactions(selected_ticker)
 
     filtered_transactions = filtered_transactions.rename(
@@ -1554,7 +1626,7 @@ def render_portfolio_page() -> None:
             "price_usd": "Price (USD)",
             "fx_rate_thb": "FX Rate (THB/USD)",
             "amount_thb": "Amount (THB)",
-            "fee_thb": "ค่าธรรมเนียม (THB)",
+            "fee_thb": "????????????????? (THB)",
             "note": "Note",
         }
     )
@@ -1565,7 +1637,7 @@ def render_portfolio_page() -> None:
                 "Price (USD)": "${:,.4f}",
                 "FX Rate (THB/USD)": "{:,.4f}",
                 "Amount (THB)": "{:,.2f}",
-                "ค่าธรรมเนียม (THB)": "{:,.2f}",
+                "????????????????? (THB)": "{:,.2f}",
             }
         ),
         use_container_width=True,
@@ -1573,7 +1645,7 @@ def render_portfolio_page() -> None:
 
 
 def render_dashboard() -> None:
-    """แสดงผล dashboard หลักของ Vaultis."""
+    """????????? dashboard ????????? Vaultis."""
     try:
         st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
         _inject_premium_theme()
@@ -1581,15 +1653,15 @@ def render_dashboard() -> None:
         tickers = get_tickers()
         st.caption(f"Dark & Luxury Finance view | ETF Universe: {', '.join(tickers)}")
 
-        if st.button("Refresh ข้อมูล"):
+        if st.button("Refresh ????????"):
             st.cache_data.clear()
-            st.success("ล้างแคชเรียบร้อย กำลังโหลดข้อมูลใหม่...")
+            st.success("??????????????????????? ??????????????????????????...")
             st.rerun()
 
-        with st.spinner("กำลังโหลดข้อมูล..."):
+        with st.spinner("????????????????????..."):
             prices = fetch_adjusted_close_data(tickers, years=10)
         if prices.empty:
-            st.error("ไม่พบข้อมูล ETF")
+            st.error("????????????????? ETF")
             return
 
         base_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}
@@ -1633,11 +1705,11 @@ def render_dashboard() -> None:
 
         _render_pdf_export_panel(
             section_key="overview",
-            prepare_label="Export รายงานเดือนนี้",
-            download_label="ดาวน์โหลด PDF รายงานเดือนนี้",
+            prepare_label="Export ?????????????????????",
+            download_label="?????????????? PDF ?????????????????????",
         )
         st.divider()
-        _render_market_ticker_bar(tickers, prices)
+        _render_realtime_price_ticker_bar()
         _render_overview_metrics(prices, tickers)
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.subheader("Price Trend (Normalized = 100)")
@@ -1651,26 +1723,26 @@ def render_dashboard() -> None:
 
         with col1:
             st.subheader("Return Analysis")
-            with st.spinner("กำลังโหลดข้อมูล..."):
+            with st.spinner("????????????????????..."):
                 returns_df = calculate_period_returns(prices)
             st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
-            st.caption("*QQQM เริ่ม Trading ปี 2020")
+            st.caption("*QQQM ??????? Trading ??? 2020")
 
         with col2:
             st.subheader("Risk Metrics")
-            with st.spinner("กำลังโหลดข้อมูล..."):
+            with st.spinner("????????????????????..."):
                 risk_df = calculate_risk_metrics(prices)
             st.dataframe(risk_df.style.format("{:.4f}"))
 
         st.subheader("Correlation Heatmap")
-        with st.spinner("กำลังโหลดข้อมูล..."):
+        with st.spinner("????????????????????..."):
             corr_df = calculate_correlation_matrix(prices)
         if corr_df.empty:
-            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+            st.warning("??????????????????????????????? ?????????????????")
             return
         available_tickers = [ticker for ticker in tickers if ticker in corr_df.index and ticker in corr_df.columns]
         if len(available_tickers) < 2:
-            st.warning("ข้อมูล correlation ยังไม่พอสำหรับ ETF ที่เลือก")
+            st.warning("???????? correlation ??????????????????? ETF ???????????")
             return
         corr_for_display = corr_df.loc[available_tickers, available_tickers]
         heatmap = px.imshow(
@@ -1694,112 +1766,26 @@ def render_dashboard() -> None:
                  for row_idx in range(len(corr_for_display.index))],
                 index=corr_for_display.index,
                 columns=corr_for_display.columns,
->>>>>>> 2e136b0841b9b6f56b13f65995d33f9eea5fd827
             )
+        ).stack()
+        max_pair = corr_pairs.idxmax()
+        min_pair = corr_pairs.idxmin()
+        max_value = float(corr_pairs.loc[max_pair])
+        min_value = float(corr_pairs.loc[min_pair])
 
-    delete_id = st.number_input("Delete transaction id", min_value=1, value=1, step=1)
-    if st.button("DELETE /api/portfolio/{id}"):
-        st.session_state["portfolio_data"] = _api_delete(f"/api/portfolio/{int(delete_id)}")
+        st.markdown("**Insight ???? Correlation Heatmap**")
+        st.markdown(
+            f"- ?????????? correlation ????????: **{max_pair[0]} - {max_pair[1]} ({max_value:.2f})** ??? ????????????????????????????????"
+        )
+        st.markdown(
+            f"- ?????????? correlation ?????????: **{min_pair[0]} - {min_pair[1]} ({min_value:.2f})** ??? ??????????????????????????????"
+        )
+        st.markdown("- ???????????????????????????? correlation ?????????????????????????????????????????????????????")
 
-    if st.session_state.get("portfolio_data"):
-        st.json(st.session_state["portfolio_data"])
-
-
-def render_analysis_page():
-    st.header("Analysis")
-    if st.button("GET /api/macro"):
-        st.session_state["analysis_data"] = _api_get("/api/macro")
-
-    with st.expander("POST /api/backtest"):
-        initial_capital = st.number_input("initial_capital", min_value=100.0, value=10000.0)
-        if st.button("Run backtest"):
-            st.session_state["analysis_data"] = _api_post(
-                "/api/backtest",
-                {
-                    "initial_capital": initial_capital,
-                    "weights": {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10},
-                },
-            )
-
-    with st.expander("POST /api/dca/simulate"):
-        monthly = st.number_input("monthly_investment", min_value=50.0, value=1000.0)
-        if st.button("Run DCA simulation"):
-            st.session_state["analysis_data"] = _api_post(
-                "/api/dca/simulate",
-                {
-                    "monthly_investment": monthly,
-                    "weights": {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10},
-                },
-            )
-
-    if st.session_state.get("analysis_data"):
-        st.json(st.session_state["analysis_data"])
-
-
-def render_alerts_page():
-    st.header("Alerts")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("GET /api/alerts"):
-            st.session_state["alerts_data"] = _api_get("/api/alerts")
-    with c2:
-        if st.button("POST /api/alerts/check"):
-            st.session_state["alerts_data"] = _api_post("/api/alerts/check", {})
-
-    with st.expander("Create alert"):
-        ticker = st.text_input("alert ticker", value="VOO")
-        alert_type = st.selectbox("alert_type", ["above", "below"])
-        target_price = st.number_input("target_price", min_value=0.01, value=500.0)
-        if st.button("POST /api/alerts"):
-            st.session_state["alerts_data"] = _api_post(
-                "/api/alerts",
-                {"ticker": ticker, "alert_type": alert_type, "target_price": target_price},
-            )
-
-    alert_id = st.number_input("Delete alert id", min_value=1, value=1, step=1)
-    if st.button("DELETE /api/alerts/{id}"):
-        st.session_state["alerts_data"] = _api_delete(f"/api/alerts/{int(alert_id)}")
-
-    if st.session_state.get("alerts_data"):
-        st.json(st.session_state["alerts_data"])
-
-
-def render_ai_page():
-    st.header("AI Advisor")
-    if st.button("GET /api/ai/history"):
-        st.session_state["ai_data"] = _api_get("/api/ai/history")
-
-    budget_thb = st.number_input("budget_thb", min_value=500.0, value=5000.0)
-    if st.button("POST /api/ai/advice"):
-        st.session_state["ai_data"] = _api_post("/api/ai/advice", {"budget_thb": budget_thb})
-
-    if st.session_state.get("ai_data"):
-        st.json(st.session_state["ai_data"])
-
-
-def main():
-    st.set_page_config(page_title="Vaultis Dashboard", layout="wide")
-    st.title("Vaultis Dashboard (FastAPI Client)")
-
-    try:
-        health = _api_get("/health")
-        st.success(f"Backend status: {health.get('status', 'unknown')}")
+        st.info("???????????? Backtest ???? DCA Simulator ???? Sidebar ????????????????????????????????????????")
     except Exception as exc:
-        st.error(f"Backend connection failed: {exc}")
-        st.stop()
-
-    page = st.sidebar.radio("Page", ["ETF", "Portfolio", "Analysis", "Alerts", "AI"])
-    if page == "ETF":
-        render_etf_page()
-    elif page == "Portfolio":
-        render_portfolio_page()
-    elif page == "Analysis":
-        render_analysis_page()
-    elif page == "Alerts":
-        render_alerts_page()
-    else:
-        render_ai_page()
+        st.error(f"?????????????????????????? dashboard: {exc}")
 
 
 if __name__ == "__main__":
-    main()
+    render_dashboard()
