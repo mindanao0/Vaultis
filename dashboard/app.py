@@ -54,6 +54,10 @@ from utils.config import add_ticker, get_tickers, load_config, remove_ticker, sa
 from utils.pdf_export import generate_monthly_report
 
 load_dotenv()
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    "https://vaultis-backend.onrender.com",
+)
 
 THEME = {
     "main_bg": "#0F1117",
@@ -339,8 +343,10 @@ def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
 
 def _ws_prices_url() -> str:
     """WebSocket URL for live prices (override with VAULTIS_WS_URL)."""
-    raw = os.getenv("VAULTIS_WS_URL", "ws://localhost:8000/ws/prices").strip()
-    return raw or "ws://localhost:8000/ws/prices"
+    default_ws_base = BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
+    default_ws_url = f"{default_ws_base}/ws/prices"
+    raw = os.getenv("VAULTIS_WS_URL", default_ws_url).strip()
+    return raw or default_ws_url
 
 
 def _render_realtime_price_ticker_bar() -> None:

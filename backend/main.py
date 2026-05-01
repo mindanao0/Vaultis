@@ -6,7 +6,14 @@ from .routers import ai, alerts, analysis, etf, portfolio, websocket as prices_w
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Vaultis Backend", version="1.0.0")
+app = FastAPI(
+    title="Vaultis API",
+    description="ETF Analysis Backend",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
