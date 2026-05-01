@@ -285,35 +285,63 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
 
 
 def calculate_allocation(scores: dict[str, Any], budget_thb: float) -> dict[str, dict[str, Any]]:
-    eligible = {k: int(v["total_score"]) for k, v in scores.items() if int(v["total_score"]) >= 30}
-    if not eligible:
-        eligible = {k: int(v["total_score"]) for k, v in scores.items()}
-
-    total = sum(eligible.values())
-    if total <= 0:
-        n = len(eligible)
-        if n == 0:
-            return {}
-        eligible = {k: 1 for k in eligible}
-        total = sum(eligible.values())
+    strong_buy = {k: v for k, v in scores.items() if _safe_float(v.get("total_score"), 0.0) >= 60}
+    buy = {k: v for k, v in scores.items() if 40 <= _safe_float(v.get("total_score"), 0.0) < 60}
+    neutral = {k: v for k, v in scores.items() if 20 <= _safe_float(v.get("total_score"), 0.0) < 40}
 
     allocation: dict[str, dict[str, Any]] = {}
-    for ticker, score in eligible.items():
-        pct = int(round(score / total * 100))
-        amount = int(round(budget_thb * pct / 100 / 100)) * 100
-        allocation[ticker] = {"percent": pct, "amount_thb": amount, "score": score}
 
-    amount_sum = sum(int(v["amount_thb"]) for v in allocation.values())
-    diff = int(round(budget_thb)) - amount_sum
-    if diff != 0 and allocation:
-        top_ticker = max(allocation, key=lambda x: allocation[x]["amount_thb"])
-        allocation[top_ticker]["amount_thb"] = int(allocation[top_ticker]["amount_thb"]) + diff
+    if strong_buy:
+        sb_budget = budget_thb * 0.6
+        total_sb = sum(_safe_float(v.get("total_score"), 0.0) for v in strong_buy.values())
+        if total_sb > 0:
+            for ticker, data in strong_buy.items():
+                pct = _safe_float(data.get("total_score"), 0.0) / total_sb
+                amount = int(round(sb_budget * pct / 100)) * 100
+                allocation[ticker] = {
+                    "amount_thb": amount,
+                    "percent": round(pct * 60),
+                    "group": "Strong Buy",
+                }
 
-    budget_int = int(round(budget_thb))
-    if budget_int > 0:
-        for t in allocation:
-            amt = int(allocation[t]["amount_thb"])
-            allocation[t]["percent"] = round(amt / budget_int * 100, 2)
+    if buy:
+        b_budget = budget_thb * 0.3
+        total_b = sum(_safe_float(v.get("total_score"), 0.0) for v in buy.values())
+        if total_b > 0:
+            for ticker, data in buy.items():
+                pct = _safe_float(data.get("total_score"), 0.0) / total_b
+                amount = int(round(b_budget * pct / 100)) * 100
+                allocation[ticker] = {
+                    "amount_thb": amount,
+                    "percent": round(pct * 30),
+                    "group": "Buy",
+                }
+
+    if neutral and (not strong_buy and not buy):
+        n_budget = budget_thb
+        total_n = sum(_safe_float(v.get("total_score"), 0.0) for v in neutral.values())
+        if total_n > 0:
+            for ticker, data in neutral.items():
+                pct = _safe_float(data.get("total_score"), 0.0) / total_n
+                amount = int(round(n_budget * pct / 100)) * 100
+                allocation[ticker] = {
+                    "amount_thb": amount,
+                    "percent": round(pct * 100),
+                    "group": "Neutral",
+                }
+
+    if not strong_buy and buy:
+        b_budget = budget_thb * 0.9
+        total_b = sum(_safe_float(v.get("total_score"), 0.0) for v in buy.values())
+        if total_b > 0:
+            for ticker, data in buy.items():
+                pct = _safe_float(data.get("total_score"), 0.0) / total_b
+                amount = int(round(b_budget * pct / 100)) * 100
+                allocation[ticker] = {
+                    "amount_thb": amount,
+                    "percent": round(pct * 90),
+                    "group": "Buy",
+                }
 
     return allocation
 
