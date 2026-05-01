@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""โมดูลแจ้งเตือนผ่าน Discord Webhook."""
+""" Discord Webhook."""
 
 from __future__ import annotations
 
@@ -22,13 +22,13 @@ def send_discord_webhook(
     is_positive: bool = True,
     embed_color: int | None = None,
 ) -> Dict[str, Any]:
-    """ส่งข้อความแบบ Embed ไปยัง Discord Webhook."""
+    """ Embed  Discord Webhook."""
     try:
         if not webhook_url:
-            raise ValueError("webhook_url ห้ามว่าง")
+            raise ValueError("webhook_url ")
 
         color = embed_color if embed_color is not None else (0x2ECC71 if is_positive else 0xE74C3C)
-        emoji = "🟢" if is_positive else "🔴"
+        emoji = "" if is_positive else ""
 
         payload = {
             "embeds": [
@@ -52,23 +52,23 @@ def build_weekly_summary_message(
     invested_capital: float,
     rebalance_triggered: bool,
 ) -> tuple[str, str, bool]:
-    """สร้างหัวข้อและเนื้อหาสรุปรายสัปดาห์สำหรับ Discord."""
+    """ Discord."""
     try:
         pnl = portfolio_value - invested_capital
         pnl_pct = (pnl / invested_capital * 100.0) if invested_capital > 0 else 0.0
         is_positive = pnl >= 0
 
-        rebalance_text = "ต้อง Rebalance" if rebalance_triggered else "ยังไม่ต้อง Rebalance"
+        rebalance_text = " Rebalance" if rebalance_triggered else " Rebalance"
         title = "Vaultis Weekly ETF Summary"
         description = (
-            f"มูลค่าพอร์ตปัจจุบัน: ${portfolio_value:,.2f}\n"
-            f"เงินลงทุนสะสม: ${invested_capital:,.2f}\n"
-            f"ผลตอบแทนรวม: {pnl_pct:.2f}% (${pnl:,.2f})\n"
-            f"สถานะพอร์ต: {rebalance_text}"
+            f": ${portfolio_value:,.2f}\n"
+            f": ${invested_capital:,.2f}\n"
+            f": {pnl_pct:.2f}% (${pnl:,.2f})\n"
+            f": {rebalance_text}"
         )
         return title, description, is_positive
     except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการสร้างข้อความรายสัปดาห์: {exc}") from exc
+        raise RuntimeError(f": {exc}") from exc
 
 
 def send_technical_alert(
@@ -79,41 +79,41 @@ def send_technical_alert(
     ma200: float,
     previous_price: float,
 ) -> Dict[str, Any]:
-    """ส่งแจ้งเตือน Technical Signal ผ่าน Discord เมื่อเข้าเงื่อนไข RSI/MA200."""
+    """ Technical Signal  Discord  RSI/MA200."""
     try:
         if not webhook_url:
-            raise ValueError("webhook_url ห้ามว่าง")
+            raise ValueError("webhook_url ")
 
-        rsi_line = f"RSI: {rsi:.1f} ⚪ Neutral Zone"
-        ma_line = f"MA200: ราคาอยู่ต่ำกว่า MA200 ❌"
-        signal_text = "Signal: ยังไม่มีสัญญาณเด่น"
+        rsi_line = f"RSI: {rsi:.1f}  Neutral Zone"
+        ma_line = f"MA200:  MA200 "
+        signal_text = "Signal: "
         color = 0x3498DB
 
-        # กำหนดสัญญาณทางเทคนิคตามลำดับความสำคัญที่ต้องการแจ้งเตือน
+        # 
         if rsi < 30:
-            rsi_line = f"RSI: {rsi:.1f} 🟢 Oversold Zone"
-            signal_text = "Signal: อาจเป็นจังหวะเพิ่มสถานะ"
+            rsi_line = f"RSI: {rsi:.1f}  Oversold Zone"
+            signal_text = "Signal: "
             color = 0x2ECC71
         elif rsi > 70:
-            rsi_line = f"RSI: {rsi:.1f} 🔴 Overbought Zone"
-            signal_text = "Signal: ระวังการปรับฐาน"
+            rsi_line = f"RSI: {rsi:.1f}  Overbought Zone"
+            signal_text = "Signal: "
             color = 0xE67E22
         elif previous_price <= ma200 < price:
-            signal_text = "Signal: Golden Signal - ราคาตัด MA200 ขึ้น"
+            signal_text = "Signal: Golden Signal -  MA200 "
             color = 0xF1C40F
         elif previous_price >= ma200 > price:
-            signal_text = "Signal: Death Signal - ราคาหลุด MA200 ลง"
+            signal_text = "Signal: Death Signal -  MA200 "
             color = 0xE74C3C
         else:
-            return {"success": True, "skipped": True, "reason": "ไม่มีสัญญาณเทคนิคที่ต้องแจ้งเตือน"}
+            return {"success": True, "skipped": True, "reason": ""}
 
         if price >= ma200:
-            ma_line = "MA200: ราคาอยู่เหนือ MA200 ✅"
+            ma_line = "MA200:  MA200 "
 
         payload = {
             "embeds": [
                 {
-                    "title": f"📊 Technical Alert — {symbol}",
+                    "title": f" Technical Alert  {symbol}",
                     "description": f"{rsi_line}\n{ma_line}\n{signal_text}",
                     "color": color,
                 }
@@ -129,27 +129,27 @@ def send_technical_alert(
 
 def send_dca_reminder(
     webhook_url: str = "",
-    dca_date_text: str = "วันที่ 1 ของเดือนหน้า",
+    dca_date_text: str = " 1 ",
     dca_budget_thb: float = 5000,
     fx_rate_thb: float = 33.5,
-    ai_advice: str = "กำลังวิเคราะห์...",
+    ai_advice: str = "...",
 ) -> Dict[str, Any]:
-    """ส่งแจ้งเตือน DCA ล่วงหน้าสำหรับวันพรุ่งนี้ผ่าน Discord."""
+    """ DCA  Discord."""
     try:
         webhook_url = (webhook_url or "").strip() or str(load_config()["notifications"]["discord_webhook_url"]).strip()
         if not webhook_url:
-            raise ValueError("webhook_url ห้ามว่าง")
+            raise ValueError("webhook_url ")
 
         budget_text = f"{dca_budget_thb:,.0f}"
-        advice_text = (ai_advice or "").strip() or "- รอตรวจสอบข้อมูลตลาดเพิ่มเติม"
+        advice_text = (ai_advice or "").strip() or "- "
         description = (
-            f"📅 DCA Reminder — พรุ่งนี้วันที่ {dca_date_text}\n"
-            "───────────────────────────\n"
-            f"💰 งบ DCA เดือนนี้: {budget_text} บาท\n"
-            f"💱 FX Rate วันนี้: {fx_rate_thb:.2f} THB/USD\n\n"
-            "🤖 AI แนะนำแบ่งเงินเดือนนี้:\n"
+            f" DCA Reminder   {dca_date_text}\n"
+            "\n"
+            f"  DCA : {budget_text} \n"
+            f" FX Rate : {fx_rate_thb:.2f} THB/USD\n\n"
+            " AI :\n"
             f"{advice_text}\n\n"
-            "⚠️ อย่าลืมเปิด Dime พรุ่งนี้!"
+            "  Dime !"
         )
 
         payload = {
@@ -170,20 +170,20 @@ def send_dca_reminder(
 
 
 def test_alert(webhook_url: str = "") -> Dict[str, Any]:
-    """ส่งข้อความทดสอบการเชื่อมต่อ Discord Webhook."""
+    """ Discord Webhook."""
     payload = {
         "embeds": [
             {
-                "title": "🚀 Vaultis Alert Test",
+                "title": " Vaultis Alert Test",
                 "color": 0x00FF00,
                 "fields": [
-                    {"name": "Status", "value": "✅ Connected Successfully", "inline": False},
+                    {"name": "Status", "value": " Connected Successfully", "inline": False},
                     {
                         "name": "Time",
                         "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         "inline": False,
                     },
-                    {"name": "Message", "value": "Vaultis Discord Alert ทำงานแล้ว!", "inline": False},
+                    {"name": "Message", "value": "Vaultis Discord Alert !", "inline": False},
                 ],
             }
         ]
@@ -192,7 +192,7 @@ def test_alert(webhook_url: str = "") -> Dict[str, Any]:
     try:
         selected_webhook = (webhook_url or "").strip() or str(load_config()["notifications"]["discord_webhook_url"]).strip()
         if not selected_webhook:
-            raise ValueError("กรุณาตั้งค่า Discord Webhook URL ในหน้า Settings ก่อนทดสอบ")
+            raise ValueError(" Discord Webhook URL  Settings ")
 
         response = requests.post(selected_webhook, json=payload, timeout=10)
         response.raise_for_status()

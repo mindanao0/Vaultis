@@ -77,13 +77,13 @@ def is_market_open():
 
 
 def run():
-    print("เริ่ม daily check...")
+    print(" daily check...")
 
-    # GitHub Actions ส่งมาเป็น env var โดยตรง
-    # ไม่ต้องใช้ dotenv
+    # GitHub Actions  env var 
+    #  dotenv
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-    # dotenv เฉพาะตอนรันในเครื่องเท่านั้น
+    # dotenv 
     if not webhook_url:
         from dotenv import load_dotenv
         from pathlib import Path
@@ -91,9 +91,9 @@ def run():
         load_dotenv(Path(__file__).resolve().parents[1] / ".env")
         webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
-    print(f"Webhook: {'✅' if webhook_url else '❌ ไม่มี'}")
+    print(f"Webhook: {'' if webhook_url else ' '}")
 
-    # ดึงราคา + % เปลี่ยนแปลง
+    #  + % 
     daily_data = {}
     for idx, ticker in enumerate(TICKERS):
         try:
@@ -110,28 +110,28 @@ def run():
         if idx < len(TICKERS) - 1:
             time.sleep(2)
 
-    # ส่ง Discord
+    #  Discord
     now_utc = datetime.now(timezone.utc)
     today = now_utc.strftime("%d/%m/%Y")
-    lines = [f"📊 Daily Price Check — {today}", "─" * 32]
+    lines = [f" Daily Price Check  {today}", "" * 32]
     for ticker in TICKERS:
         price = daily_data[ticker]["price"]
         pct_change = daily_data[ticker]["pct_change"]
         price_date = daily_data[ticker]["price_date"]
-        color_icon = "🟢" if pct_change >= 0 else "🔴"
+        color_icon = "" if pct_change >= 0 else ""
         pct_text = f"({pct_change:+.2f}%)"
         if price in (None, 0):
-            lines.append(f"{ticker:<5} $0.00  (+0.00%) 🟢  ({price_date})")
+            lines.append(f"{ticker:<5} $0.00  (+0.00%)   ({price_date})")
         else:
             lines.append(f"{ticker:<5} ${price:>7.2f}  {pct_text} {color_icon}  ({price_date})")
 
-    lines.extend(["─" * 32, "⚠️ Price Alerts: 0 รายการ"])
+    lines.extend(["" * 32, " Price Alerts: 0 "])
     message = "\n".join(lines)
-    print(f"\nส่งข้อความ:\n{message}")
+    print(f"\n:\n{message}")
 
     if webhook_url:
         if not webhook_url.startswith(("http://", "https://")):
-            print("❌ DISCORD_WEBHOOK_URL ไม่ถูกต้อง (ต้องขึ้นต้นด้วย http/https)")
+            print(" DISCORD_WEBHOOK_URL  ( http/https)")
             return
         payload = {"content": f"```\n{message}\n```"}
         try:
@@ -141,7 +141,7 @@ def run():
             # Avoid failing CI job when webhook/network is temporarily unavailable.
             print(f"Discord send failed: {e}")
     else:
-        print("❌ ไม่มี DISCORD_WEBHOOK_URL")
+        print("  DISCORD_WEBHOOK_URL")
 
 if __name__ == "__main__":
     run()
