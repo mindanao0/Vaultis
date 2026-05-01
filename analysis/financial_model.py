@@ -114,11 +114,12 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
     annual_last = close.resample("YE").last()
     annual_returns = annual_last.pct_change().dropna()
     tail_mean = _safe_float(annual_returns.tail(3).mean(), 0.0) if len(annual_returns) else 0.0
-    growth_rate_high = min(tail_mean, 0.15)
+    growth_rate_high = min(tail_mean, 0.12)
+    growth_rate_high = max(growth_rate_high, 0.04)
 
     terminal_growth = 0.03
     risk_free_rate = 0.043
-    equity_risk_premium = 0.055
+    equity_risk_premium = 0.065
     beta_raw = info.get("beta3Year") or info.get("beta") or 1.0
     beta = _safe_float(beta_raw, 1.0) or 1.0
     wacc = risk_free_rate + beta * equity_risk_premium
@@ -127,7 +128,11 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
         terminal_growth = max(0.01, wacc - 0.01)
 
     dividend = _safe_float(info.get("dividendRate"), 0.0)
-    base_cf = current_price * growth_rate_high + dividend
+    pe_ratio = _safe_float(info.get("trailingPE"), 20.0) or 20.0
+    if pe_ratio <= 0:
+        pe_ratio = 20.0
+    earnings_per_price = 1 / pe_ratio
+    base_cf = current_price * earnings_per_price + dividend
 
     cash_flows: list[dict[str, Any]] = []
     for year in range(1, years + 1):
@@ -210,12 +215,16 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
 
     dcf = dcf_valuation(ticker)
     mos = _safe_float(dcf["margin_of_safety"], 0.0)
-    if mos > 30:
+    if mos > 50:
         dcf_score = 30
+    elif mos > 30:
+        dcf_score = 25
     elif mos > 15:
         dcf_score = 20
     elif mos > 0:
         dcf_score = 10
+    elif mos > -15:
+        dcf_score = 5
     else:
         dcf_score = 0
 
@@ -229,17 +238,31 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
     if return_3m > 0:
         mom_score += 10
 
-    total = tech_score + ma_score + dcf_score + mom_score
+    info = t.info or {}
+    div_yield = _safe_float(info.get("dividendYield"), 0.0)
+    if div_yield > 0.04:
+        div_score = 10
+    elif div_yield > 0.02:
+        div_score = 5
+    elif div_yield > 0:
+        div_score = 2
+    else:
+        div_score = 0
+
+    total = tech_score + ma_score + dcf_score + mom_score + div_score
+
+    # Tiebreaker for ranking among equal total scores: lower RSI first, then higher MoS.
+    tie_break = (-round(rsi, 4), -round(mos, 4))
 
     signal = (
         "Strong Buy"
-        if total >= 70
+        if total >= 80
         else "Buy"
-        if total >= 50
+        if total >= 60
         else "Neutral"
-        if total >= 30
+        if total >= 40
         else "Caution"
-        if total >= 15
+        if total >= 20
         else "Avoid"
     )
 
@@ -250,6 +273,9 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
         "ma_score": ma_score,
         "dcf_score": dcf_score,
         "momentum_score": mom_score,
+        "dividend_score": div_score,
+        "max_score": 110,
+        "tiebreak": tie_break,
         "rsi": round(rsi, 2),
         "return_1m_pct": round(return_1m, 2),
         "return_3m_pct": round(return_3m, 2),
