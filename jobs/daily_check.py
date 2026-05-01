@@ -1,147 +1,85 @@
-# -*- coding: utf-8 -*-
 import os
-import random
-import time
-import requests
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
 
+import requests
+
+BACKEND_URL = os.environ.get(
+    "BACKEND_URL",
+    "https://vaultis-backend.onrender.com",
+)
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
-session = requests.Session()
-session.headers.update(
-    {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-)
 
-
-def _fetch_price_from_chart_api(ticker):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-    response.raise_for_status()
-    data = response.json()
-    meta = data["chart"]["result"][0]["meta"]
-    timestamps = data["chart"]["result"][0].get("timestamp", [])
-    price = float(meta["regularMarketPrice"])
-    prev = float(meta["previousClose"])
-    change_pct = (price - prev) / prev * 100 if prev else 0.0
-    if timestamps:
-        last_dt = datetime.fromtimestamp(timestamps[-1], tz=timezone.utc)
-        date_str = last_dt.strftime("%d/%m/%Y")
-    else:
-        date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
-    return price, change_pct, date_str
-
-
-def fetch_price_with_retry(ticker, max_retries=3):
-    for attempt in range(max_retries):
-        try:
-            # Randomized jitter helps avoid concurrent request bursts.
-            time.sleep(random.uniform(1, 3))
-            t = yf.Ticker(ticker, session=session)
-            fast_info = t.fast_info
-            price = fast_info.get("last_price")
-            prev = fast_info.get("previous_close")
-            if price and prev and price > 0:
-                change_pct = (price - prev) / prev * 100
-                hist = t.history(period="5d", interval="1d", auto_adjust=False)
-                if not hist.empty:
-                    latest_idx = pd.to_datetime(hist.index[-1]).to_pydatetime()
-                    date_str = latest_idx.strftime("%d/%m/%Y")
-                else:
-                    date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
-                return float(price), float(change_pct), date_str
-            raise ValueError("Invalid fast_info data")
-        except Exception as e:
-            print(f"{ticker} attempt {attempt + 1}: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(3)
-
+def fetch_prices_from_backend():
+    print(f"Fetching from: {BACKEND_URL}/api/etf/prices")
     try:
-        return _fetch_price_from_chart_api(ticker)
+        r = requests.get(
+            f"{BACKEND_URL}/api/etf/prices",
+            timeout=30,
+        )
+        r.raise_for_status()
+        data = r.json()
+        print(f"Got data: {data}")
+        return data.get("data", {})
     except Exception as e:
-        print(f"{ticker} fallback failed: {e}")
-        return 0.0, 0.0, "N/A"
+        print(f"Backend error: {e}")
+        return {}
 
 
-def is_market_open():
-    now = datetime.now(timezone.utc)
-    if now.weekday() > 4:
-        return False
-    market_open = now.replace(hour=14, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=21, minute=0, second=0, microsecond=0)
-    return market_open <= now <= market_close
+def fetch_changes_from_backend():
+    try:
+        r = requests.get(
+            f"{BACKEND_URL}/api/etf/returns",
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json().get("data", {})
+    except Exception as e:
+        print(f"Returns error: {e}")
+        return {}
 
 
 def run():
-    print(" daily check...")
+    print("Starting daily check...")
+    print(f"Backend: {BACKEND_URL}")
+    print(f"Webhook: {'OK' if DISCORD_WEBHOOK_URL else 'MISSING'}")
 
-    # GitHub Actions  env var 
-    #  dotenv
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    prices = fetch_prices_from_backend()
+    _ = fetch_changes_from_backend()
 
-    # dotenv 
-    if not webhook_url:
-        from dotenv import load_dotenv
-        from pathlib import Path
+    if not prices:
+        print("No prices from backend - trying yfinance fallback")
+        import yfinance as yf
 
-        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+        for ticker in TICKERS:
+            try:
+                t = yf.Ticker(ticker)
+                prices[ticker] = t.fast_info["last_price"]
+            except Exception:
+                prices[ticker] = 0.0
 
-    print(f"Webhook: {'' if webhook_url else ' '}")
+    today = datetime.now().strftime("%d/%m/%Y")
+    lines = [f"Daily Price Check - {today}", "-" * 35]
 
-    #  + % 
-    daily_data = {}
-    for idx, ticker in enumerate(TICKERS):
-        try:
-            price, pct_change, price_date = fetch_price_with_retry(ticker)
-            daily_data[ticker] = {
-                "price": price,
-                "pct_change": pct_change,
-                "price_date": price_date,
-            }
-            print(f"{ticker}: ${price:.2f} ({pct_change:+.2f}%) [{price_date}]")
-        except Exception as e:
-            print(f"{ticker}: Error - {e}")
-            daily_data[ticker] = {"price": 0.0, "pct_change": 0.0, "price_date": "N/A"}
-        if idx < len(TICKERS) - 1:
-            time.sleep(2)
-
-    #  Discord
-    now_utc = datetime.now(timezone.utc)
-    today = now_utc.strftime("%d/%m/%Y")
-    lines = [f" Daily Price Check  {today}", "" * 32]
     for ticker in TICKERS:
-        price = daily_data[ticker]["price"]
-        pct_change = daily_data[ticker]["pct_change"]
-        price_date = daily_data[ticker]["price_date"]
-        color_icon = "" if pct_change >= 0 else ""
-        pct_text = f"({pct_change:+.2f}%)"
-        if price in (None, 0):
-            lines.append(f"{ticker:<5} $0.00  (+0.00%)   ({price_date})")
-        else:
-            lines.append(f"{ticker:<5} ${price:>7.2f}  {pct_text} {color_icon}  ({price_date})")
+        price = float(prices.get(ticker, 0.0) or 0.0)
+        print(f"{ticker}: {price}")
+        lines.append(f"{ticker:<6} ${price:.2f}")
 
-    lines.extend(["" * 32, " Price Alerts: 0 "])
+    lines.append("-" * 35)
+    lines.append("Price Alerts: 0 items")
+
     message = "\n".join(lines)
-    print(f"\n:\n{message}")
+    print(f"\nMessage:\n{message}")
 
-    if webhook_url:
-        if not webhook_url.startswith(("http://", "https://")):
-            print(" DISCORD_WEBHOOK_URL  ( http/https)")
-            return
+    if DISCORD_WEBHOOK_URL:
         payload = {"content": f"```\n{message}\n```"}
-        try:
-            r = requests.post(webhook_url, json=payload, timeout=15)
-            print(f"Discord status: {r.status_code}")
-        except requests.RequestException as e:
-            # Avoid failing CI job when webhook/network is temporarily unavailable.
-            print(f"Discord send failed: {e}")
+        r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
+        print(f"Discord: {r.status_code}")
     else:
-        print("  DISCORD_WEBHOOK_URL")
+        print("No Discord webhook URL")
+
 
 if __name__ == "__main__":
     run()
