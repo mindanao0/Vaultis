@@ -1,6 +1,5 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from .database import Base, engine
 from .routers import ai, alerts, analysis, etf, portfolio, websocket as prices_ws
@@ -25,8 +24,5 @@ app.include_router(prices_ws.router)
 
 
 @app.get("/health")
-def health_check():
-    return JSONResponse(
-        content={"status": "ok"},
-        media_type="application/json; charset=utf-8",
-    )
+def health():
+    return {"status": "ok", "service": "Vaultis Backend"}

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: vaultis-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
