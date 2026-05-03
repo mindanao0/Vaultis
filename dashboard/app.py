@@ -1342,11 +1342,6 @@ def cached_full_analysis(budget_thb: float) -> dict:
     return run_full_analysis(budget_thb=float(budget_thb))
 
 
-@st.cache_data(ttl=3600)
-def cached_ai_advice(budget_thb: float) -> dict:
-    return get_monthly_advice(budget_thb=float(budget_thb))
-
-
 def render_dcf_analysis_page() -> None:
     """DCF analysis page with ETF drill-down and full heatmap."""
     st.header("DCF Analysis")
@@ -1452,7 +1447,7 @@ def render_dcf_analysis_page() -> None:
 
 
 def show_result(result: dict) -> None:
-    """Render AI Advisor analysis output from a get_monthly_advice/cached_ai_advice result dict."""
+    """Render AI Advisor analysis output from a get_monthly_advice result dict."""
     full = result.get("full_analysis")
     if not isinstance(full, dict):
         full = {
@@ -1552,6 +1547,11 @@ def render_ai_advisor_page() -> None:
     st.caption("คะแนนและ DCF คำนวณในระบบ — Groq ใช้เพื่ออธิบายเหตุผลเท่านั้น")
     config = load_config()
 
+    if "ai_result" not in st.session_state:
+        st.session_state["ai_result"] = None
+    if "ai_running" not in st.session_state:
+        st.session_state["ai_running"] = False
+
     budget_thb = st.number_input(
         "  DCA   ( )",
         min_value=500.0,
@@ -1561,12 +1561,16 @@ def render_ai_advisor_page() -> None:
     )
 
     if st.button("Analyze This Month", type="primary"):
-        with st.spinner("กำลังรัน Financial Model + Groq (อาจใช้เวลาสักครู่)..."):
-            result = cached_ai_advice(float(budget_thb))
-        st.session_state["ai_result"] = result
-        st.success("Analysis completed.")
+        if not st.session_state["ai_running"]:
+            st.session_state["ai_running"] = True
+            try:
+                with st.spinner("Analyzing..."):
+                    result = get_monthly_advice(float(budget_thb))
+                    st.session_state["ai_result"] = result
+            finally:
+                st.session_state["ai_running"] = False
 
-    if "ai_result" in st.session_state:
+    if st.session_state["ai_result"]:
         show_result(st.session_state["ai_result"])
     else:
         st.info("    ' '")

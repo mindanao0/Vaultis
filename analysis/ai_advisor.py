@@ -248,42 +248,64 @@ def ai_suggest_alerts() -> dict[str, Any]:
         raise RuntimeError(f" Price Alerts: {exc}") from exc
 
 
+_advice_cache: dict[str, Any] = {}
+
+
+def get_cache_key() -> str:
+    """Hourly bucket so cache entries expire each wall-clock hour."""
+    now = datetime.now()
+    return f"{now.year}{now.month}{now.day}{now.hour}"
+
+
+def _call_groq(budget_thb: float, send_discord: bool = True) -> dict[str, Any]:
+    """Run financial model + Groq explanation + optional Discord (no module-level cache)."""
+    if budget_thb <= 0:
+        raise ValueError("budget_thb  0")
+
+    client = _get_groq_client()
+
+    full_analysis = run_full_analysis(budget_thb=budget_thb)
+    prompt = _build_explanation_prompt(full_analysis, budget_thb=budget_thb)
+
+    advice_text = call_groq_with_retry(client, prompt).strip()
+    if not advice_text:
+        raise RuntimeError("Groq ")
+
+    print("\n========== AI Advisor (Monthly DCA) ==========")
+    print(advice_text)
+    print("=============================================\n")
+
+    webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
+    discord_result: dict[str, Any] = {"success": False, "skipped": True}
+    if webhook_url and send_discord:
+        discord_result = send_discord_webhook(
+            webhook_url=webhook_url,
+            title="Vaultis AI Advisor (Monthly DCA)",
+            description=advice_text[:3900],
+            is_positive=True,
+            embed_color=0x00B300,
+        )
+
+    return {
+        "advice": advice_text,
+        "analysis": full_analysis["analysis"],
+        "allocation": full_analysis["allocation"],
+        "discord_result": discord_result,
+    }
+
+
 def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:
-    """ ETF  DCA  Groq."""
+    """ETF DCA via Groq; in-process cache ~1h by hour bucket + budget + Discord flag."""
     try:
-        if budget_thb <= 0:
-            raise ValueError("budget_thb  0")
+        cache_key = f"{get_cache_key()}_{budget_thb}_{send_discord}"
+        if cache_key in _advice_cache:
+            print("Cache hit - returning cached result")
+            return _advice_cache[cache_key]
 
-        client = _get_groq_client()
-
-        full_analysis = run_full_analysis(budget_thb=budget_thb)
-        prompt = _build_explanation_prompt(full_analysis, budget_thb=budget_thb)
-
-        advice_text = call_groq_with_retry(client, prompt).strip()
-        if not advice_text:
-            raise RuntimeError("Groq ")
-
-        print("\n========== AI Advisor (Monthly DCA) ==========")
-        print(advice_text)
-        print("=============================================\n")
-
-        webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
-        discord_result: dict[str, Any] = {"success": False, "skipped": True}
-        if webhook_url and send_discord:
-            discord_result = send_discord_webhook(
-                webhook_url=webhook_url,
-                title="Vaultis AI Advisor (Monthly DCA)",
-                description=advice_text[:3900],
-                is_positive=True,
-                embed_color=0x00B300,
-            )
-
-        return {
-            "advice": advice_text,
-            "analysis": full_analysis["analysis"],
-            "allocation": full_analysis["allocation"],
-            "discord_result": discord_result,
-        }
+        print(f"Cache miss - calling Groq API at {datetime.now()}")
+        result = _call_groq(budget_thb, send_discord=send_discord)
+        _advice_cache[cache_key] = result
+        return result
     except Exception as exc:
         raise RuntimeError(f" AI Advisor: {exc}") from exc
 
