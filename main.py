@@ -74,7 +74,7 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
 
 
 def generate_monthly_ai_advisor_and_notify() -> None:
-    """ส่ง AI Advisor เดือนละครั้งตอนต้นเดือน."""
+    """ส่ง AI Advisor เดือนละครั้งตอนต้นเดือน (เรียก get_monthly_advice ครั้งเดียว)."""
     try:
         config = load_config()
         budget_thb = float(config["dca"]["monthly_budget_thb"])
@@ -135,8 +135,12 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
 
 def run_monthly_ai_advisor_if_first_day() -> None:
     """รัน AI Advisor เฉพาะวันที่ 1 ของเดือน."""
+    from datetime import datetime
+
     if datetime.now().day == 1:
         generate_monthly_ai_advisor_and_notify()
+    else:
+        print("Not day 1 - skipping AI Advisor")
 
 
 def _extract_ai_allocation_summary(advice_text: str) -> str:
@@ -244,7 +248,10 @@ if __name__ == "__main__":
             raise ValueError("กรุณาตั้งค่า Discord Webhook URL ใน Settings")
         generate_weekly_report_and_notify(webhook_url=webhook_url)
     elif args.job == "monthly_advice":
-        get_monthly_advice(budget_thb=5000)
+        if datetime.now().day == 1:
+            get_monthly_advice(budget_thb=5000)
+        else:
+            print("Not day 1 - skipping")
     elif args.job == "price_alert":
         run()
     elif args.job == "all":
