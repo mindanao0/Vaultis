@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -17,6 +18,8 @@ from ..schemas import AiAdviceRequest
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 AI_HISTORY_KEY = "ai_history"
+
+_cache: dict[str, Any] = {}
 
 
 def _get_history(db: Session) -> list[dict]:
@@ -43,7 +46,18 @@ def _save_history(db: Session, history: list[dict]) -> None:
 @router.post("/advice")
 def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
     try:
+        cache_key = f"{datetime.now().strftime('%Y%m%d%H')}_{payload.budget_thb}"
+        if cache_key in _cache:
+            print("Backend cache hit")
+            return JSONResponse(
+                content={"data": _cache[cache_key]},
+                media_type="application/json; charset=utf-8",
+            )
+
+        print("Backend calling Groq...")
         result = get_monthly_advice(budget_thb=payload.budget_thb)
+        _cache[cache_key] = result
+
         history = _get_history(db)
         history.insert(
             0,
