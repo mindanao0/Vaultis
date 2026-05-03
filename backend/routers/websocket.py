@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime
 
 import yfinance as yf
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -48,35 +47,21 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def _snapshot_prices() -> dict[str, dict[str, float]]:
-    prices: dict[str, dict[str, float]] = {}
-    for ticker in TICKERS:
-        try:
-            t = yf.Ticker(ticker)
-            fi = t.fast_info
-            price = float(fi["last_price"])
-            prev = float(fi["previous_close"])
-            change = (price - prev) / prev * 100 if prev else 0.0
-            prices[ticker] = {"price": round(price, 2), "change_pct": round(change, 2)}
-        except Exception as exc:
-            logger.debug("price fetch failed for %s: %s", ticker, exc)
-            prices[ticker] = {"price": 0.0, "change_pct": 0.0}
-    return prices
-
-
 async def _price_broadcast_loop() -> None:
     while True:
         try:
-            payload = await asyncio.to_thread(_snapshot_prices)
-            await manager.broadcast(
-                {
-                    "type": "price_update",
-                    "data": payload,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            )
+            prices: dict[str, float] = {}
+            for ticker in TICKERS:
+                try:
+                    t = yf.Ticker(ticker)
+                    prices[ticker] = t.fast_info["last_price"]
+                except Exception:
+                    prices[ticker] = 0.0
+
+            await manager.broadcast({"type": "price_update", "data": prices})
         except Exception as exc:
             logger.exception("broadcast loop error: %s", exc)
+
         await asyncio.sleep(30)
 
 
