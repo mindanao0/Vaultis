@@ -1337,6 +1337,16 @@ def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=3600)
+def cached_full_analysis(budget_thb: float) -> dict:
+    return run_full_analysis(budget_thb=float(budget_thb))
+
+
+@st.cache_data(ttl=3600)
+def cached_ai_advice(budget_thb: float) -> dict:
+    return get_monthly_advice(budget_thb=float(budget_thb))
+
+
 def render_dcf_analysis_page() -> None:
     """DCF analysis page with ETF drill-down and full heatmap."""
     st.header("DCF Analysis")
@@ -1354,11 +1364,11 @@ def render_dcf_analysis_page() -> None:
 
     if "dcf_full_analysis" not in st.session_state:
         with st.spinner("Running full analysis..."):
-            st.session_state["dcf_full_analysis"] = run_full_analysis(budget_thb=float(budget_thb))
+            st.session_state["dcf_full_analysis"] = cached_full_analysis(float(budget_thb))
 
     if st.button("Run Full Analysis", type="primary", key="dcf_run_full"):
         with st.spinner("Running all ETF analysis..."):
-            st.session_state["dcf_full_analysis"] = run_full_analysis(budget_thb=float(budget_thb))
+            st.session_state["dcf_full_analysis"] = cached_full_analysis(float(budget_thb))
         st.success("Full analysis completed.")
 
     full_analysis = st.session_state.get("dcf_full_analysis")
@@ -1441,6 +1451,101 @@ def render_dcf_analysis_page() -> None:
     st.plotly_chart(_apply_plotly_dark_theme(heatmap_fig), use_container_width=True)
 
 
+def show_result(result: dict) -> None:
+    """Render AI Advisor analysis output from a get_monthly_advice/cached_ai_advice result dict."""
+    full = result.get("full_analysis")
+    if not isinstance(full, dict):
+        full = {
+            "analysis": result.get("analysis", {}),
+            "allocation": result.get("allocation", {}),
+        }
+    score_dcf_df = _full_analysis_score_dcf_df(full if isinstance(full, dict) else None)
+    if not score_dcf_df.empty:
+        st.subheader("Score breakdown (0–100)")
+        st.dataframe(
+            score_dcf_df[
+                [
+                    "Ticker",
+                    "Total",
+                    "Technical",
+                    "MA",
+                    "DCF pts",
+                    "Momentum",
+                    "RSI",
+                    "Signal",
+                ]
+            ].style.format({"RSI": "{:.2f}"}),
+            use_container_width=True,
+        )
+        st.subheader("DCF: intrinsic value vs current price (USD)")
+        iv_fig = go.Figure(
+            data=[
+                go.Bar(
+                    name="Current price",
+                    x=score_dcf_df["Ticker"],
+                    y=score_dcf_df["Current (USD)"],
+                    marker_color=THEME["text_secondary"],
+                ),
+                go.Bar(
+                    name="DCF intrinsic",
+                    x=score_dcf_df["Ticker"],
+                    y=score_dcf_df["DCF intrinsic (USD)"],
+                    marker_color=THEME["accent"],
+                ),
+            ]
+        )
+        iv_fig.update_layout(barmode="group", legend_title_text="")
+        iv_fig.update_yaxes(title_text="USD")
+        st.plotly_chart(_apply_plotly_dark_theme(iv_fig), use_container_width=True)
+
+        st.subheader("Margin of safety (%)")
+        mos_fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=score_dcf_df["Ticker"],
+                    y=score_dcf_df["Margin of Safety %"],
+                    marker_color=THEME["positive"],
+                )
+            ]
+        )
+        mos_fig.update_yaxes(title_text="%")
+        st.plotly_chart(_apply_plotly_dark_theme(mos_fig), use_container_width=True)
+
+    st.markdown("### คำอธิบายจาก AI")
+    advice_text = str(result.get("advice_text") or result.get("advice") or "")
+    st.markdown(advice_text)
+
+    discord_result = result.get("discord_result", {})
+    if discord_result.get("success"):
+        st.info("  Discord  ")
+    elif not discord_result.get("skipped"):
+        st.warning(f"  Discord  : {discord_result.get('error', 'unknown error')}")
+
+    allocation_df = _allocation_from_full_analysis(full if isinstance(full, dict) else None)
+    if allocation_df.empty:
+        allocation_df = _extract_allocation_df(advice_text)
+    if not allocation_df.empty:
+        st.markdown("### การจัดสรร DCA (จากโมเดล)")
+        st.dataframe(
+            allocation_df.style.format(
+                {
+                    "Percent": "{:.2f}%",
+                    "Amount (THB)": "{:,.0f}",
+                }
+            )
+        )
+        pie = px.pie(
+            allocation_df,
+            names="Ticker",
+            values="Amount (THB)",
+            title="DCA allocation (THB)",
+            hole=0.35,
+        )
+        st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
+    else:
+        st.warning("ไม่พบข้อมูล allocation — ลองรันใหม่หรือตรวจสอบการเชื่อมต่อ")
+
+
 def render_ai_advisor_page() -> None:
     """  AI Advisor:   DCA   Claude."""
     st.header("AI Advisor")
@@ -1457,100 +1562,12 @@ def render_ai_advisor_page() -> None:
 
     if st.button("Analyze This Month", type="primary"):
         with st.spinner("กำลังรัน Financial Model + Groq (อาจใช้เวลาสักครู่)..."):
-            result = get_monthly_advice(budget_thb=float(budget_thb))
-
+            result = cached_ai_advice(float(budget_thb))
+        st.session_state["ai_result"] = result
         st.success("Analysis completed.")
-        full = result.get("full_analysis")
-        if not isinstance(full, dict):
-            full = {
-                "analysis": result.get("analysis", {}),
-                "allocation": result.get("allocation", {}),
-            }
-        score_dcf_df = _full_analysis_score_dcf_df(full if isinstance(full, dict) else None)
-        if not score_dcf_df.empty:
-            st.subheader("Score breakdown (0–100)")
-            st.dataframe(
-                score_dcf_df[
-                    [
-                        "Ticker",
-                        "Total",
-                        "Technical",
-                        "MA",
-                        "DCF pts",
-                        "Momentum",
-                        "RSI",
-                        "Signal",
-                    ]
-                ].style.format({"RSI": "{:.2f}"}),
-                use_container_width=True,
-            )
-            st.subheader("DCF: intrinsic value vs current price (USD)")
-            iv_fig = go.Figure(
-                data=[
-                    go.Bar(
-                        name="Current price",
-                        x=score_dcf_df["Ticker"],
-                        y=score_dcf_df["Current (USD)"],
-                        marker_color=THEME["text_secondary"],
-                    ),
-                    go.Bar(
-                        name="DCF intrinsic",
-                        x=score_dcf_df["Ticker"],
-                        y=score_dcf_df["DCF intrinsic (USD)"],
-                        marker_color=THEME["accent"],
-                    ),
-                ]
-            )
-            iv_fig.update_layout(barmode="group", legend_title_text="")
-            iv_fig.update_yaxes(title_text="USD")
-            st.plotly_chart(_apply_plotly_dark_theme(iv_fig), use_container_width=True)
 
-            st.subheader("Margin of safety (%)")
-            mos_fig = go.Figure(
-                data=[
-                    go.Bar(
-                        x=score_dcf_df["Ticker"],
-                        y=score_dcf_df["Margin of Safety %"],
-                        marker_color=THEME["positive"],
-                    )
-                ]
-            )
-            mos_fig.update_yaxes(title_text="%")
-            st.plotly_chart(_apply_plotly_dark_theme(mos_fig), use_container_width=True)
-
-        st.markdown("### คำอธิบายจาก AI")
-        advice_text = str(result.get("advice_text") or result.get("advice") or "")
-        st.markdown(advice_text)
-
-        discord_result = result.get("discord_result", {})
-        if discord_result.get("success"):
-            st.info("  Discord  ")
-        elif not discord_result.get("skipped"):
-            st.warning(f"  Discord  : {discord_result.get('error', 'unknown error')}")
-
-        allocation_df = _allocation_from_full_analysis(full if isinstance(full, dict) else None)
-        if allocation_df.empty:
-            allocation_df = _extract_allocation_df(advice_text)
-        if not allocation_df.empty:
-            st.markdown("### การจัดสรร DCA (จากโมเดล)")
-            st.dataframe(
-                allocation_df.style.format(
-                    {
-                        "Percent": "{:.2f}%",
-                        "Amount (THB)": "{:,.0f}",
-                    }
-                )
-            )
-            pie = px.pie(
-                allocation_df,
-                names="Ticker",
-                values="Amount (THB)",
-                title="DCA allocation (THB)",
-                hole=0.35,
-            )
-            st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
-        else:
-            st.warning("ไม่พบข้อมูล allocation — ลองรันใหม่หรือตรวจสอบการเชื่อมต่อ")
+    if "ai_result" in st.session_state:
+        show_result(st.session_state["ai_result"])
     else:
         st.info("    ' '")
 

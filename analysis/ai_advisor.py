@@ -3,6 +3,7 @@
 
 import sys
 import os
+import time
 from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,6 +32,28 @@ def _get_groq_client() -> Groq:
     if not api_key or api_key == "your_key_here":
         raise ValueError(" GROQ_API_KEY  .env")
     return Groq(api_key=api_key)
+
+
+def call_groq_with_retry(client: Groq, prompt: str, max_retries: int = 3) -> str:
+    """Call Groq chat completion with backoff on rate limits."""
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=1500,
+            )
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            if "rate_limit" in str(e).lower():
+                wait = (attempt + 1) * 60
+                print(f"Rate limit hit, waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+    return "ไม่สามารถวิเคราะห์ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"
+
 
 def _build_explanation_prompt(full_analysis: dict[str, Any], budget_thb: float) -> str:
     """Build strict prompt so AI only explains model output."""
@@ -234,15 +257,7 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
         full_analysis = run_full_analysis(budget_thb=budget_thb)
         prompt = _build_explanation_prompt(full_analysis, budget_thb=budget_thb)
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=1500,
-        )
-
-        result = response.choices[0].message.content
-        advice_text = (result or "").strip()
+        advice_text = call_groq_with_retry(client, prompt).strip()
         if not advice_text:
             raise RuntimeError("Groq ")
 
