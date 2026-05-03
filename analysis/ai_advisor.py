@@ -38,6 +38,7 @@ def call_groq_with_retry(client: Groq, prompt: str, max_retries: int = 3) -> str
     """Call Groq chat completion with backoff on rate limits."""
     for attempt in range(max_retries):
         try:
+            print(f"Calling Groq API at {datetime.now()}")
             response = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
@@ -178,6 +179,7 @@ def ai_suggest_alerts() -> dict[str, Any]:
   ]
 }}"""
 
+        print(f"Calling Groq API at {datetime.now()}")
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
