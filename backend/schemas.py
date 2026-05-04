@@ -62,3 +62,16 @@ class AiAdviceRequest(BaseModel):
 class GenericResponse(BaseModel):
     status: str = "ok"
     data: Any
+
+
+class SentimentResponse(BaseModel):
+    symbol: str
+    total_articles: int
+    positive: int
+    negative: int
+    neutral: int
+    avg_confidence: float
+    overall_sentiment: str
+    score: float
+    created_at: datetime
+    cached: bool
