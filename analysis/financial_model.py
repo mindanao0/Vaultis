@@ -362,3 +362,134 @@ def run_full_analysis(budget_thb: float = 5000) -> dict[str, Any]:
         "allocation": allocation,
         "timestamp": datetime.now().isoformat(),
     }
+
+
+# --- Lightweight multi-ticker scores for advisor / jobs pipeline ---
+
+DEFAULT_ETF_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+
+_DCF_SCORE_PLACEHOLDER = 15
+
+
+def _yf_close_series(ticker: str) -> pd.Series:
+    """ดึงราคาปิดรายวันย้อนหลัง ~1 ปี; ล้มเหลวคืน series ว่าง."""
+    try:
+        df = yf.download(
+            tickers=ticker,
+            period="1y",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+        )
+        if df.empty or "Close" not in df.columns:
+            return pd.Series(dtype=float)
+        close_data = df["Close"]
+        if isinstance(close_data, pd.DataFrame):
+            if close_data.empty:
+                return pd.Series(dtype=float)
+            close_series = close_data.iloc[:, 0]
+        else:
+            close_series = close_data
+        return close_series.dropna().sort_index()
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def _pipeline_ma_score(price: float, ma50: float, ma200: float) -> int:
+    if price > ma200:
+        return 20
+    if price > ma50:
+        return 10
+    return 0
+
+
+def _pipeline_technical_score(rsi: float) -> int:
+    if 40 <= rsi <= 60:
+        return 30
+    if (30 <= rsi < 40) or (60 < rsi <= 70):
+        return 15
+    return 0
+
+
+def _pipeline_momentum_score_one_month(close: pd.Series) -> int:
+    if len(close) < 22:
+        return 0
+    last = float(close.iloc[-1])
+    prev = float(close.iloc[-22])
+    if prev == 0:
+        return 0
+    ret_pct = (last / prev - 1.0) * 100.0
+    if ret_pct > 2.0:
+        return 20
+    if ret_pct > 0.0:
+        return 10
+    return 0
+
+
+def _pipeline_signal_label(total_score: int) -> str:
+    if total_score >= 60:
+        return "Strong Buy"
+    if total_score >= 40:
+        return "Buy"
+    if total_score >= 20:
+        return "Neutral"
+    return "Avoid"
+
+
+def _pipeline_score_ticker(ticker: str) -> dict[str, Any]:
+    closes = _yf_close_series(ticker).ffill()
+    if len(closes) < 200:
+        return {
+            "ticker": ticker,
+            "price": None,
+            "ma50": None,
+            "ma200": None,
+            "rsi": None,
+            "total_score": 0,
+            "signal": "Avoid",
+        }
+
+    price = float(closes.iloc[-1])
+    ma50_series = ta.sma(closes, length=50)
+    ma200_series = ta.sma(closes, length=200)
+    rsi_series = ta.rsi(closes, length=14)
+
+    ma50 = float(ma50_series.iloc[-1])
+    ma200 = float(ma200_series.iloc[-1])
+    rsi = float(rsi_series.iloc[-1])
+    if pd.isna(ma50) or pd.isna(ma200) or pd.isna(rsi):
+        return {
+            "ticker": ticker,
+            "price": round(price, 2) if not pd.isna(price) else None,
+            "ma50": None,
+            "ma200": None,
+            "rsi": None,
+            "total_score": 0,
+            "signal": "Avoid",
+        }
+
+    ma_s = _pipeline_ma_score(price, ma50, ma200)
+    tech_s = _pipeline_technical_score(rsi)
+    mom_s = _pipeline_momentum_score_one_month(closes)
+    dcf_s = _DCF_SCORE_PLACEHOLDER
+    total = int(tech_s + ma_s + dcf_s + mom_s)
+
+    return {
+        "ticker": ticker,
+        "price": round(price, 2),
+        "ma50": round(ma50, 2),
+        "ma200": round(ma200, 2),
+        "rsi": round(rsi, 2),
+        "total_score": total,
+        "signal": _pipeline_signal_label(total),
+    }
+
+
+def build_etf_scores(tickers: list[str] | None = None) -> list[dict[str, Any]]:
+    """คำนวณคะแนนและสัญญาณต่อ ETF จาก yfinance + ตัวชี้วัด ``ta``.
+
+    ถ้า ``tickers`` เป็น ``None`` ใช้ค่าเริ่มต้น
+    ``VOO``, ``SCHD``, ``QQQM``, ``XLV``, ``GLDM``.
+    """
+    symbols = DEFAULT_ETF_TICKERS if tickers is None else list(tickers)
+    return [_pipeline_score_ticker(sym.strip().upper()) for sym in symbols if sym.strip()]
