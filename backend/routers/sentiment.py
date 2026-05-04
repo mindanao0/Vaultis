@@ -1,9 +1,9 @@
-"""Sentiment API: ข่าว + Claude + cache ใน PostgreSQL."""
+"""Sentiment API: อ่านสรุป sentiment จาก PostgreSQL เท่านั้น."""
 
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -28,13 +28,9 @@ def get_sentiment_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def _utc_naive_one_hour_ago() -> datetime:
-    return (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None)
-
-
-def _summary_to_response(row: SentimentSummary, sym: str, cached: bool) -> SentimentResponse:
+def _summary_to_response(row: SentimentSummary) -> SentimentResponse:
     return SentimentResponse(
-        symbol=sym,
+        symbol=str(row.symbol or ""),
         total_articles=int(row.total_articles or 0),
         positive=int(row.positive or 0),
         negative=int(row.negative or 0),
@@ -43,7 +39,7 @@ def _summary_to_response(row: SentimentSummary, sym: str, cached: bool) -> Senti
         overall_sentiment=str(row.overall_sentiment or "neutral"),
         score=float(row.score or 0.0),
         created_at=row.created_at or datetime.now(timezone.utc).replace(tzinfo=None),
-        cached=cached,
+        cached=False,
     )
 
 
@@ -56,31 +52,16 @@ def get_sentiment(
     if not sym:
         raise HTTPException(status_code=400, detail="symbol is required")
 
-    cutoff = _utc_naive_one_hour_ago()
-    cached_row = (
-        db.query(SentimentSummary)
-        .filter(SentimentSummary.symbol == sym)
-        .filter(SentimentSummary.created_at > cutoff)
-        .order_by(SentimentSummary.created_at.desc())
-        .first()
-    )
-    if cached_row is not None:
-        return _summary_to_response(cached_row, sym, cached=True)
-
-    stale_row = (
+    row = (
         db.query(SentimentSummary)
         .filter(SentimentSummary.symbol == sym)
         .order_by(SentimentSummary.created_at.desc())
         .first()
     )
-    if stale_row is not None:
-        return _summary_to_response(stale_row, sym, cached=True)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No sentiment data yet for {sym}",
+        )
 
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            f"No sentiment data for {sym}. "
-            "Run the sentiment job (e.g. analysis.sentiment_analyzer.run_sentiment_job) "
-            "or try again after data is available."
-        ),
-    )
+    return _summary_to_response(row)
