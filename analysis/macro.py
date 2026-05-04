@@ -38,6 +38,70 @@ def _to_float(value: Any) -> float | None:
     return float(value)
 
 
+def _fred_latest_fed_funds_rate() -> float | None:
+    """ดึง Federal Funds Rate ล่าสุดจาก FRED (FEDFUNDS); ล้มเหลวคืน None."""
+    try:
+        key = os.getenv("FRED_API_KEY", "").strip()
+        if not key or key == "your_key_here":
+            return None
+        fred = Fred(api_key=key)
+        series = fred.get_series("FEDFUNDS").dropna().sort_index()
+        if series.empty:
+            return None
+        val = _to_float(series.iloc[-1])
+        return None if val is None else round(val, 2)
+    except Exception:
+        return None
+
+
+def _yfinance_last_close(symbol: str) -> float | None:
+    """ดึงราคาปิดล่าสุดจาก yfinance; ล้มเหลวคืน None (ไม่แจ้งเตือน UI)."""
+    try:
+        df = yf.download(
+            tickers=symbol,
+            period="5d",
+            interval="1d",
+            progress=False,
+            auto_adjust=False,
+        )
+        if df.empty or "Close" not in df.columns:
+            return None
+        close_data = df["Close"]
+        if isinstance(close_data, pd.DataFrame):
+            if close_data.empty:
+                return None
+            close_series = close_data.iloc[:, 0]
+        else:
+            close_series = close_data
+        cleaned = close_series.dropna().sort_index()
+        if cleaned.empty:
+            return None
+        val = _to_float(cleaned.iloc[-1])
+        return None if val is None else round(val, 2)
+    except Exception:
+        return None
+
+
+def get_macro_snapshot() -> dict[str, float | bool | None]:
+    """สรุป macro ล่าสุดสำหรับ advisor: Fed rate, VIX, DXY และ flag ความผันผวน.
+
+    โหลด ``.env`` ด้วย python-dotenv ทุกครั้งที่เรียก ค่าตัวเลขปัดทศนิยม 2 ตำแหน่ง
+    แหล่ง fed_rate/vix/dxy ล้มเหลวคืน ``None`` สำหรับฟิลด์นั้น (ไม่ throw)
+    ``vix_warning`` เป็น True เมื่อ VIX > 25; ถ้าไม่มีค่า VIX ใช้ False
+    """
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    fed_rate = _fred_latest_fed_funds_rate()
+    vix = _yfinance_last_close("^VIX")
+    dxy = _yfinance_last_close("DX-Y.NYB")
+    vix_warning = False if vix is None else bool(vix > 25)
+    return {
+        "fed_rate": fed_rate,
+        "vix": vix,
+        "dxy": dxy,
+        "vix_warning": vix_warning,
+    }
+
+
 def _compute_trend(series: pd.Series, lookback: int = 3) -> str:
     """คำนวณแนวโน้มจากค่าเฉลี่ยล่าสุดเทียบกับช่วงก่อนหน้า."""
     cleaned = series.dropna()
