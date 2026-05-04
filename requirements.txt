@@ -6,6 +6,7 @@ ta
 streamlit
 plotly
 requests
+feedparser
 schedule
 python-dotenv
 groq
