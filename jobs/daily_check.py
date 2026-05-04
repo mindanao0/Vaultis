@@ -1,5 +1,7 @@
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -116,6 +118,40 @@ def build_discord_message(snapshot: dict, prices: dict) -> str:
     return "\n".join(lines)
 
 
+def _ensure_repo_root_on_path() -> None:
+    """ให้ import แพ็กเกจ ``analysis`` ได้เมื่อรัน ``python jobs/daily_check.py`` จาก repo root."""
+    root = Path(__file__).resolve().parents[1]
+    root_s = str(root)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
+
+
+def _build_ai_advisor_discord_embed() -> dict:
+    """สร้าง embed หนึ่งรายการพร้อม field ``🤖 AI Advisor`` (ข้อความยาวตัดที่ 1024 ตามขีดจำกัด Discord)."""
+    _ensure_repo_root_on_path()
+    try:
+        from analysis.ai_advisor import get_ai_advice
+        from analysis.financial_model import build_etf_scores
+        from analysis.macro import get_macro_snapshot
+
+        etf_scores = build_etf_scores(["VOO", "SCHD", "QQQM", "XLV", "GLDM"])
+        macro = get_macro_snapshot()
+        advice = get_ai_advice(etf_scores, macro)
+    except Exception as exc:
+        advice = f"(ไม่สามารถสร้างคำแนะนำ AI ได้: {exc})"
+
+    max_field = 1024
+    if len(advice) > max_field:
+        advice = advice[: max_field - 3] + "..."
+    if not advice.strip():
+        advice = "(ไม่มีข้อความจาก AI)"
+
+    return {
+        "color": 0x5865F2,
+        "fields": [{"name": "🤖 AI Advisor", "value": advice}],
+    }
+
+
 def run():
     print("Starting daily check...")
     print(f"Backend: {BACKEND_URL}")
@@ -139,8 +175,12 @@ def run():
 
     if DISCORD_WEBHOOK_URL:
         payload = {"content": f"```\n{message}\n```"}
-        r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
-        print(f"Discord: {r.status_code}")
+        payload["embeds"] = [_build_ai_advisor_discord_embed()]
+        try:
+            r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
+            print(f"Discord: {r.status_code}")
+        except requests.RequestException as e:
+            print(f"Discord send failed: {e}")
     else:
         print("No Discord webhook URL")
 
