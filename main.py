@@ -149,13 +149,25 @@ def _extract_ai_allocation_summary(advice_text: str) -> str:
     if not cleaned:
         return "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
 
-    start_key = "💰 แนะนำแบ่งเงิน"
-    end_key = "⚠️ ความเสี่ยงเดือนนี้"
-    if start_key in cleaned:
+    start_candidates = (
+        "💰 แนะนำแบ่งเงิน",
+        "💰 แผน DCA",
+        "**💰 แผน DCA",
+    )
+    end_candidates = (
+        "⚠️ ความเสี่ยงเดือนนี้",
+        "**⚠️ ความเสี่ยงที่ควรระวัง",
+        "⚠️ ความเสี่ยงที่ควรระวัง",
+    )
+    for start_key in start_candidates:
+        if start_key not in cleaned:
+            continue
         start_idx = cleaned.index(start_key)
         section = cleaned[start_idx:]
-        if end_key in section:
-            section = section.split(end_key, maxsplit=1)[0].strip()
+        for end_key in end_candidates:
+            if end_key in section:
+                section = section.split(end_key, maxsplit=1)[0].strip()
+                break
         return section[:900]
     return cleaned[:900]
 

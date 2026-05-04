@@ -1,114 +1,147 @@
-# -*- coding: utf-8 -*-
-""" AI Advisor  DCA ETF  Groq API."""
+"""โมดูล AI Advisor: Groq + โครงสร้าง Vaultis AI สำหรับคำแนะนำ DCA ETF."""
 
-import sys
-import os
-import time
-from datetime import datetime
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
-from groq import Groq
 import pandas as pd
 from dotenv import load_dotenv
+from groq import Groq
 
 from alerts.notifier import send_discord_webhook
-from analysis.financial_model import run_full_analysis
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
-from utils.config import load_config
+from utils.config import get_tickers, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+
+VAULTIS_ADVISOR_SYSTEM_PROMPT = """
+You are Vaultis AI, a long-term ETF investment advisor for Thai retail investors.
+- Explain investment reasoning in clear, simple Thai (mixed with English tickers/terms)
+- You NEVER calculate numbers yourself — all figures come from the financial model
+- You ONLY interpret and explain the data provided
+
+Response structure (always follow this order):
+**📊 ภาพรวมสัญญาณวันนี้** — 2-3 ประโยค สรุปภาพรวม macro
+**🎯 ETF แนะนำ (เรียงตาม Score)** — แต่ละ ETF: ticker, score, signal, เหตุผล 1-2 ประโยค
+**💰 แผน DCA เดือนนี้ (งบ 5,000 บาท)** — จัดสรรตาม score tier (Strong Buy 60%, Buy 30%, Neutral 10%)
+**⚠️ ความเสี่ยงที่ควรระวัง** — 1-2 ข้อ
+
+Rules:
+- ใช้ "สัญญาณชี้ว่า…" ไม่ใช่ "แนะนำให้ซื้อ"
+- ห้ามรับประกันผลตอบแทน
+- ถ้า vix_warning = true ให้ขึ้นต้นด้วยคำเตือนผันผวนสูงก่อนเสมอ
+- ตอบไม่เกิน 400 tokens
+""".strip()
 
 
 def _get_groq_client() -> Groq:
-    """ Groq client  lazy  error  import."""
+    """สร้าง Groq client; โหลดคีย์จากสภาพแวดล้อมหลัง load_dotenv."""
     api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key or api_key == "your_key_here":
-        raise ValueError(" GROQ_API_KEY  .env")
+        raise ValueError("กรุณาตั้งค่า GROQ_API_KEY ในไฟล์ .env")
     return Groq(api_key=api_key)
 
 
-def call_groq_with_retry(client: Groq, prompt: str, max_retries: int = 3) -> str:
-    """Call Groq chat completion with backoff on rate limits."""
-    for attempt in range(max_retries):
-        try:
-            print(f"Calling Groq API at {datetime.now()}")
-            response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=1500,
+def _cell(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _build_user_message(
+    etf_scores: list[dict[str, Any]],
+    macro: dict[str, Any],
+    portfolio: dict[str, Any] | None,
+) -> str:
+    """รวม etf_scores + macro (+ portfolio) เป็นข้อความตาราง plain text."""
+    lines: list[str] = []
+    lines.append("ข้อมูลจากโมเดลการเงิน (ใช้เฉพาะตัวเลขจากตารางนี้เท่านั้น)")
+    lines.append("")
+    lines.append("=== ETF scores ===")
+    header = "ticker\tprice\tma50\tma200\trsi\ttotal_score\tsignal"
+    lines.append(header)
+    ranked = sorted(
+        etf_scores,
+        key=lambda row: float(row.get("total_score") or 0),
+        reverse=True,
+    )
+    for row in ranked:
+        lines.append(
+            "\t".join(
+                [
+                    _cell(row.get("ticker")),
+                    _cell(row.get("price")),
+                    _cell(row.get("ma50")),
+                    _cell(row.get("ma200")),
+                    _cell(row.get("rsi")),
+                    _cell(row.get("total_score")),
+                    _cell(row.get("signal")),
+                ]
             )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            if "rate_limit" in str(e).lower():
-                wait = (attempt + 1) * 60
-                print(f"Rate limit hit, waiting {wait}s...")
-                time.sleep(wait)
-            else:
-                raise
-    return "ไม่สามารถวิเคราะห์ได้ในขณะนี้ กรุณาลองใหม่ภายหลัง"
-
-
-def _build_explanation_prompt(full_analysis: dict[str, Any], budget_thb: float) -> str:
-    """Build strict prompt so AI only explains model output."""
-    summary: list[str] = []
-    for ticker, data in full_analysis["analysis"].items():
-        dcf = data["dcf"]
-        summary.append(
-            f"{ticker}: Score={data['total_score']}/100"
-            f" RSI={data['rsi']}"
-            f" DCF_Value=${dcf['intrinsic_value']}"
-            f" Price=${dcf['current_price']}"
-            f" MoS={dcf['margin_of_safety']}%"
-            f" Signal={data['signal']}"
         )
+    lines.append("")
+    lines.append("=== Macro ===")
+    macro_order = ["fed_rate", "vix", "dxy", "vix_warning", "monthly_dca_budget_thb"]
+    seen_macro: set[str] = set()
+    for key in macro_order:
+        if key in macro:
+            lines.append(f"{key}\t{_cell(macro.get(key))}")
+            seen_macro.add(key)
+    for key, val in sorted(macro.items()):
+        if key not in seen_macro:
+            lines.append(f"{key}\t{_cell(val)}")
+    lines.append("")
+    if portfolio:
+        lines.append("=== Portfolio (user holdings snapshot) ===")
+        lines.append(json.dumps(portfolio, ensure_ascii=False, indent=2))
+    else:
+        lines.append("=== Portfolio ===")
+        lines.append("(none provided)")
+    lines.append("")
+    budget_hint = macro.get("monthly_dca_budget_thb")
+    if budget_hint is not None:
+        lines.append(
+            f"งบ DCA รายเดือนที่ใช้จัดสรร: {budget_hint:,.0f} บาท "
+            "(ปรับหัวข้อ **💰 แผน DCA** ให้ตรงกับจำนวนนี้)"
+        )
+    return "\n".join(lines)
 
-    alloc_text: list[str] = []
-    for ticker, alloc in full_analysis["allocation"].items():
-        alloc_text.append(f"{ticker}: {alloc['amount_thb']} THB ({alloc['percent']}%)")
 
-    return f"""
-You are a financial advisor explaining ETF analysis results in Thai.
-The following results were calculated by our financial model.
-DO NOT change any numbers. Only explain WHY in simple Thai.
-
-Analysis Results:
-{chr(10).join(summary)}
-
-Recommended Allocation for {budget_thb} THB:
-{chr(10).join(alloc_text)}
-
-Please explain in Thai with this EXACT format:
-
-🤖 Vaultis AI Advisor — [เดือน ปี]
-งบ DCA: {budget_thb} บาท
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 การวิเคราะห์:
-[สำหรับแต่ละ ETF อธิบาย 1 บรรทัด ว่าทำไมถึงได้ signal นี้]
-
-💰 แนะนำแบ่งเงิน {budget_thb} บาท:
-[คัดลอกจาก allocation ข้างบนทุกบรรทัด ห้ามเปลี่ยน]
-
-⚠️ ความเสี่ยงเดือนนี้:
-[2-3 บรรทัด]
-
-📅 แนะนำวันที่ควรซื้อ:
-[แนะนำช่วงเวลา]
-"""
+def get_ai_advice(
+    etf_scores: list[dict[str, Any]],
+    macro: dict[str, Any],
+    portfolio: dict[str, Any] | None = None,
+) -> str:
+    """ส่ง etf_scores + macro ให้ Groq ตาม system prompt Vaultis AI; คืนข้อความคำแนะนำ."""
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    client = _get_groq_client()
+    user_content = _build_user_message(etf_scores, macro, portfolio)
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        temperature=0.1,
+        max_tokens=500,
+        messages=[
+            {"role": "system", "content": VAULTIS_ADVISOR_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Groq ไม่ได้ส่งข้อความวิเคราะห์กลับมา")
+    return text
 
 
 def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tuple[float, float]:
-    """/."""
+    """คำนวณแนวรับ/แนวต้านแบบง่ายจากช่วงราคาย้อนหลัง."""
     cleaned = pd.to_numeric(price_series, errors="coerce").dropna()
     if cleaned.empty:
-        raise ValueError("/")
+        raise ValueError("ไม่มีข้อมูลราคาสำหรับคำนวณแนวรับ/แนวต้าน")
     lookback = cleaned.tail(window)
     support = float(lookback.min())
     resistance = float(lookback.max())
@@ -116,15 +149,15 @@ def _compute_support_resistance(price_series: pd.Series, window: int = 60) -> tu
 
 
 def _build_price_alerts_payload(price_df: pd.DataFrame, tickers: list[str]) -> dict[str, Any]:
-    """ ETF  AI  price alerts."""
+    """เตรียมข้อมูลล่าสุดของ ETF สำหรับให้ AI แนะนำ price alerts."""
     if price_df.empty:
-        raise ValueError(" ETF  price alerts")
+        raise ValueError("ไม่พบข้อมูลราคา ETF สำหรับสร้าง price alerts")
 
     prepared = price_df.reindex(columns=tickers).sort_index().ffill()
     snapshots: list[dict[str, Any]] = []
     for ticker in tickers:
         if ticker not in prepared.columns or prepared[ticker].dropna().empty:
-            raise ValueError(f" {ticker}")
+            raise ValueError(f"ไม่พบข้อมูลราคาของ {ticker}")
         series = prepared[ticker]
         latest_price = float(series.dropna().iloc[-1])
         ma50 = float(ta.sma(series, length=50).iloc[-1])
@@ -149,46 +182,44 @@ def _build_price_alerts_payload(price_df: pd.DataFrame, tickers: list[str]) -> d
 
 
 def ai_suggest_alerts() -> dict[str, Any]:
-    """ AI  Buy/Warning price alert  ETF ."""
+    """ให้ AI วิเคราะห์และแนะนำ Buy/Warning price alert สำหรับ ETF หลัก."""
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
     try:
         client = _get_groq_client()
         target_tickers = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
         price_df = fetch_adjusted_close_data(target_tickers, years=10)
         payload = _build_price_alerts_payload(price_df, target_tickers)
         compact_data = json.dumps(payload, ensure_ascii=False, indent=2)
-        prompt = f""" ETF  Price Alert
- DCA 
+        prompt = f"""วิเคราะห์ ETF แต่ละตัวและแนะนำ Price Alert
+ที่เหมาะสมสำหรับนักลงทุนระยะยาวที่ DCA รายเดือน
 
-: {compact_data}
+ข้อมูล: {compact_data}
 
- ETF :
-1. Buy Alert   (  Support)
-2. Warning Alert   ( Overbought)
-3. 
+สำหรับแต่ละ ETF ให้แนะนำ:
+1. Buy Alert — ราคาที่น่าซื้อเพิ่ม (เช่น ใกล้ Support)
+2. Warning Alert — ราคาที่ควรระวัง (เช่น Overbought)
+3. เหตุผลสั้นๆ
 
- JSON :
+ตอบในรูปแบบ JSON เท่านั้น:
 {{
   "alerts": [
     {{
       "ticker": "VOO",
       "buy_alert": 620.00,
       "warning_alert": 680.00,
-      "buy_reason": " MA200 ",
-      "warning_reason": "RSI  75 "
+      "buy_reason": "ใกล้ MA200 จังหวะสะสม",
+      "warning_reason": "RSI สูงกว่า 75 ระวังปรับฐาน"
     }}
   ]
 }}"""
 
-        print(f"Calling Groq API at {datetime.now()}")
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=2000,
         )
         raw_text = (response.choices[0].message.content or "").strip()
         if not raw_text:
-            raise RuntimeError("Groq  alerts ")
+            raise RuntimeError("Groq ไม่ได้ส่งคำแนะนำ alerts กลับมา")
 
         parsed: dict[str, Any] | None = None
         try:
@@ -203,11 +234,11 @@ def ai_suggest_alerts() -> dict[str, Any]:
                 if isinstance(parsed_candidate, dict):
                     parsed = parsed_candidate
         if not parsed:
-            raise RuntimeError(" Groq  JSON ")
+            raise RuntimeError("ไม่สามารถแปลงผลลัพธ์จาก Groq เป็น JSON ได้")
 
         raw_alerts = parsed.get("alerts", [])
         if not isinstance(raw_alerts, list):
-            raise RuntimeError(" JSON  Groq  (missing alerts list)")
+            raise RuntimeError("รูปแบบ JSON จาก Groq ไม่ถูกต้อง (missing alerts list)")
 
         alerts: list[dict[str, Any]] = []
         for item in raw_alerts:
@@ -237,7 +268,7 @@ def ai_suggest_alerts() -> dict[str, Any]:
 
         alerts = sorted(alerts, key=lambda row: target_tickers.index(row["ticker"]))
         if not alerts:
-            raise RuntimeError("Groq  alerts ")
+            raise RuntimeError("Groq ไม่ได้ส่ง alerts ที่ใช้งานได้กลับมา")
 
         return {
             "as_of": payload["as_of"],
@@ -245,72 +276,53 @@ def ai_suggest_alerts() -> dict[str, Any]:
             "alerts": alerts,
         }
     except Exception as exc:
-        raise RuntimeError(f" Price Alerts: {exc}") from exc
-
-
-_advice_cache: dict[str, Any] = {}
-
-
-def get_cache_key() -> str:
-    """Hourly bucket so cache entries expire each wall-clock hour."""
-    now = datetime.now()
-    return f"{now.year}{now.month}{now.day}{now.hour}"
-
-
-def _call_groq(budget_thb: float, send_discord: bool = True) -> dict[str, Any]:
-    """Run financial model + Groq explanation + optional Discord (no module-level cache)."""
-    if budget_thb <= 0:
-        raise ValueError("budget_thb  0")
-
-    client = _get_groq_client()
-
-    full_analysis = run_full_analysis(budget_thb=budget_thb)
-    prompt = _build_explanation_prompt(full_analysis, budget_thb=budget_thb)
-
-    advice_text = call_groq_with_retry(client, prompt).strip()
-    if not advice_text:
-        raise RuntimeError("Groq ")
-
-    print("\n========== AI Advisor (Monthly DCA) ==========")
-    print(advice_text)
-    print("=============================================\n")
-
-    webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
-    discord_result: dict[str, Any] = {"success": False, "skipped": True}
-    if webhook_url and send_discord:
-        discord_result = send_discord_webhook(
-            webhook_url=webhook_url,
-            title="Vaultis AI Advisor (Monthly DCA)",
-            description=advice_text[:3900],
-            is_positive=True,
-            embed_color=0x00B300,
-        )
-
-    return {
-        "advice": advice_text,
-        "analysis": full_analysis["analysis"],
-        "allocation": full_analysis["allocation"],
-        "discord_result": discord_result,
-    }
+        raise RuntimeError(f"เกิดข้อผิดพลาดในการแนะนำ Price Alerts: {exc}") from exc
 
 
 def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:
-    """ETF DCA via Groq; in-process cache ~1h by hour bucket + budget + Discord flag."""
+    """ดึงคะแนน ETF + macro snapshot แล้วขอคำแนะนำ DCA รายเดือนจาก Groq."""
+    from analysis.financial_model import build_etf_scores
+    from analysis.macro import get_macro_snapshot
+    from portfolio.tracker import get_portfolio_summary
+
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
     try:
-        cache_key = f"{get_cache_key()}_{budget_thb}_{send_discord}"
-        if cache_key in _advice_cache:
-            print("Cache hit - returning cached result")
-            return _advice_cache[cache_key]
+        if budget_thb <= 0:
+            raise ValueError("budget_thb ต้องมากกว่า 0")
 
-        print(f"Cache miss - calling Groq API at {datetime.now()}")
-        result = _call_groq(budget_thb, send_discord=send_discord)
-        _advice_cache[cache_key] = result
-        return result
+        advisor_tickers = get_tickers()
+        etf_scores = build_etf_scores(list(advisor_tickers))
+        macro = dict(get_macro_snapshot())
+        macro["monthly_dca_budget_thb"] = float(budget_thb)
+
+        holdings_df = get_portfolio_summary()
+        portfolio: dict[str, Any] | None = None
+        if not holdings_df.empty:
+            portfolio = {"holdings": holdings_df.to_dict(orient="records")}
+
+        advice_text = get_ai_advice(etf_scores, macro, portfolio)
+
+        print("\n========== AI Advisor (Monthly DCA) ==========")
+        print(advice_text)
+        print("=============================================\n")
+
+        webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
+        discord_result: dict[str, Any] = {"success": False, "skipped": True}
+        if webhook_url and send_discord:
+            discord_result = send_discord_webhook(
+                webhook_url=webhook_url,
+                title="Vaultis AI Advisor (Monthly DCA)",
+                description=advice_text[:3900],
+                is_positive=True,
+                embed_color=0x00B300,
+            )
+
+        return {
+            "budget_thb": budget_thb,
+            "etf_scores": etf_scores,
+            "macro": macro,
+            "advice_text": advice_text,
+            "discord_result": discord_result,
+        }
     except Exception as exc:
-        raise RuntimeError(f" AI Advisor: {exc}") from exc
-
-
-if __name__ == "__main__":
-    print(" ETF...")
-    result = get_monthly_advice(budget_thb=5000)
-    print(result)
+        raise RuntimeError(f"เกิดข้อผิดพลาดในการวิเคราะห์ AI Advisor: {exc}") from exc
