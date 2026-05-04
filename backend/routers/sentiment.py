@@ -4,15 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from analysis.news_fetcher import get_news
-from analysis.sentiment_aggregator import aggregate_sentiment
-from analysis.sentiment_analyzer import analyze_batch
-from db.sentiment_models import SentimentResult, SentimentSummary, SessionLocal
+from db.sentiment_models import SentimentSummary, SessionLocal
 
 from ..schemas import SentimentResponse
 
@@ -30,28 +26,6 @@ def get_sentiment_db() -> Generator[Session, None, None]:
         yield db
     finally:
         db.close()
-
-
-def _norm_title(s: str) -> str:
-    return " ".join((s or "").split()).lower()
-
-
-def _parse_published_at(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.replace(tzinfo=None) if value.tzinfo else value
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        s = text
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    except (ValueError, TypeError):
-        return None
 
 
 def _utc_naive_one_hour_ago() -> datetime:
@@ -93,62 +67,20 @@ def get_sentiment(
     if cached_row is not None:
         return _summary_to_response(cached_row, sym, cached=True)
 
-    articles = get_news(sym)
-    if not articles:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No news found for {symbol}",
-        )
-
-    results = analyze_batch(articles, sym)
-    agg = aggregate_sentiment(results)
-
-    by_title = {}
-    for a in articles:
-        if not isinstance(a, dict):
-            continue
-        t = _norm_title(str(a.get("title") or ""))
-        if t:
-            by_title[t] = a
-
-    for row in results:
-        if not isinstance(row, dict):
-            continue
-        art = by_title.get(_norm_title(str(row.get("title") or "")))
-        published_at = _parse_published_at((art or {}).get("published_at"))
-        conf_val: float | None = None
-        if row.get("confidence") is not None:
-            try:
-                conf_val = float(row.get("confidence"))
-            except (TypeError, ValueError):
-                conf_val = None
-        db.add(
-            SentimentResult(
-                symbol=sym,
-                title=str(row.get("title") or "") or None,
-                sentiment=str(row.get("sentiment") or "") or None,
-                confidence=conf_val,
-                reason=str(row.get("reason") or "") or None,
-                published_at=published_at,
-            )
-        )
-
-    summary_row = SentimentSummary(
-        symbol=sym,
-        total_articles=agg["total_articles"],
-        positive=agg["positive"],
-        negative=agg["negative"],
-        neutral=agg["neutral"],
-        avg_confidence=agg["avg_confidence"],
-        overall_sentiment=agg["overall_sentiment"],
-        score=agg["score"],
+    stale_row = (
+        db.query(SentimentSummary)
+        .filter(SentimentSummary.symbol == sym)
+        .order_by(SentimentSummary.created_at.desc())
+        .first()
     )
-    db.add(summary_row)
-    try:
-        db.commit()
-        db.refresh(summary_row)
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if stale_row is not None:
+        return _summary_to_response(stale_row, sym, cached=True)
 
-    return _summary_to_response(summary_row, sym, cached=False)
+    raise HTTPException(
+        status_code=404,
+        detail=(
+            f"No sentiment data for {sym}. "
+            "Run the sentiment job (e.g. analysis.sentiment_analyzer.run_sentiment_job) "
+            "or try again after data is available."
+        ),
+    )
