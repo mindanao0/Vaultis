@@ -1,4 +1,5 @@
-"""วิเคราะห์ sentiment ข่าวเป็นชุดผ่าน Anthropic Claude."""
+# -*- coding: utf-8 -*-
+"""วิเคราะห์ sentiment ข่าวเป็นชุดผ่าน Groq."""
 
 from __future__ import annotations
 
@@ -8,8 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+from groq import Groq
 
 from analysis.news_fetcher import get_news
 from analysis.sentiment_aggregator import aggregate_sentiment
@@ -21,7 +22,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SENTIMENT_SYMBOLS: list[str] = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
 _BATCH_SIZE = 10
-_MODEL = "claude-sonnet-4-20250514"
+_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _chunks(items: list[dict], size: int) -> list[list[dict]]:
@@ -48,14 +49,14 @@ def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def analyze_batch(articles: list[dict], symbol: str) -> list[dict[str, Any]]:
-    """แบ่งข่าวทีละ 10 รายการ เรียก Claude วิเคราะห์ sentiment รวมผลเป็นหนึ่งรายการ."""
+    """แบ่งข่าวทีละ 10 รายการ เรียก Groq วิเคราะห์ sentiment รวมผลเป็นหนึ่งรายการ."""
     load_dotenv(ROOT_DIR / ".env")
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
     if not api_key:
         return []
 
     try:
-        client = Anthropic(api_key=api_key)
+        client = Groq(api_key=api_key)
     except (TypeError, ValueError):
         return []
 
@@ -65,17 +66,13 @@ def analyze_batch(articles: list[dict], symbol: str) -> list[dict[str, Any]]:
     for i, batch in enumerate(batches):
         try:
             prompt = build_sentiment_prompt(batch, symbol)
-            msg = client.messages.create(
-                model=_MODEL,
-                max_tokens=1000,
-                temperature=0.1,
+            response = client.chat.completions.create(
+                model=_GROQ_MODEL,
                 messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=1000,
             )
-            text_parts: list[str] = []
-            for block in msg.content:
-                if getattr(block, "type", None) == "text" and hasattr(block, "text"):
-                    text_parts.append(block.text)
-            raw_text = "".join(text_parts)
+            raw_text = response.choices[0].message.content or ""
             parsed = parse_sentiment_response(raw_text)
             for row in parsed:
                 if isinstance(row, dict):

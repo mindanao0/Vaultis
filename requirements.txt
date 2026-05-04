@@ -10,7 +10,6 @@ feedparser
 schedule
 python-dotenv
 groq
-anthropic
 google-genai
 reportlab
 fastapi
