@@ -19,14 +19,14 @@ jobs:
         run: pip install -r requirements.txt
       # Reminder: add GROQ_API_KEY, NEWSAPI_KEY, DATABASE_URL to GitHub Secrets if missing.
       - name: Run Sentiment Analysis
-        if: github.event.schedule == '0 1 * * 1'
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Run Weekly Summary (วันจันทร์)
-        if: github.event.schedule == '0 1 * * 1'
+        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
