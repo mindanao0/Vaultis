@@ -17,12 +17,12 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      # Reminder: add ANTHROPIC_API_KEY, NEWSAPI_KEY, DATABASE_URL to GitHub Secrets if missing.
+      # Reminder: add GROQ_API_KEY, NEWSAPI_KEY, DATABASE_URL to GitHub Secrets if missing.
       - name: Run Sentiment Analysis
         if: github.event.schedule == '0 1 * * 1'
         run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Run Weekly Summary (วันจันทร์)
