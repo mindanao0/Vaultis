@@ -1,4 +1,4 @@
-"""ดึงข่าวจาก NewsAPI และ RSS สำหรับสัญลักษณ์/แหล่งข่าว."""
+"""ดึงข่าวจาก NewsAPI, RSS, Reddit และ StockTwits สำหรับสัญลักษณ์/แหล่งข่าว."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ SETTRADE_RSS = "https://www.settrade.com/rss/news.xml"
 THAIRATH_RSS = "https://www.thairath.co.th/rss/news/money.xml"
 
 _NEWSAPI_URL = "https://newsapi.org/v2/everything"
+_STOCKTWITS_STREAM_URL = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
 
 
 def _iso_from_struct_time(st: Any) -> str:
@@ -116,6 +117,50 @@ def fetch_reddit(symbol: str) -> list[dict[str, Any]]:
         return []
 
 
+def fetch_stocktwits(symbol: str) -> list[dict[str, Any]]:
+    """ดึงสตรีม StockTwits สำหรับสัญลักษณ์ สูงสุด 20 รายการ; ถ้าล้มเหลวคืน [] ไม่ throw."""
+    sym = (symbol or "").strip()
+    if not sym:
+        return []
+    url = _STOCKTWITS_STREAM_URL.format(symbol=sym)
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (compatible; VaultisNews/1.0; +https://github.com/)"
+                ),
+                "Accept": "application/json",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for msg in messages[:20]:
+            if not isinstance(msg, dict):
+                continue
+            body = (msg.get("body") or "").strip()
+            msg_id = msg.get("id")
+            if msg_id is None or not body:
+                continue
+            out.append(
+                {
+                    "title": body[:80],
+                    "description": body,
+                    "url": f"https://stocktwits.com/message/{msg_id}",
+                    "published_at": str(msg.get("created_at") or ""),
+                    "source": "stocktwits",
+                }
+            )
+        return out
+    except Exception:
+        return []
+
+
 def fetch_rss(feed_url: str) -> list[dict[str, Any]]:
     """Parse RSS ด้วย feedparser; ถ้าล้มเหลวคืน [] ไม่ throw."""
     url = (feed_url or "").strip()
@@ -174,7 +219,7 @@ def _parse_sort_key(published_at: str) -> datetime:
 
 
 def get_news(symbol: str) -> list[dict[str, Any]]:
-    """รวม NewsAPI + RSS + Reddit ลบซ้ำตาม url เรียงเวลาล่าสุดก่อน สูงสุด 30 รายการ."""
+    """รวม NewsAPI + RSS + Reddit + StockTwits ลบซ้ำตาม url เรียงเวลาล่าสุดก่อน สูงสุด 30 รายการ."""
     load_dotenv(ROOT_DIR / ".env")
     api_key = os.getenv("NEWSAPI_KEY", "").strip()
 
@@ -183,6 +228,7 @@ def get_news(symbol: str) -> list[dict[str, Any]]:
     merged.extend(fetch_rss(SETTRADE_RSS))
     merged.extend(fetch_rss(THAIRATH_RSS))
     merged.extend(fetch_reddit(symbol))
+    merged.extend(fetch_stocktwits(symbol))
 
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
