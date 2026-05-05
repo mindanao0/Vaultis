@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import feedparser
+import praw
 import requests
 from dotenv import load_dotenv
 
@@ -65,6 +66,53 @@ def fetch_newsapi(symbol: str, api_key: str) -> list[dict[str, Any]]:
             )
         return out
     except (requests.RequestException, ValueError, TypeError, KeyError):
+        return []
+
+
+_REDDIT_SUBS = "ETFs+investing+stocks"
+
+
+def fetch_reddit(symbol: str) -> list[dict[str, Any]]:
+    """ค้นโพสต์ Reddit ในซับที่กำหนด; ถ้าล้มเหลวคืน [] ไม่ throw."""
+    sym = (symbol or "").strip()
+    if not sym:
+        return []
+    load_dotenv(ROOT_DIR / ".env")
+    client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
+    client_secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+    user_agent = (os.getenv("REDDIT_USER_AGENT") or "VaultisBot/1.0").strip() or "VaultisBot/1.0"
+    if not client_id or not client_secret:
+        return []
+    try:
+        reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent=user_agent,
+        )
+        sub = reddit.subreddit(_REDDIT_SUBS)
+        results = sub.search(sym, sort="top", time_filter="week", limit=10)
+        out: list[dict[str, Any]] = []
+        for post in results:
+            selftext = (getattr(post, "selftext", None) or "")[:300]
+            created = getattr(post, "created_utc", None)
+            if created is not None:
+                dt = datetime.fromtimestamp(float(created), tz=timezone.utc)
+                published_at = dt.isoformat().replace("+00:00", "Z")
+            else:
+                published_at = ""
+            permalink = (getattr(post, "permalink", None) or "").strip()
+            url = f"https://www.reddit.com{permalink}" if permalink else ""
+            out.append(
+                {
+                    "title": getattr(post, "title", "") or "",
+                    "description": selftext,
+                    "url": url,
+                    "published_at": published_at,
+                    "source": "reddit",
+                }
+            )
+        return out
+    except Exception:
         return []
 
 
@@ -126,7 +174,7 @@ def _parse_sort_key(published_at: str) -> datetime:
 
 
 def get_news(symbol: str) -> list[dict[str, Any]]:
-    """รวม NewsAPI + RSS คู่เริ่มต้น ลบซ้ำตาม url เรียงเวลาล่าสุดก่อน สูงสุด 30 รายการ."""
+    """รวม NewsAPI + RSS + Reddit ลบซ้ำตาม url เรียงเวลาล่าสุดก่อน สูงสุด 30 รายการ."""
     load_dotenv(ROOT_DIR / ".env")
     api_key = os.getenv("NEWSAPI_KEY", "").strip()
 
@@ -134,6 +182,7 @@ def get_news(symbol: str) -> list[dict[str, Any]]:
     merged.extend(fetch_newsapi(symbol, api_key))
     merged.extend(fetch_rss(SETTRADE_RSS))
     merged.extend(fetch_rss(THAIRATH_RSS))
+    merged.extend(fetch_reddit(symbol))
 
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
