@@ -2,6 +2,7 @@ yfinance
 fredapi
 pandas
 numpy
+pandas-ta
 ta
 streamlit
 plotly
