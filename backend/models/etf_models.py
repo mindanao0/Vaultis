@@ -46,3 +46,8 @@ class ETFAnalysis(BaseModel):
     overall_signal: str  # strong_buy/buy/hold/sell/strong_sell
     ai_summary: Optional[str] = None
     updated_at: datetime
+
+
+class ETFCompareResponse(BaseModel):
+    analyses: list[ETFAnalysis]
+    ai_summary: str

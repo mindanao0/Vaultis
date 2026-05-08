@@ -55,12 +55,10 @@ class AnalysisService:
             return "strong_sell"
         return "hold"
 
-    def _build_user_message(self, analysis: ETFAnalysis, compare_mode: bool) -> str:
+    def _etf_dataset_lines(self, analysis: ETFAnalysis) -> list[str]:
         info = analysis.info
         t = analysis.technical
         lines: list[str] = []
-        lines.append("ข้อมูล ETF สำหรับวิเคราะห์ (ใช้เฉพาะข้อมูลด้านล่าง)")
-        lines.append("")
         lines.append(f"symbol\t{_cell(analysis.symbol)}")
         lines.append(f"profile\t{_cell(info.profile)}")
         lines.append(f"overall_signal\t{_cell(analysis.overall_signal)}")
@@ -82,6 +80,10 @@ class AnalysisService:
         lines.append(f"dividend_yield\t{_cell(info.dividend_yield)}")
         lines.append(f"ytd_return\t{_cell(info.ytd_return)}")
         lines.append(f"beta\t{_cell(info.beta)}")
+        return lines
+
+    def _response_outline_lines(self, compare_mode: bool) -> list[str]:
+        lines: list[str] = []
         lines.append("")
         lines.append("โครงสร้างคำตอบ (ภาษาไทย):")
         lines.append("1. ETF นี้คืออะไร เหมาะกับนักลงทุนแบบไหน")
@@ -98,6 +100,30 @@ class AnalysisService:
             f"{next_n}. ปิดท้ายด้วย disclaimer ตาม system prompt "
             '(ข้อความ "ข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน")'
         )
+        return lines
+
+    def _build_user_message(
+        self,
+        analysis: ETFAnalysis,
+        compare_mode: bool,
+        *,
+        additional_analyses: list[ETFAnalysis] | None = None,
+    ) -> str:
+        lines: list[str] = []
+        header = (
+            "ชุด ETF สำหรับเปรียบเทียบ" if compare_mode else "ข้อมูล ETF สำหรับวิเคราะห์"
+        )
+        lines.append(f"{header} (ใช้เฉพาะข้อมูลด้านล่าง)")
+        lines.append("")
+        if additional_analyses:
+            lines.append(f"=== หลัก: {analysis.symbol} ===")
+        lines.extend(self._etf_dataset_lines(analysis))
+        if additional_analyses:
+            for other in additional_analyses:
+                lines.append("")
+                lines.append(f"=== เพิ่มเติม: {other.symbol} ===")
+                lines.extend(self._etf_dataset_lines(other))
+        lines.extend(self._response_outline_lines(compare_mode))
         return "\n".join(lines)
 
     def _call_groq(self, user_content: str) -> str:
@@ -119,9 +145,17 @@ class AnalysisService:
         return (response.choices[0].message.content or "").strip()
 
     async def get_ai_summary(
-        self, analysis: ETFAnalysis, compare_mode: bool = False
+        self,
+        analysis: ETFAnalysis,
+        compare_mode: bool = False,
+        *,
+        additional_analyses: list[ETFAnalysis] | None = None,
     ) -> str:
-        user_content = self._build_user_message(analysis, compare_mode=compare_mode)
+        user_content = self._build_user_message(
+            analysis,
+            compare_mode=compare_mode,
+            additional_analyses=additional_analyses,
+        )
         try:
             text = await asyncio.to_thread(self._call_groq, user_content)
         except Exception:

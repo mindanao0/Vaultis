@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine
-from .routers import ai, alerts, analysis, etf, portfolio, sentiment, websocket as prices_ws
+from .routers import ai, alerts, analysis, etf, etf_analysis, portfolio, sentiment, websocket as prices_ws
 
 Base.metadata.create_all(bind=engine)
 
@@ -23,6 +23,7 @@ app.add_middleware(
 )
 
 app.include_router(etf.router)
+app.include_router(etf_analysis.router)
 app.include_router(portfolio.router)
 app.include_router(analysis.router)
 app.include_router(alerts.router)
