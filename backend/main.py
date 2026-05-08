@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .database import Base, engine
-from .routers import ai, alerts, analysis, etf, etf_analysis, portfolio, sentiment, websocket as prices_ws
+from .routers import ai, alerts, analysis, etf, etf_analysis, portfolio, screener, sentiment, websocket as prices_ws
 from .screener.scheduler_job import run_daily_screener
 
 Base.metadata.create_all(bind=engine)
@@ -31,6 +31,7 @@ app.include_router(analysis.router)
 app.include_router(alerts.router)
 app.include_router(ai.router)
 app.include_router(sentiment.router)
+app.include_router(screener.router)
 app.include_router(prices_ws.router)
 
 scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
