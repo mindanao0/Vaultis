@@ -19,4 +19,5 @@ uvicorn
 sqlalchemy
 psycopg2-binary
 pydantic
+redis
 websockets
