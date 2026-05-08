@@ -20,3 +20,4 @@ sqlalchemy
 psycopg2-binary
 pydantic
 websockets
+apscheduler
