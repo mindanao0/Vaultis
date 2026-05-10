@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .database import Base, engine
-from .routers import ai, alerts, analysis, etf, etf_analysis, portfolio, screener, sentiment, websocket as prices_ws
+from .routers import ai, alerts, analysis, etf, etf_analysis, forecast, portfolio, screener, sentiment, websocket as prices_ws
 from .screener.scheduler_job import run_daily_screener
 
 Base.metadata.create_all(bind=engine)
@@ -25,6 +25,7 @@ app.add_middleware(
 )
 
 app.include_router(etf.router)
+app.include_router(forecast.router)
 app.include_router(etf_analysis.router)
 app.include_router(portfolio.router)
 app.include_router(analysis.router)
