@@ -1,4 +1,5 @@
 prophet
+vectorbt
 matplotlib
 yfinance
 fredapi
