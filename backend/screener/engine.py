@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import pandas as pd
@@ -6,6 +7,8 @@ import yfinance
 
 from backend.screener.crossover_detector import CrossoverDetector
 from backend.screener.models import ScreenerPreset, ScreenerRule, ScreenerResult
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenerEngine:
@@ -64,8 +67,10 @@ class ScreenerEngine:
 
     def run(self, symbols: list[str], preset: ScreenerPreset) -> list[ScreenerResult]:
         results = []
+        logger.info("Starting screener run: preset=%s logic=%s symbols=%d", preset.name, preset.logic, len(symbols))
         for symbol in symbols:
             try:
+                logger.debug("[%s] fetching data", symbol)
                 df = self._fetch_df(symbol)
                 rule_results = [(r, self._evaluate_rule(r, df)) for r in preset.rules]
                 matched = [r.description for r, passed in rule_results if passed]
@@ -76,6 +81,7 @@ class ScreenerEngine:
                 if passed:
                     price = float(df["Close"].iloc[-1])
                     strength = self._compute_signal_strength(len(matched), len(preset.rules), df)
+                    logger.info("[%s] PASS  price=%.4f strength=%.1f matched=%s", symbol, price, strength, matched)
                     results.append(
                         ScreenerResult(
                             symbol=symbol,
@@ -86,6 +92,9 @@ class ScreenerEngine:
                             timestamp=datetime.utcnow().isoformat(),
                         )
                     )
+                else:
+                    logger.debug("[%s] FAIL  matched=%d/%d rules", symbol, len(matched), len(preset.rules))
             except Exception as e:
-                print(f"[{symbol}] screener error: {e}")
+                logger.error("[%s] screener error: %s", symbol, e, exc_info=True)
+        logger.info("Screener run complete: %d/%d symbols passed", len(results), len(symbols))
         return sorted(results, key=lambda x: x.signal_strength, reverse=True)
