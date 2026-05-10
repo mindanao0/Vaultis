@@ -24,6 +24,7 @@ class BacktestEngine:
         macd_fast: int = 12,
         macd_slow: int = 26,
         macd_signal: int = 9,
+        debug: bool = False,
     ):
         close = df["Close"]
 
@@ -36,15 +37,45 @@ class BacktestEngine:
         macd_line = macd_df[macd_col]
         signal_line = macd_df[sig_col]
 
-        # MACD bullish cross: MACD crosses above signal (prev below, curr above)
+        # MACD bullish cross: MACD crosses above signal line
         macd_cross_up = (macd_line.shift(1) < signal_line.shift(1)) & (macd_line >= signal_line)
-        # MACD bearish cross: MACD crosses below signal
+        # MACD bearish cross: MACD crosses below signal line
         macd_cross_down = (macd_line.shift(1) > signal_line.shift(1)) & (macd_line <= signal_line)
 
-        entries = (rsi < rsi_oversold) & macd_cross_up
-        exits = (rsi > rsi_overbought) & macd_cross_down
+        rsi_oversold_raw = (rsi < rsi_oversold).fillna(False)
+        rsi_overbought_raw = (rsi > rsi_overbought).fillna(False)
+        cross_up_raw = macd_cross_up.fillna(False)
+        cross_down_raw = macd_cross_down.fillna(False)
 
-        return entries.fillna(False), exits.fillna(False)
+        if debug:
+            print(f"  RSI oversold (<{rsi_oversold}) signals  : {rsi_oversold_raw.sum()}")
+            print(f"  MACD bullish cross signals           : {cross_up_raw.sum()}")
+
+        # 3-day lookback window: signal fires if either condition occurred in the last 3 bars.
+        # Use fillna(0) before astype(bool) to prevent NaN -> True misfire on first rows.
+        rsi_ov_win = rsi_oversold_raw.rolling(3).max().fillna(0).astype(bool)
+        rsi_ob_win = rsi_overbought_raw.rolling(3).max().fillna(0).astype(bool)
+        cross_up_win = cross_up_raw.rolling(3).max().fillna(0).astype(bool)
+        cross_down_win = cross_down_raw.rolling(3).max().fillna(0).astype(bool)
+
+        entries = (rsi_ov_win & cross_up_win).fillna(False)
+        exits = (rsi_ob_win & cross_down_win).fillna(False)
+
+        if debug:
+            print(f"  Combined entry signals (3-day window): {entries.sum()}")
+            print(f"  Combined exit signals  (3-day window): {exits.sum()}")
+
+        # Fallback: RSI-only when the combined window strategy produces no entries.
+        if entries.sum() == 0:
+            if debug:
+                print("  → 0 combined entries; falling back to RSI-only strategy")
+            entries = rsi_oversold_raw.copy()
+            exits = rsi_overbought_raw.copy()
+            if debug:
+                print(f"  Fallback entry signals (RSI-only): {entries.sum()}")
+                print(f"  Fallback exit signals  (RSI-only): {exits.sum()}")
+
+        return entries, exits
 
     def run(
         self,
@@ -52,11 +83,12 @@ class BacktestEngine:
         start: str,
         end: str,
         strategy_params: dict | None = None,
+        debug: bool = False,
     ) -> dict:
         df = self.fetch_data(symbol, start, end)
         close = df["Close"]
 
-        params = strategy_params or {}
+        params = {**(strategy_params or {}), "debug": debug}
         entries, exits = self.rsi_macd_strategy(df, **params)
 
         portfolio = vbt.Portfolio.from_signals(
@@ -65,6 +97,7 @@ class BacktestEngine:
             exits,
             init_cash=10_000,
             fees=0.001,
+            freq="D",
         )
 
         num_trades = int(portfolio.trades.count())
@@ -72,6 +105,8 @@ class BacktestEngine:
         if num_trades > 0:
             total_return = float(portfolio.total_return() * 100)
             sharpe_ratio = float(portfolio.sharpe_ratio())
+            if np.isnan(sharpe_ratio):
+                sharpe_ratio = 0.0
             max_drawdown = float(portfolio.max_drawdown() * 100)
             raw_wr = portfolio.trades.win_rate()
             win_rate = float(raw_wr * 100) if not np.isnan(raw_wr) else 0.0
@@ -98,6 +133,7 @@ class BacktestEngine:
 
     def optimize(self, symbol: str, start: str, end: str) -> dict:
         df = self.fetch_data(symbol, start, end)
+        close = df["Close"]
 
         rsi_periods = [7, 10, 14, 21]
         rsi_oversolds = [25, 30, 35]
@@ -111,13 +147,14 @@ class BacktestEngine:
                 params = {"rsi_period": period, "rsi_oversold": oversold}
                 try:
                     entries, exits = self.rsi_macd_strategy(df, rsi_period=period, rsi_oversold=oversold)
-                    close = df["Close"]
                     portfolio = vbt.Portfolio.from_signals(
-                        close, entries, exits, init_cash=10_000, fees=0.001
+                        close, entries, exits, init_cash=10_000, fees=0.001, freq="D"
                     )
                     num_trades = int(portfolio.trades.count())
-                    sharpe = float(portfolio.sharpe_ratio()) if num_trades > 0 else 0.0
-                    if np.isnan(sharpe):
+                    if num_trades > 0:
+                        sharpe = float(portfolio.sharpe_ratio())
+                        sharpe = 0.0 if np.isnan(sharpe) else sharpe
+                    else:
                         sharpe = 0.0
                 except Exception:
                     sharpe = 0.0
