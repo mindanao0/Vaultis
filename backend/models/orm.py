@@ -5,6 +5,19 @@ from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
 from ..database import Base
 
 
+class NetWorthSnapshot(Base):
+    __tablename__ = "networth_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    snapshot_date = Column(String, nullable=False, index=True)  # YYYY-MM-DD
+    total_assets_thb = Column(Float, nullable=False)
+    total_liabilities_thb = Column(Float, nullable=False, default=0.0)
+    net_worth_thb = Column(Float, nullable=False)
+    assets_json = Column(Text, nullable=False)        # JSON [{name, type, value_thb}]
+    liabilities_json = Column(Text, nullable=False, default="[]")  # JSON [{name, value_thb}]
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
 

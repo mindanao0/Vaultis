@@ -1,3 +1,3 @@
-from .orm import Config, PriceAlert, Transaction
+from .orm import Config, NetWorthSnapshot, PriceAlert, Transaction
 
-__all__ = ["Config", "PriceAlert", "Transaction"]
+__all__ = ["Config", "NetWorthSnapshot", "PriceAlert", "Transaction"]
