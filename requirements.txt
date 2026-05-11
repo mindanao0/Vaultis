@@ -24,3 +24,5 @@ psycopg2-binary
 pydantic
 websockets
 apscheduler
+anthropic
+python-multipart

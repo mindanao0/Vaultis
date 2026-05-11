@@ -64,6 +64,16 @@ class GenericResponse(BaseModel):
     data: Any
 
 
+class SlipUploadResponse(BaseModel):
+    success: bool
+    amount: float | None = None
+    date: str | None = None
+    sender: str | None = None
+    receiver: str | None = None
+    category: str | None = None
+    error: str | None = None
+
+
 class SentimentResponse(BaseModel):
     symbol: str
     total_articles: int
