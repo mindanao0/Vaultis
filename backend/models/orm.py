@@ -48,3 +48,25 @@ class Config(Base):
 
     key = Column(String, primary_key=True, index=True)
     value = Column(Text, nullable=False)
+
+
+class InvestmentGoal(Base):
+    __tablename__ = "investment_goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    target_amount_thb = Column(Float, nullable=False)
+    current_amount_thb = Column(Float, nullable=False, default=0.0)
+    monthly_contribution_thb = Column(Float, nullable=False)
+    target_date = Column(String, nullable=False)  # YYYY-MM-DD
+    risk_profile = Column(String, nullable=False, default="moderate")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MonthlyReport(Base):
+    __tablename__ = "monthly_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    month = Column(String, nullable=False, unique=True, index=True)  # YYYY-MM
+    content = Column(Text, nullable=False)
+    sent_at = Column(DateTime, nullable=False)

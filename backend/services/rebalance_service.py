@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import yfinance as yf
+from groq import Groq
+
+from alerts.price_alert import get_current_prices
+
+DIME_FEE_RATE = 0.0015  # 0.15% ต่อ transaction
+
+DRIFT_THRESHOLD = 0.05  # 5%
+
+TARGET_WEIGHTS: dict[str, dict[str, float]] = {
+    "conservative": {"VOO": 0.30, "SCHD": 0.30, "QQQM": 0.10, "XLV": 0.20, "GLDM": 0.10},
+    "moderate":     {"VOO": 0.35, "SCHD": 0.25, "QQQM": 0.20, "XLV": 0.10, "GLDM": 0.10},
+    "aggressive":   {"VOO": 0.25, "SCHD": 0.10, "QQQM": 0.45, "XLV": 0.10, "GLDM": 0.10},
+}
+
+_RISK_PROFILE_TH = {
+    "conservative": "อนุรักษ์นิยม",
+    "moderate": "สมดุล",
+    "aggressive": "เชิงรุก",
+}
+
+
+def _get_usdthb_rate() -> float:
+    try:
+        hist = yf.Ticker("USDTHB=X").history(period="2d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 35.0
+
+
+def calculate_drift(
+    holdings: list[dict[str, Any]],
+    target: dict[str, float],
+    prices: dict[str, float],
+) -> float:
+    """คืนค่า drift สูงสุด (0–1) เทียบกับ target weights"""
+    values: dict[str, float] = {}
+    for h in holdings:
+        sym = str(h["symbol"]).upper()
+        price = prices.get(sym, 0.0)
+        values[sym] = float(h["shares"]) * price
+
+    total = sum(values.values())
+    if total <= 0:
+        return 1.0
+
+    max_drift = 0.0
+    for sym, target_w in target.items():
+        current_w = values.get(sym, 0.0) / total
+        drift = abs(current_w - target_w)
+        if drift > max_drift:
+            max_drift = drift
+    return max_drift
+
+
+def _build_actions(
+    holdings: list[dict[str, Any]],
+    target: dict[str, float],
+    prices: dict[str, float],
+    budget_usd: float,
+    fx_rate: float,
+) -> list[dict[str, Any]]:
+    values: dict[str, float] = {}
+    for h in holdings:
+        sym = str(h["symbol"]).upper()
+        price = prices.get(sym, 0.0)
+        values[sym] = float(h["shares"]) * price
+
+    total_usd = sum(values.values()) + budget_usd
+    actions: list[dict[str, Any]] = []
+
+    for sym, target_w in target.items():
+        price = prices.get(sym)
+        if not price:
+            continue
+
+        target_value = target_w * total_usd
+        current_value = values.get(sym, 0.0)
+        delta_usd = target_value - current_value
+
+        if abs(delta_usd) < 0.01:
+            action_type = "hold"
+            shares_delta = 0.0
+            usd_amount = 0.0
+        elif delta_usd > 0:
+            action_type = "buy"
+            usd_amount = delta_usd
+            shares_delta = usd_amount / price
+        else:
+            action_type = "sell"
+            usd_amount = abs(delta_usd)
+            shares_delta = usd_amount / price
+
+        fee_thb = DIME_FEE_RATE * usd_amount * fx_rate if action_type != "hold" else 0.0
+
+        actions.append({
+            "symbol": sym,
+            "action": action_type,
+            "shares": round(shares_delta, 6),
+            "usd_amount": round(usd_amount, 2),
+            "thb_amount": round(usd_amount * fx_rate, 2),
+            "fee_thb": round(fee_thb, 2),
+        })
+
+    return actions
+
+
+def _generate_ai_comment(
+    risk_profile: str,
+    max_drift: float,
+    actions: list[dict[str, Any]],
+    target: dict[str, float],
+    prices: dict[str, float],
+    holdings: list[dict[str, Any]],
+) -> str:
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key or api_key == "your_key_here":
+        return "ไม่สามารถสร้างคำแนะนำได้ กรุณาตั้งค่า GROQ_API_KEY"
+
+    values: dict[str, float] = {}
+    for h in holdings:
+        sym = str(h["symbol"]).upper()
+        values[sym] = float(h["shares"]) * prices.get(sym, 0.0)
+    total = sum(values.values()) or 1.0
+
+    overweight = [
+        f"{sym} ({values.get(sym, 0.0)/total*100:.1f}% vs เป้า {tw*100:.0f}%)"
+        for sym, tw in target.items()
+        if values.get(sym, 0.0) / total - tw > 0.01
+    ]
+    underweight = [
+        f"{sym} ({values.get(sym, 0.0)/total*100:.1f}% vs เป้า {tw*100:.0f}%)"
+        for sym, tw in target.items()
+        if tw - values.get(sym, 0.0) / total > 0.01
+    ]
+
+    buys = [a["symbol"] for a in actions if a["action"] == "buy"]
+    sells = [a["symbol"] for a in actions if a["action"] == "sell"]
+    action_summary = ""
+    if buys:
+        action_summary += f"ซื้อเพิ่ม: {', '.join(buys)}  "
+    if sells:
+        action_summary += f"ขาย: {', '.join(sells)}"
+
+    profile_th = _RISK_PROFILE_TH.get(risk_profile, risk_profile)
+    user_msg = (
+        f"พอร์ตโฟลิโอมีการเบี่ยงเบนสูงสุด {max_drift*100:.1f}% จากสัดส่วนเป้าหมายของโปรไฟล์ {profile_th}\n"
+        f"ETF เกินสัดส่วน: {', '.join(overweight) if overweight else 'ไม่มี'}\n"
+        f"ETF ขาดสัดส่วน: {', '.join(underweight) if underweight else 'ไม่มี'}\n"
+        f"แผน rebalance: {action_summary if action_summary else 'ไม่มีการซื้อขาย'}\n"
+        "อธิบายสั้น ๆ ว่าทำไมต้อง rebalance และประโยชน์ที่ได้รับ"
+    )
+
+    try:
+        client = Groq(api_key=api_key)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            max_tokens=300,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "คุณเป็นที่ปรึกษาการลงทุนสำหรับนักลงทุนรายย่อยชาวไทย "
+                        "ให้คำแนะนำเกี่ยวกับการ rebalance พอร์ตโฟลิโอ ETF "
+                        "อธิบายเป็นภาษาไทย กระชับ ชัดเจน ไม่เกิน 3 ประโยค"
+                    ),
+                },
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        return f"ไม่สามารถสร้างคำแนะนำได้: {exc}"
+
+
+def compute_rebalance(
+    holdings: list[dict[str, Any]],
+    risk_profile: str,
+    available_budget_thb: float,
+) -> dict[str, Any]:
+    target = TARGET_WEIGHTS[risk_profile]
+    all_symbols = list({str(h["symbol"]).upper() for h in holdings} | set(target.keys()))
+
+    prices = get_current_prices(all_symbols)
+    fx_rate = _get_usdthb_rate()
+    budget_usd = available_budget_thb / fx_rate
+
+    max_drift = calculate_drift(holdings, target, prices)
+
+    if max_drift < DRIFT_THRESHOLD:
+        return {
+            "needs_rebalance": False,
+            "max_drift_pct": round(max_drift * 100, 2),
+            "actions": [],
+            "total_fee_thb": 0.0,
+            "ai_comment": "",
+        }
+
+    actions = _build_actions(holdings, target, prices, budget_usd, fx_rate)
+    total_fee_thb = round(sum(a["fee_thb"] for a in actions), 2)
+    ai_comment = _generate_ai_comment(risk_profile, max_drift, actions, target, prices, holdings)
+
+    return {
+        "needs_rebalance": True,
+        "max_drift_pct": round(max_drift * 100, 2),
+        "actions": actions,
+        "total_fee_thb": total_fee_thb,
+        "ai_comment": ai_comment,
+    }

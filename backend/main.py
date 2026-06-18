@@ -3,8 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .database import Base, engine
-from .routers import ai, alerts, analysis, backtest, cashflow, debt, emergency_fund, etf, etf_analysis, forecast, networth, portfolio, screener, sentiment, transactions, websocket as prices_ws
+from .routers import ai, alerts, analysis, backtest, cashflow, debt, emergency_fund, etf, etf_analysis, forecast, goals, networth, portfolio, rebalance, reports, screener, sentiment, transactions, websocket as prices_ws
 from .screener.scheduler_job import run_daily_screener
+from .services.report_service import generate_and_save_report as run_monthly_report
 
 Base.metadata.create_all(bind=engine)
 
@@ -29,6 +30,9 @@ app.include_router(backtest.router)
 app.include_router(forecast.router)
 app.include_router(etf_analysis.router)
 app.include_router(portfolio.router)
+app.include_router(rebalance.router)
+app.include_router(goals.router)
+app.include_router(reports.router)
 app.include_router(analysis.router)
 app.include_router(alerts.router)
 app.include_router(ai.router)
@@ -47,6 +51,7 @@ scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
 @app.on_event("startup")
 async def start_scheduler():
     scheduler.add_job(run_daily_screener, "cron", hour=7, minute=0)
+    scheduler.add_job(run_monthly_report, "cron", day=1, hour=8, minute=0)
     scheduler.start()
 
 

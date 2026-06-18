@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TransactionBase(BaseModel):
@@ -85,3 +85,36 @@ class SentimentResponse(BaseModel):
     score: float
     created_at: datetime
     cached: bool
+
+
+class HoldingInput(BaseModel):
+    symbol: str
+    shares: float = Field(gt=0)
+
+
+class RebalanceRequest(BaseModel):
+    holdings: list[HoldingInput]
+    risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
+    available_budget_thb: float = Field(default=0.0, ge=0)
+
+
+class GoalCreate(BaseModel):
+    model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
+
+    name: str
+    target_amount_thb: float = Field(gt=0)
+    current_amount_thb: float = Field(default=0.0, ge=0)
+    monthly_contribution_thb: float = Field(gt=0)
+    target_date: datetime
+    risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
+
+
+class GoalRead(GoalCreate):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, json_encoders={datetime: lambda v: v.isoformat()})
+
+
+class GoalContributeRequest(BaseModel):
+    actual_contribution_thb: float = Field(gt=0)

@@ -26,3 +26,4 @@ websockets
 apscheduler
 anthropic
 python-multipart
+numpy-financial
