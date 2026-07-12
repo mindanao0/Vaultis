@@ -4,3 +4,7 @@ __pycache__/
 .DS_Store
 .claude.json
 .claude/
+
+# ข้อมูลส่วนตัว/ฐานข้อมูล — ห้าม track (AUDIT.md H1)
+vaultis.db
+portfolio/data/transactions.csv

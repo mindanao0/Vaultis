@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-import streamlit as st
 
 from utils.cache import cache_data_1h
 
@@ -61,7 +60,9 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
 
         rs = avg_gain / avg_loss.replace(0, pd.NA)
         rsi = 100 - (100 / (1 + rs))
-        rsi = rsi.fillna(100).where(avg_loss.ne(0), 100)
+        # ไม่มีแรงขายเลย (avg_loss == 0) → RSI = 100 ตามนิยาม
+        # ช่วง warmup ต้องคงเป็น NaN — ห้าม fill 100 (บั๊กเดิม: กราฟช่วงแรกกลายเป็น Overbought ปลอม)
+        rsi = rsi.where(avg_loss.ne(0) | avg_loss.isna(), 100.0)
 
         output = pd.DataFrame(index=df.index)
         output["Adj Close"] = price
@@ -103,6 +104,6 @@ def get_signals(ticker: str) -> dict[str, Any]:
             "rsi_signal": rsi_zone,
             "zone": zone,
         }
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return {}
+    except Exception as exc:
+        # ห้ามคืน {} เงียบ ๆ — ข้อมูลพังต้องเสียงดังถึงผู้เรียก (AUDIT.md C1)
+        raise RuntimeError(f"ดึงสัญญาณเทคนิคของ {ticker} ไม่สำเร็จ: {exc}") from exc

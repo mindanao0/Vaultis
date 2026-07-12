@@ -1,11 +1,12 @@
 import pandas as pd
-import pandas_ta as ta
 from typing import Optional
+
+from analysis.ta_compat import ta
 
 
 class CrossoverDetector:
     def detect_macd_cross(self, df: pd.DataFrame) -> Optional[str]:
-        macd = df.ta.macd(fast=12, slow=26, signal=9)
+        macd = ta.macd(df["Close"], fast=12, slow=26, signal=9)
         if macd is None or len(macd) < 3:
             return None
         macd_col = [c for c in macd.columns if c.startswith("MACD_")][0]
@@ -37,7 +38,7 @@ class CrossoverDetector:
         return False
 
     def detect_bb_squeeze(self, df: pd.DataFrame) -> bool:
-        bb = df.ta.bbands(length=20, std=2)
+        bb = ta.bbands(df["Close"], length=20, std=2)
         if bb is None:
             return False
         upper_col = [c for c in bb.columns if c.startswith("BBU")][0]

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 import vectorbt as vbt
 import yfinance as yf
+
+from analysis.ta_compat import ta
 
 
 class BacktestEngine:
     def fetch_data(self, symbol: str, start: str, end: str) -> pd.DataFrame:
-        df = yf.download(symbol, start=start, end=end, progress=False)
+        # auto_adjust=True ระบุชัด: ราคา adjusted มาตรฐานเดียวทั้งระบบ (AUDIT.md M1)
+        df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        if df.empty or "Close" not in df.columns:
+            raise ValueError(f"ดึงข้อมูลราคา {symbol} ไม่สำเร็จ (ผลว่าง)")
         return df
 
     def rsi_macd_strategy(
@@ -66,16 +70,19 @@ class BacktestEngine:
             print(f"  Combined exit signals  (3-day window): {exits.sum()}")
 
         # Fallback: RSI-only when the combined window strategy produces no entries.
+        # ต้องรายงาน strategy ที่ใช้จริงกลับไปเสมอ — ห้ามสลับเงียบ (AUDIT.md M2)
+        strategy_used = "rsi_macd_3day_window"
         if entries.sum() == 0:
             if debug:
                 print("  → 0 combined entries; falling back to RSI-only strategy")
             entries = rsi_oversold_raw.copy()
             exits = rsi_overbought_raw.copy()
+            strategy_used = "rsi_only_fallback"
             if debug:
                 print(f"  Fallback entry signals (RSI-only): {entries.sum()}")
                 print(f"  Fallback exit signals  (RSI-only): {exits.sum()}")
 
-        return entries, exits
+        return entries, exits, strategy_used
 
     def run(
         self,
@@ -89,7 +96,7 @@ class BacktestEngine:
         close = df["Close"]
 
         params = {**(strategy_params or {}), "debug": debug}
-        entries, exits = self.rsi_macd_strategy(df, **params)
+        entries, exits, strategy_used = self.rsi_macd_strategy(df, **params)
 
         portfolio = vbt.Portfolio.from_signals(
             close,
@@ -122,6 +129,7 @@ class BacktestEngine:
             "symbol": symbol,
             "start": start,
             "end": end,
+            "strategy_used": strategy_used,
             "total_return": round(total_return, 4),
             "sharpe_ratio": round(sharpe_ratio, 4),
             "max_drawdown": round(max_drawdown, 4),
@@ -146,7 +154,7 @@ class BacktestEngine:
             for oversold in rsi_oversolds:
                 params = {"rsi_period": period, "rsi_oversold": oversold}
                 try:
-                    entries, exits = self.rsi_macd_strategy(df, rsi_period=period, rsi_oversold=oversold)
+                    entries, exits, _ = self.rsi_macd_strategy(df, rsi_period=period, rsi_oversold=oversold)
                     portfolio = vbt.Portfolio.from_signals(
                         close, entries, exits, init_cash=10_000, fees=0.001, freq="D"
                     )
@@ -165,8 +173,14 @@ class BacktestEngine:
                     best_sharpe = sharpe
                     best_params = params
 
+        if best_sharpe == float("-inf"):
+            # ทุก combination ล้มเหลว — round(-inf) จะ crash ตอน serialize (AUDIT.md M2)
+            best_sharpe = 0.0
+            best_params = {}
+
         return {
             "best_params": best_params,
             "best_sharpe": round(best_sharpe, 4),
             "all_results": all_results,
+            "note": "ผล optimize เป็น in-sample ทั้งช่วงข้อมูล — อย่าใช้เป็นหลักฐานว่าจะได้ผลจริงในอนาคต",
         }

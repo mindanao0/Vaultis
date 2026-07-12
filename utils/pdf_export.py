@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from io import BytesIO
-import re
 
 import pandas as pd
 from reportlab.lib import colors
@@ -23,33 +22,10 @@ from utils.config import get_tickers
 
 def _safe_float(value: object, default: float = 0.0) -> float:
     try:
-        return float(value)
+        f = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
-
-
-def _extract_advice_items(advice_text: str) -> tuple[list[str], list[str], list[str]]:
-    analysis_lines: list[str] = []
-    allocation_lines: list[str] = []
-    risk_lines: list[str] = []
-
-    for line in advice_text.splitlines():
-        text = line.strip()
-        if not text:
-            continue
-        if "— RSI" in text or "RSI" in text:
-            analysis_lines.append(text)
-            continue
-        if re.search(r"\(\d+(\.\d+)?%\)", text):
-            allocation_lines.append(text)
-            continue
-        if text.startswith("⚠️") or "ความเสี่ยง" in text:
-            risk_lines.append(text)
-            continue
-        if len(risk_lines) > 0 and not text.startswith(("📅", "💰", "📊", "🤖")):
-            risk_lines.append(text)
-
-    return analysis_lines[:8], allocation_lines[:8], risk_lines[:5]
+    return default if f != f else f  # NaN → default
 
 
 def _build_table(table_data: list[list[object]], col_widths: list[float] | None = None) -> Table:
@@ -89,9 +65,13 @@ def generate_monthly_report(month: str, budget_thb: float) -> bytes:
     holdings_df = get_portfolio_summary()
     total_summary = get_total_summary()
     tickers = get_tickers()
-    prices = fetch_adjusted_close_data(tickers=tickers, years=10)
+    try:
+        prices = fetch_adjusted_close_data(tickers=tickers, years=10)
+    except Exception:
+        prices = pd.DataFrame()
     returns_df = calculate_period_returns(prices) if not prices.empty else pd.DataFrame()
     risk_df = calculate_risk_metrics(prices) if not prices.empty else pd.DataFrame()
+    missing_prices = list(total_summary.get("missing_prices") or [])
 
     # Page 1: Portfolio summary
     elements.append(Paragraph(f"Vaultis Monthly Report - {month}", styles["Title"]))
@@ -107,6 +87,15 @@ def generate_monthly_report(month: str, budget_thb: float) -> bytes:
         ["Total Return (%)", f"{_safe_float(total_summary.get('total_return_pct')):,.2f}%"],
     ]
     elements.append(_build_table(summary_table_data, col_widths=[8 * cm, 8 * cm]))
+    if missing_prices:
+        elements.append(Spacer(1, 0.2 * cm))
+        elements.append(
+            Paragraph(
+                f"WARNING: current price unavailable for {', '.join(missing_prices)} — "
+                "value and P&L above exclude these holdings.",
+                styles["BodyText"],
+            )
+        )
     elements.append(Spacer(1, 0.4 * cm))
 
     elements.append(Paragraph("Holdings", styles["Heading3"]))
@@ -172,35 +161,48 @@ def generate_monthly_report(month: str, budget_thb: float) -> bytes:
     elements.append(Paragraph("Page 3 - AI Advisor Summary", styles["Heading2"]))
     elements.append(Spacer(1, 0.2 * cm))
 
+    advice: dict = {}
     try:
         advice = get_monthly_advice(budget_thb=budget_thb, send_discord=False)
         advice_text = str(advice.get("advice_text", "")).strip()
     except Exception as exc:
         advice_text = f"AI analysis unavailable: {exc}"
 
-    analysis_lines, allocation_lines, risk_lines = _extract_advice_items(advice_text)
-    elements.append(Paragraph("Monthly AI Analysis", styles["Heading3"]))
-    if analysis_lines:
-        for line in analysis_lines:
-            elements.append(Paragraph(f"- {line}", styles["BodyText"]))
+    # ตาราง allocation มาจากโมเดลโดยตรง — ไม่ regex แกะจากข้อความ AI อีกต่อไป (AUDIT.md C3)
+    elements.append(Paragraph("Recommended Allocation (model-computed)", styles["Heading3"]))
+    allocation = advice.get("allocation") or {}
+    if allocation:
+        allocation_table: list[list[object]] = [["Ticker", "Amount (THB)", "Percent", "Group"]]
+        for ticker, item in allocation.items():
+            allocation_table.append(
+                [
+                    str(ticker),
+                    f"{_safe_float(item.get('amount_thb')):,.0f}",
+                    f"{_safe_float(item.get('percent')):.0f}%",
+                    str(item.get("group", "")),
+                ]
+            )
+        elements.append(_build_table(allocation_table, col_widths=[3 * cm, 4 * cm, 3 * cm, 4 * cm]))
+        unallocated = _safe_float(advice.get("unallocated_thb"))
+        if unallocated > 0:
+            elements.append(Paragraph(f"Unallocated: {unallocated:,.0f} THB", styles["BodyText"]))
     else:
-        elements.append(Paragraph(advice_text[:1200] or "No AI analysis content.", styles["BodyText"]))
+        elements.append(
+            Paragraph(
+                "No ETF met the allocation threshold this month (model suggests holding cash).",
+                styles["BodyText"],
+            )
+        )
+
+    no_data = advice.get("no_data_tickers") or []
+    if no_data:
+        elements.append(
+            Paragraph(f"NO DATA (excluded from scoring): {', '.join(map(str, no_data))}", styles["BodyText"])
+        )
 
     elements.append(Spacer(1, 0.3 * cm))
-    elements.append(Paragraph("Recommended Allocation", styles["Heading3"]))
-    if allocation_lines:
-        for line in allocation_lines:
-            elements.append(Paragraph(f"- {line}", styles["BodyText"]))
-    else:
-        elements.append(Paragraph("No allocation details found in this run.", styles["BodyText"]))
-
-    elements.append(Spacer(1, 0.3 * cm))
-    elements.append(Paragraph("Key Risks To Monitor", styles["Heading3"]))
-    if risk_lines:
-        for line in risk_lines:
-            elements.append(Paragraph(f"- {line}", styles["BodyText"]))
-    else:
-        elements.append(Paragraph("No specific risk section found in AI output.", styles["BodyText"]))
+    elements.append(Paragraph("AI Commentary", styles["Heading3"]))
+    elements.append(Paragraph(advice_text[:2500] or "No AI analysis content.", styles["BodyText"]))
 
     doc.build(elements)
     pdf_bytes = buffer.getvalue()

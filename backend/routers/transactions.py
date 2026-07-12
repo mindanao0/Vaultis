@@ -68,7 +68,8 @@ async def upload_slip(file: UploadFile):
 
     try:
         response = _get_client().messages.create(
-            model="claude-opus-4-7",
+            # Haiku 4.5 อ่านสลิปได้แม่นใกล้เคียง Opus ที่ ~1/5 ของราคา (AUDIT.md L7)
+            model="claude-haiku-4-5",
             max_tokens=512,
             system=_SYSTEM_PROMPT,
             messages=[
@@ -95,8 +96,18 @@ async def upload_slip(file: UploadFile):
         (block.text for block in response.content if block.type == "text"), ""
     )
 
+    # กัน markdown fence และข้อความห่อหุ้ม: ตัดเอาเฉพาะช่วง { ... } ตัวนอกสุด
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start : end + 1]
+
     try:
-        data = json.loads(raw_text)
+        data = json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
         return SlipUploadResponse(success=False, error="parse JSON ไม่ได้")
 

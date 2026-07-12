@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-from groq import Groq
+from analysis.llm import chat_text
+from technical import signal_rules
 
 from ..models.etf_models import ETFAnalysis, TechnicalIndicators
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 
-_GROQ_MODEL = "llama-3.3-70b-versatile"
 _SYSTEM_PROMPT = """
 You are Vaultis AI, an ETF investment analyst.
 Always respond in Thai.
+ตัวเลขและสัญญาณทั้งหมดคำนวณมาแล้วจากโมเดล — อธิบายเท่านั้น ห้ามคำนวณใหม่หรือสร้างตัวเลขใหม่
 Never give direct buy/sell advice.
 Always end with disclaimer: "ข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
 """.strip()
@@ -35,25 +34,20 @@ def _cell(value: Any) -> str:
 
 class AnalysisService:
     def compute_overall_signal(self, technical: TechnicalIndicators) -> str:
-        sig = (technical.signal or "").strip().lower()
-        rsi = technical.rsi
-        ma50 = technical.ma50
-        ma200 = technical.ma200
+        """สรุปสัญญาณจากนิยามกลาง technical/signal_rules.py (AUDIT.md C2).
 
-        if sig == "bullish" and technical.golden_cross and rsi is not None and rsi < 65:
-            return "strong_buy"
-        if (
-            sig == "bullish"
-            and ma50 is not None
-            and ma200 is not None
-            and ma50 > ma200
-        ):
-            return "buy"
-        if sig == "bearish" and technical.death_cross:
-            return "sell"
-        if sig == "bearish" and rsi is not None and rsi < 30:
-            return "strong_sell"
-        return "hold"
+        บั๊กเดิม: RSI < 30 ถูก map เป็น strong_sell ทั้งที่ financial_model/screener
+        ตีความ oversold เป็นฝั่งซื้อ — ระบบเดียวกันห้ามให้สัญญาณตรงข้ามกันเอง
+        """
+        central = signal_rules.dca_signal(
+            technical.price, technical.ma50, technical.ma200, technical.rsi
+        )
+        return signal_rules.overall_signal(
+            central,
+            golden_cross=bool(technical.golden_cross),
+            death_cross=bool(technical.death_cross),
+            rsi=technical.rsi,
+        )
 
     def _etf_dataset_lines(self, analysis: ETFAnalysis) -> list[str]:
         info = analysis.info
@@ -126,23 +120,8 @@ class AnalysisService:
         lines.extend(self._response_outline_lines(compare_mode))
         return "\n".join(lines)
 
-    def _call_groq(self, user_content: str) -> str:
-        load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-        if not api_key or api_key == "your_key_here":
-            raise ValueError("missing GROQ_API_KEY")
-
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=_GROQ_MODEL,
-            temperature=0.1,
-            max_tokens=600,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        return (response.choices[0].message.content or "").strip()
+    def _call_llm(self, user_content: str) -> str:
+        return chat_text(_SYSTEM_PROMPT, user_content, max_tokens=1200, temperature=0.2)
 
     async def get_ai_summary(
         self,
@@ -157,11 +136,11 @@ class AnalysisService:
             additional_analyses=additional_analyses,
         )
         try:
-            text = await asyncio.to_thread(self._call_groq, user_content)
-        except Exception:
+            text = await asyncio.to_thread(self._call_llm, user_content)
+        except Exception as exc:
             text = (
                 "ไม่สามารถเรียกบริการวิเคราะห์ AI ได้ในขณะนี้ "
-                "กรุณาตรวจสอบ GROQ_API_KEY และการเชื่อมต่ออินเทอร์เน็ต"
+                f"(ตรวจสอบ ANTHROPIC_API_KEY / GROQ_API_KEY และการเชื่อมต่อ: {exc})"
             )
 
         if _DISCLAIMER not in text:

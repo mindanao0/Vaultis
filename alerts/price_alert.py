@@ -259,7 +259,8 @@ def _build_daily_status_message(
     for ticker in tracked_tickers:
         snapshot = snapshots.get(ticker)
         if not snapshot:
-            lines.append(f"{ticker:<4}  N/A  🟡 (0.00%)")
+            # เดิมโชว์ 🟡 (0.00%) ทำให้ดูเหมือน "ราคาไม่เปลี่ยน" ทั้งที่ดึงข้อมูลไม่ได้ (AUDIT.md C1)
+            lines.append(f"{ticker:<4}  ⚠️ ดึงราคาไม่ได้")
             continue
 
         latest_price = float(snapshot["latest_price"])

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
 from prophet import Prophet
+
+from analysis.ta_compat import ta
 
 
 class PriceForecaster:

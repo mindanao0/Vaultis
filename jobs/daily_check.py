@@ -94,6 +94,20 @@ def _row_for_ticker(
     return price, chg
 
 
+def _alert_status_line() -> str:
+    """นับ alert จริงจาก storage — เดิม hardcode '0 items' ทำให้เข้าใจผิด (AUDIT.md C6)."""
+    _ensure_repo_root_on_path()
+    try:
+        from alerts.price_alert import list_alerts
+
+        alerts = list_alerts(include_triggered=True)
+        pending = [a for a in alerts if not bool(a.get("triggered"))]
+        triggered = len(alerts) - len(pending)
+        return f"⚠️ Price Alerts: รอ trigger {len(pending)} รายการ (trigger แล้ว {triggered})"
+    except Exception as exc:
+        return f"⚠️ Price Alerts: อ่านสถานะไม่ได้ ({exc})"
+
+
 def build_discord_message(snapshot: dict, prices: dict) -> str:
     asof = _snapshot_asof_date(snapshot) or datetime.now().strftime("%d/%m/%Y")
     lines = [
@@ -103,6 +117,9 @@ def build_discord_message(snapshot: dict, prices: dict) -> str:
 
     for ticker in TICKERS:
         price, change_pct = _row_for_ticker(ticker, snapshot, prices)
+        if price <= 0:
+            lines.append(f"{ticker:<6} N/A (ดึงราคาไม่ได้)  ({asof})")
+            continue
         sign = "+" if change_pct >= 0 else ""
         emoji = "🟢" if change_pct >= 0 else "🔴"
         lines.append(
@@ -112,7 +129,7 @@ def build_discord_message(snapshot: dict, prices: dict) -> str:
     lines.extend(
         [
             SEP_LINE,
-            "⚠️ Price Alerts: 0 items",
+            _alert_status_line(),
         ]
     )
     return "\n".join(lines)

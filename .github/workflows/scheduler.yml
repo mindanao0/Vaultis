@@ -7,6 +7,10 @@ on:
     - cron: '0 15 * * 1-5' # จันทร์-ศุกร์ 22:00 Thailand (หลัง US market เปิด 30 นาที)
   workflow_dispatch:
 
+# ต้องเขียน repo ได้เพื่อบันทึกสถานะ alert ที่ trigger แล้ว (กันแจ้งเตือนซ้ำ)
+permissions:
+  contents: write
+
 jobs:
   run-scheduler:
     runs-on: ubuntu-latest
@@ -17,7 +21,8 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      # Reminder: add GROQ_API_KEY, NEWSAPI_KEY, DATABASE_URL to GitHub Secrets if missing.
+      # Secrets ที่ต้องมี: GROQ_API_KEY, ANTHROPIC_API_KEY (Haiku 4.5 สำหรับ AI Advisor),
+      # DISCORD_WEBHOOK_URL, FRED_API_KEY, NEWSAPI_KEY, DATABASE_URL
       - name: Run Sentiment Analysis
         if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
@@ -33,7 +38,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job weekly_summary
       - name: Run Monthly AI Advisor (วันที่ 1)
@@ -41,15 +46,32 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Run Price Alert (ทุกวัน)
+      - name: Check Price Alerts (ทุกวันทำการ)
+        # ตัวเช็ค alert จริง (alerts/price_alert.check_alerts) — เดิมไม่มี job ไหนรันเลย (AUDIT.md C6)
+        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python main.py --job price_alert
+      - name: Persist triggered alerts
+        # บันทึกสถานะ triggered กลับเข้า repo — ไม่งั้น alert เดิมจะเด้งซ้ำทุกวัน
+        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
+        run: |
+          if ! git diff --quiet alerts/data/price_alerts.json; then
+            git config user.name "vaultis-scheduler"
+            git config user.email "actions@users.noreply.github.com"
+            git add alerts/data/price_alerts.json
+            git commit -m "chore: persist triggered price alerts [skip ci]"
+            git push
+          fi
+      - name: Run Daily Price Check (ทุกวันทำการ)
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
         run: python jobs/daily_check.py

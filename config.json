@@ -13,7 +13,7 @@
     ]
   },
   "notifications": {
-    "discord_webhook_url": "https://discordapp.com/api/webhooks/1497852498453598269/F-vbyJpk_ywEpNUY_NvNFqv6rKSDJQcg6AReCetYsyr_otiKip2eJrb59znW0lqj_7Kz",
+    "discord_webhook_url": "",
     "weekly_summary": true,
     "dca_reminder": true,
     "rsi_alert": true

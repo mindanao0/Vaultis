@@ -265,6 +265,13 @@ if __name__ == "__main__":
         else:
             print("Not day 1 - skipping")
     elif args.job == "price_alert":
+        # เดิม job นี้เรียก daily_check (สรุปราคา) ไม่ใช่ตัวเช็ค alert จริง — AUDIT.md C6
+        result = check_alerts()
+        print(
+            f"ตรวจ alert {result.get('checked', 0)} รายการ, "
+            f"trigger {len(result.get('triggered', []))} รายการ"
+        )
+    elif args.job == "daily_check":
         run()
     elif args.job == "all":
         # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)

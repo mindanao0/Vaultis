@@ -8,6 +8,7 @@ from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
+from technical import signal_rules
 from utils.config import get_tickers
 
 
@@ -68,24 +69,44 @@ def get_etf_correlation() -> dict:
     return result.to_dict()
 
 
-def get_etf_technical() -> dict[str, dict[str, float | str]]:
+def get_etf_technical() -> dict[str, dict[str, float | str | bool]]:
+    """สัญญาณเทคนิครายตัว — ใช้นิยามกลางจาก technical/signal_rules.py (AUDIT.md C2).
+
+    ticker ที่ข้อมูลไม่พอจะมี ``data_ok: False`` และ ``signal: "no_data"``
+    ไม่ถูกซ่อนหายไปเฉย ๆ เหมือนเดิม (AUDIT.md C1)
+    """
     prices = _prices_df()
-    signals: dict[str, dict[str, float | str]] = {}
+    signals: dict[str, dict[str, float | str | bool]] = {}
     for ticker in prices.columns:
         s = prices[ticker].dropna()
         if len(s) < 200:
+            signals[ticker] = {
+                "data_ok": False,
+                "signal": signal_rules.NO_DATA,
+                "reason": "ข้อมูลราคาน้อยกว่า 200 วันเทรด",
+            }
             continue
         price = float(s.iloc[-1])
         ma50 = float(ta.sma(s, length=50).iloc[-1])
         ma200 = float(ta.sma(s, length=200).iloc[-1])
         rsi = float(ta.rsi(s, length=14).iloc[-1])
+        central = signal_rules.dca_signal(price, ma50, ma200, rsi)
+        if central == signal_rules.NO_DATA:
+            signals[ticker] = {
+                "data_ok": False,
+                "signal": signal_rules.NO_DATA,
+                "reason": "คำนวณตัวชี้วัดไม่ได้",
+            }
+            continue
         signals[ticker] = {
+            "data_ok": True,
             "price": price,
             "ma50": ma50,
             "ma200": ma200,
             "rsi14": rsi,
             "ma50_state": "Above" if price >= ma50 else "Below",
             "ma200_state": "Above" if price >= ma200 else "Below",
-            "signal": "Buy Zone" if (price >= ma50 and price >= ma200 and rsi <= 70) else "Neutral",
+            "signal": central,
+            "signal_th": signal_rules.thai_description(central),
         }
     return signals

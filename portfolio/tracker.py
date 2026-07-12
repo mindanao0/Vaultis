@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Portfolio tracker: เก็บธุรกรรมและสรุปพอร์ตจากไฟล์ CSV."""
+"""Portfolio tracker: เก็บธุรกรรมและสรุปพอร์ตจากไฟล์ CSV.
+
+นโยบายราคา (AUDIT.md C1): ราคาที่ดึงไม่ได้ = NaN + ธง "Price OK" = False
+ห้ามเติม 0 เด็ดขาด (เดิมทำให้พอร์ตโชว์ขาดทุน -100% ปลอมและหลอก AI advisor)
+"""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pandas as pd
-import streamlit as st
 import yfinance as yf
 from utils.config import load_config
+
+logger = logging.getLogger(__name__)
 
 CSV_COLUMNS = ["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb", "fee_thb", "note"]
 TRACKER_DIR = Path(__file__).resolve().parent
@@ -93,44 +99,71 @@ def _get_latest_prices(tickers: list[str]) -> dict[str, float]:
             progress=False,
             group_by="ticker",
         )
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+    except Exception as exc:
+        logger.warning("ดึงราคาล่าสุดไม่สำเร็จ (%s): %s", tickers, exc)
         return {}
 
     if downloaded.empty:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        logger.warning("ดึงราคาล่าสุดได้ผลว่างเปล่า (%s)", tickers)
         return {}
 
     prices: dict[str, float] = {}
     if isinstance(downloaded.columns, pd.MultiIndex):
+        available = set(downloaded.columns.get_level_values(0))
         for ticker in tickers:
-            if ticker not in downloaded.columns.get_level_values(0):
+            if ticker not in available:
                 continue
-            close_series = pd.to_numeric(downloaded[ticker].get("Close"), errors="coerce").dropna()
+            close_series = _close_series_from(downloaded[ticker])
             if not close_series.empty:
                 prices[ticker] = float(close_series.iloc[-1])
         return prices
 
-    close_series = pd.to_numeric(downloaded.get("Close"), errors="coerce").dropna()
+    close_series = _close_series_from(downloaded)
     if len(tickers) == 1 and not close_series.empty:
         prices[tickers[0]] = float(close_series.iloc[-1])
     return prices
 
 
+def _close_series_from(df: pd.DataFrame) -> pd.Series:
+    """ดึงคอลัมน์ Close เป็น Series เดียว รองรับทั้ง MultiIndex และคอลัมน์ธรรมดา.
+
+    yfinance รุ่นใหม่คืน MultiIndex (Price, Ticker) แม้ดึง ticker เดียว →
+    ``df.get("Close")`` จะได้ DataFrame ทำให้ pd.to_numeric พัง
+    (บั๊กเดิมทำให้ FX rate ตกไปใช้ค่า default 33.5 ตลอดโดยไม่มีใครรู้)
+    """
+    if df.empty:
+        return pd.Series(dtype=float)
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Close" not in df.columns.get_level_values(0):
+            return pd.Series(dtype=float)
+        close = df.xs("Close", axis=1, level=0)
+    else:
+        if "Close" not in df.columns:
+            return pd.Series(dtype=float)
+        close = df["Close"]
+    if isinstance(close, pd.DataFrame):
+        if close.empty or close.shape[1] == 0:
+            return pd.Series(dtype=float)
+        close = close.iloc[:, 0]
+    return pd.to_numeric(close, errors="coerce").dropna()
+
+
 def _get_usdthb_rate() -> float:
     """ดึงอัตราแลกเปลี่ยน THB/USD ล่าสุด; ล้มเหลวให้ใช้ค่า default."""
     try:
-        fx_df = yf.download("THB=X", period="1d", progress=False)
-        if fx_df.empty:
-            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-            return DEFAULT_USDTHB
-        close_series = pd.to_numeric(fx_df.get("Close"), errors="coerce").dropna()
+        fx_df = yf.download("THB=X", period="5d", progress=False, auto_adjust=True)
+        close_series = _close_series_from(fx_df)
         if close_series.empty:
-            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+            logger.warning("ดึงอัตราแลกเปลี่ยน THB=X ไม่ได้ — ใช้ค่า default %.2f", DEFAULT_USDTHB)
             return DEFAULT_USDTHB
-        return float(close_series.iloc[-1])
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+        rate = float(close_series.iloc[-1])
+        # sanity check: THB/USD ที่สมเหตุสมผลอยู่ราว 25-45 — นอกช่วงนี้แปลว่าข้อมูลผิด
+        if not 20.0 <= rate <= 50.0:
+            logger.warning("อัตราแลกเปลี่ยนผิดปกติ (%.4f) — ใช้ค่า default %.2f", rate, DEFAULT_USDTHB)
+            return DEFAULT_USDTHB
+        return rate
+    except Exception as exc:
+        logger.warning("ดึงอัตราแลกเปลี่ยนไม่สำเร็จ (%s) — ใช้ค่า default %.2f", exc, DEFAULT_USDTHB)
         return DEFAULT_USDTHB
 
 
@@ -215,6 +248,7 @@ def get_portfolio_summary() -> pd.DataFrame:
                 "P&L (USD)",
                 "P&L (THB)",
                 "Return (%)",
+                "Price OK",
             ]
         )
 
@@ -239,7 +273,9 @@ def get_portfolio_summary() -> pd.DataFrame:
     latest_prices = _get_latest_prices(tickers)
     fx_rate = _get_usdthb_rate()
 
-    grouped["current_price_usd"] = grouped["ticker"].map(latest_prices).fillna(0.0)
+    # ราคาที่ดึงไม่ได้ต้องเป็น NaN — เดิม fillna(0) ทำให้ P&L โชว์ -100% ปลอม (AUDIT.md C1)
+    grouped["current_price_usd"] = grouped["ticker"].map(latest_prices)
+    grouped["price_ok"] = grouped["current_price_usd"].notna()
     grouped["current_value_usd"] = grouped["shares"] * grouped["current_price_usd"]
     grouped["current_value_thb"] = grouped["current_value_usd"] * fx_rate
     grouped["pnl_usd"] = grouped["current_value_usd"] - grouped["invested_usd"]
@@ -261,6 +297,7 @@ def get_portfolio_summary() -> pd.DataFrame:
             "pnl_usd": "P&L (USD)",
             "pnl_thb": "P&L (THB)",
             "return_pct": "Return (%)",
+            "price_ok": "Price OK",
         }
     )[
         [
@@ -277,12 +314,17 @@ def get_portfolio_summary() -> pd.DataFrame:
             "P&L (USD)",
             "P&L (THB)",
             "Return (%)",
+            "Price OK",
         ]
     ]
 
 
-def get_total_summary() -> dict[str, float]:
-    """สรุปภาพรวมพอร์ตทั้งหมดในหน่วย THB."""
+def get_total_summary() -> dict[str, object]:
+    """สรุปภาพรวมพอร์ตทั้งหมดในหน่วย THB.
+
+    ถ้าดึงราคาบาง ticker ไม่ได้: มูลค่า/กำไรคิดเฉพาะตัวที่มีราคา และรายชื่อตัวที่ขาด
+    อยู่ใน ``missing_prices`` — ผู้เรียกต้องแสดงคำเตือนนี้เสมอ (AUDIT.md C1)
+    """
     holdings = get_portfolio_summary()
     if holdings.empty:
         return {
@@ -291,12 +333,17 @@ def get_total_summary() -> dict[str, float]:
             "total_pnl_thb": 0.0,
             "total_return_pct": 0.0,
             "total_fee_thb": 0.0,
+            "missing_prices": [],
         }
 
+    ok = holdings[holdings["Price OK"]]
+    missing_prices = holdings.loc[~holdings["Price OK"], "Ticker"].astype(str).tolist()
+
     total_invested = float(holdings["Invested (THB)"].sum())
-    current_value = float(holdings["Current Value (THB)"].sum())
-    total_pnl = current_value - total_invested
-    total_return_pct = (total_pnl / total_invested * 100.0) if total_invested else 0.0
+    invested_ok = float(ok["Invested (THB)"].sum())
+    current_value = float(ok["Current Value (THB)"].sum())
+    total_pnl = current_value - invested_ok
+    total_return_pct = (total_pnl / invested_ok * 100.0) if invested_ok else 0.0
     total_fee_thb = float(holdings["Fee (THB)"].sum())
     return {
         "total_invested_thb": total_invested,
@@ -304,6 +351,7 @@ def get_total_summary() -> dict[str, float]:
         "total_pnl_thb": total_pnl,
         "total_return_pct": total_return_pct,
         "total_fee_thb": total_fee_thb,
+        "missing_prices": missing_prices,
     }
 
 

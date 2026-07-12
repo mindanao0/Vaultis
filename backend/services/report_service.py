@@ -6,20 +6,20 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import requests
-from groq import Groq
 from sqlalchemy.orm import Session
+
+from analysis.llm import chat_text
 
 from ..database import SessionLocal
 from ..models.orm import MonthlyReport
 from ..screener.history_service import ScreenerHistoryService
 from ..services import goal_service, networth_service, portfolio_service
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
-
 _SYSTEM_PROMPT = (
     "คุณเป็น financial advisor สรุปภาพรวมการเงินรายเดือน "
     "เขียนแบบกระชับ อ่าน 2 นาทีจบ มี 4 หัวข้อ: "
     "1) ภาพรวมพอร์ต 2) Net Worth 3) สัญญาณน่าสนใจ 4) แนะนำเดือนหน้า "
+    "ตัวเลขทั้งหมดคำนวณมาแล้ว — อธิบายเท่านั้น ห้ามคำนวณใหม่ "
     "ลงท้ายด้วย disclaimer เสมอ"
 )
 
@@ -119,10 +119,6 @@ async def _aggregate_data(db: Session) -> dict[str, Any]:
 # ── narrative ─────────────────────────────────────────────────────────────────
 
 def generate_narrative(all_data: dict[str, Any], month: str) -> str:
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if not api_key or api_key == "your_key_here":
-        return "ไม่สามารถสร้างรายงานได้ กรุณาตั้งค่า GROQ_API_KEY"
-
     pf = all_data["portfolio"]
     nw = all_data["networth"]
     sc = all_data["screener"]
@@ -160,17 +156,7 @@ def generate_narrative(all_data: dict[str, Any], month: str) -> str:
     )
 
     try:
-        client = Groq(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=GROQ_MODEL,
-            temperature=0.3,
-            max_tokens=800,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-        )
-        return (resp.choices[0].message.content or "").strip()
+        return chat_text(_SYSTEM_PROMPT, user_msg, max_tokens=1600, temperature=0.3)
     except Exception as exc:
         return f"ไม่สามารถสร้าง narrative ได้: {exc}"
 

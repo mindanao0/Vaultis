@@ -40,7 +40,7 @@ from alerts.price_alert import (
     get_current_prices,
     list_alerts,
 )
-from data.fetcher import fetch_adjusted_close_data
+from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
 from portfolio.tracker import (
@@ -51,8 +51,17 @@ from portfolio.tracker import (
     get_total_summary,
     get_transactions,
 )
+from technical import signal_rules
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
 from utils.pdf_export import generate_monthly_report
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_prices(tickers: list[str], years: int = 10) -> pd.DataFrame:
+    """ดึงราคา (cache 1 ชม.) — เดิม Streamlit rerun ทุกครั้งที่กดปุ่มแล้วยิง yfinance ใหม่
+    ทำให้โดน rate limit บ่อยจนกลายเป็นสัญญาณปลอม (AUDIT.md H3/C1)
+    """
+    return fetch_adjusted_close_data(list(tickers), years=years)
 
 load_dotenv()
 BACKEND_URL = os.getenv(
@@ -411,8 +420,13 @@ def _render_realtime_price_ticker_bar() -> None:
 
 def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
     return_df = calculate_period_returns(prices)
-    yearly_col = "1Y (%)" if "1Y (%)" in return_df.columns else return_df.columns[-1]
-    sortable = return_df[yearly_col].dropna()
+    # return_df: แถว = ช่วงเวลา (1M/3M/.../10Y), คอลัมน์ = ticker
+    # บั๊กเดิม (AUDIT.md H4): หาคอลัมน์ "1Y (%)" ที่ไม่มีจริง → ไปหยิบคอลัมน์ ticker ตัวสุดท้าย
+    # ทำให้การ์ด Best/Worst ETF โชว์ชื่อช่วงเวลาแทนชื่อ ETF
+    if "1Y" in return_df.index:
+        sortable = return_df.loc["1Y"].dropna()
+    else:
+        sortable = pd.Series(dtype=float)
 
     total_return = 0.0
     if len(prices.index) > 1:
@@ -969,19 +983,17 @@ def fetch_ohlc_data(tickers: list[str], years: int = 10) -> dict[str, pd.DataFra
 
 
 def _rsi_status(rsi_value: float) -> str:
-    if rsi_value > 70:
-        return "Overbought"
-    if rsi_value < 30:
-        return "Oversold"
-    return "Neutral"
+    return {
+        "oversold": "Oversold",
+        "overbought": "Overbought",
+        "neutral": "Neutral",
+    }.get(signal_rules.rsi_zone(rsi_value), "N/A")
 
 
 def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -> str:
-    if rsi_value > 70:
-        return "Overbought"
-    if price >= ma50 and price >= ma200 and rsi_value <= 70:
-        return "Buy Zone"
-    return "Neutral"
+    """ใช้นิยามสัญญาณกลางเดียวกับ backend/screener (AUDIT.md C2)."""
+    central = signal_rules.dca_signal(price, ma50, ma200, rsi_value)
+    return signal_rules.thai_description(central)
 
 
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
@@ -1117,7 +1129,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
                 st.markdown(f"Price: **${current_price:,.2f}**")
                 st.markdown(f"MA50 / MA200: **{ma50_state} / {ma200_state}**")
                 st.markdown(f"RSI: **{rsi_value:.2f} ({rsi_state})**")
-                st.markdown(f"Overall Signal: **{signal}**")
+                st.markdown(f"สัญญาณ: **{signal}**")
 
 
 def _build_weight_sliders(
@@ -1220,121 +1232,61 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
 
 
 def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
-    """Flatten financial_model.run_full_analysis() for tables and charts."""
+    """Flatten financial_model.run_full_analysis() for tables and charts.
+
+    NO DATA และ ticker ที่ทำ DCF ไม่ได้ (เช่น GLDM) แสดงเป็น N/A ไม่ใช่ 0 (AUDIT.md C1/C4)
+    """
     if not full_analysis or not isinstance(full_analysis.get("analysis"), dict):
         return pd.DataFrame()
     rows: list[dict[str, object]] = []
     for ticker, payload in full_analysis["analysis"].items():
         if not isinstance(payload, dict):
             continue
-        dcf = payload.get("dcf") if isinstance(payload.get("dcf"), dict) else {}
-        rows.append(
-            {
-                "Ticker": str(ticker).upper(),
-                "Total": int(payload.get("total_score", 0) or 0),
-                "Technical": int(payload.get("technical_score", 0) or 0),
-                "MA": int(payload.get("ma_score", 0) or 0),
-                "DCF pts": int(payload.get("dcf_score", 0) or 0),
-                "Momentum": int(payload.get("momentum_score", 0) or 0),
-                "RSI": float(payload.get("rsi", 0) or 0),
-                "Signal": str(payload.get("signal", "")),
-                "Current (USD)": float(dcf.get("current_price", 0) or 0),
-                "DCF intrinsic (USD)": float(dcf.get("intrinsic_value", 0) or 0),
-                "Margin of Safety %": float(dcf.get("margin_of_safety", 0) or 0),
-                "DCF signal": str(dcf.get("signal", "")),
-            }
-        )
-    order = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
-    rows.sort(key=lambda r: order.index(str(r["Ticker"])) if str(r["Ticker"]) in order else 99)
-    return pd.DataFrame(rows)
-
-
-def _allocation_from_full_analysis(full_analysis: dict | None) -> pd.DataFrame:
-    if not full_analysis or not isinstance(full_analysis.get("allocation"), dict):
-        return pd.DataFrame()
-    rows: list[dict[str, object]] = []
-    for ticker, payload in full_analysis["allocation"].items():
-        if not isinstance(payload, dict):
-            continue
-        rows.append(
-            {
-                "Ticker": str(ticker).upper(),
-                "Percent": float(payload.get("percent", 0) or 0),
-                "Amount (THB)": float(payload.get("amount_thb", 0) or 0),
-                "Score": int(payload.get("score", 0) or 0),
-            }
-        )
-    order = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
-    rows.sort(key=lambda r: order.index(str(r["Ticker"])) if str(r["Ticker"]) in order else 99)
-    return pd.DataFrame(rows)
-
-
-def _extract_allocation_df(advice_text: str | None) -> pd.DataFrame:
-    """  ALLOCATIONS_JSON   AI   DataFrame."""
-    if not advice_text:
-        return pd.DataFrame()
-
-    marker = "ALLOCATIONS_JSON:"
-    marker_idx = advice_text.find(marker)
-    allocations: list[dict] = []
-    if marker_idx >= 0:
-        json_tail = advice_text[marker_idx + len(marker):].strip()
-        start_idx = json_tail.find("[")
-        end_idx = json_tail.rfind("]")
-        if start_idx >= 0 and end_idx > start_idx:
-            json_text = json_tail[start_idx : end_idx + 1]
-            try:
-                parsed = json.loads(json_text)
-                if isinstance(parsed, list):
-                    allocations = parsed
-            except (json.JSONDecodeError, TypeError, ValueError):
-                allocations = []
-
-    if not allocations:
-        pattern = r"(?im)\b([A-Z]{2,10})\b\s+([\d,]+(?:\.\d+)?)\s* \s*\(([\d.]+)\s*%\)"
-        regex_rows = re.findall(pattern, advice_text)
-        for ticker, amount_text, percent_text in regex_rows:
-            try:
-                amount_value = float(amount_text.replace(",", ""))
-                percent_value = float(percent_text)
-            except ValueError:
-                continue
-            allocations.append(
-                {
-                    "ticker": ticker.strip().upper(),
-                    "percent": percent_value,
-                    "amount_thb": amount_value,
-                }
-            )
-
-    rows: list[dict] = []
-    for item in allocations:
-        if not isinstance(item, dict):
-            continue
-        ticker = str(item.get("ticker", "")).strip().upper()
-        percent = item.get("percent")
-        amount = item.get("amount_thb")
-        reason = str(item.get("reason", "")).strip()
-
-        try:
-            percent_value = float(percent)
-            amount_value = float(amount)
-        except (TypeError, ValueError):
-            continue
-
-        if ticker and percent_value > 0:
+        if not payload.get("data_ok", True):
             rows.append(
                 {
-                    "Ticker": ticker,
-                    "Percent": percent_value,
-                    "Amount (THB)": amount_value,
-                    "Reason": reason,
+                    "Ticker": str(ticker).upper(),
+                    "Score %": None,
+                    "Trend": None,
+                    "Timing": None,
+                    "Momentum": None,
+                    "Dividend": None,
+                    "RSI": None,
+                    "Signal": "NO DATA",
+                    "Current (USD)": None,
+                    "DCF intrinsic (USD)": None,
+                    "Margin of Safety %": None,
+                    "DCF signal": "N/A",
+                    "Data": f"NO DATA ({payload.get('error', '')})",
                 }
             )
-
-    if not rows:
-        return pd.DataFrame()
+            continue
+        dcf = payload.get("dcf") if isinstance(payload.get("dcf"), dict) else {}
+        dcf_ok = bool(payload.get("dcf_available", True))
+        rows.append(
+            {
+                "Ticker": str(ticker).upper(),
+                "Score %": float(payload.get("total_pct") or 0),
+                "Trend": int(payload.get("trend_score", 0) or 0),
+                "Timing": int(payload.get("timing_score", 0) or 0),
+                "Momentum": int(payload.get("momentum_score", 0) or 0),
+                "Dividend": int(payload.get("dividend_score", 0) or 0),
+                "RSI": float(payload.get("rsi", 0) or 0),
+                "Signal": str(payload.get("signal", "")),
+                "Current (USD)": float(dcf.get("current_price") or 0) if dcf_ok else None,
+                "DCF intrinsic (USD)": float(dcf.get("intrinsic_value") or 0) if dcf_ok else None,
+                "Margin of Safety %": float(dcf.get("margin_of_safety") or 0) if dcf_ok else None,
+                "DCF signal": str(dcf.get("signal", "")) if dcf_ok else "N/A (ไม่มีกำไร → ทำ DCF ไม่ได้)",
+                "Data": "OK",
+            }
+        )
+    order = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
+    rows.sort(key=lambda r: order.index(str(r["Ticker"])) if str(r["Ticker"]) in order else 99)
     return pd.DataFrame(rows)
+
+
+# หมายเหตุ: _extract_allocation_df (regex แกะตัวเลขจากข้อความ AI) ถูกถอดออกแล้ว —
+# แผนจัดสรรมาจาก get_monthly_advice()["allocation"] ที่คำนวณในโค้ดโดยตรง (AUDIT.md C3)
 
 
 @st.cache_data(ttl=3600)
@@ -1377,19 +1329,42 @@ def render_dcf_analysis_page() -> None:
     selected_raw = full_analysis["analysis"].get(selected_ticker, {})
     selected_dcf = selected_raw.get("dcf", {}) if isinstance(selected_raw, dict) else {}
 
-    cards = st.columns(4)
-    cards[0].metric("Current Price", f"${float(selected_row['Current (USD)']):,.2f}")
-    cards[1].metric("DCF Intrinsic Value", f"${float(selected_row['DCF intrinsic (USD)']):,.2f}")
-    cards[2].metric("Margin of Safety %", f"{float(selected_row['Margin of Safety %']):.2f}%")
-    cards[3].metric("Signal", str(selected_row["Signal"]))
+    if not bool(selected_raw.get("data_ok", True)):
+        st.error(f"{selected_ticker}: ดึงข้อมูลไม่สำเร็จ — {selected_raw.get('error', '')}")
+        return
 
-    st.subheader("Score Breakdown")
-    breakdown_map = {
-        "Technical Score": float(selected_row["Technical"]),
-        "MA Score": float(selected_row["MA"]),
-        "DCF Score": float(selected_row["DCF pts"]),
-        "Momentum Score": float(selected_row["Momentum"]),
-        "Dividend Score": float(selected_raw.get("dividend_score", 0) if isinstance(selected_raw, dict) else 0),
+    dcf_ok = bool(selected_raw.get("dcf_available", True))
+    st.info(
+        "DCF ของ ETF เป็นข้อมูล**ประกอบ** ไม่ถูกนับเป็นคะแนนซื้อ/ขาย "
+        "(เป็น earnings-yield proxy จาก P/E ไม่ใช่ DCF จากงบกระแสเงินสดของกิจการ)"
+    )
+    if not dcf_ok:
+        st.warning(
+            f"{selected_ticker} ไม่มีกำไร/ค่า P/E (เช่น กองทองคำ) — ทำ DCF ไม่ได้เลย "
+            "ระบบจึงไม่แสดงมูลค่าที่แท้จริง แทนการเดาตัวเลขให้ดูน่าเชื่อ"
+        )
+
+    cards = st.columns(4)
+
+    def _money(value: object) -> str:
+        return f"${float(value):,.2f}" if value is not None and pd.notna(value) else "N/A"
+
+    cards[0].metric("Score (0-100)", f"{float(selected_row['Score %']):.1f}")
+    cards[1].metric("DCF Intrinsic Value", _money(selected_row["DCF intrinsic (USD)"]))
+    mos_val = selected_row["Margin of Safety %"]
+    cards[2].metric(
+        "Margin of Safety %",
+        f"{float(mos_val):.2f}%" if mos_val is not None and pd.notna(mos_val) else "N/A",
+    )
+    cards[3].metric("Signal", str(selected_row["Signal"]))
+    st.caption(f"สัญญาณเทคนิค: {selected_raw.get('technical_signal_th', '-')}")
+
+    st.subheader("Score Breakdown (คะแนนเดียวกับที่ AI Advisor ใช้)")
+    breakdown_map: dict[str, float] = {
+        "Trend (max 40)": float(selected_row["Trend"]),
+        "Timing (max 30)": float(selected_row["Timing"]),
+        "Momentum (max 20)": float(selected_row["Momentum"]),
+        "Dividend (max 10)": float(selected_row["Dividend"]),
     }
     breakdown_df = pd.DataFrame(
         {"Metric": list(breakdown_map.keys()), "Score": list(breakdown_map.values())}
@@ -1421,15 +1396,21 @@ def render_dcf_analysis_page() -> None:
     else:
         st.info("No cash flow data available for this ETF.")
 
-    st.subheader("DCF Assumptions")
-    a1, a2, a3, a4 = st.columns(4)
-    a1.metric("WACC %", f"{float(selected_dcf.get('wacc', 0)):.2f}%")
-    a2.metric("Growth Rate %", f"{float(selected_dcf.get('growth_rate', 0)):.2f}%")
-    a3.metric("Terminal Growth %", f"{float(selected_dcf.get('terminal_growth', 0)):.2f}%")
-    a4.metric("Beta", f"{float(selected_dcf.get('beta', 0)):.2f}")
+    if dcf_ok:
+        st.subheader("DCF Assumptions")
+        a1, a2, a3, a4 = st.columns(4)
+        a1.metric("WACC %", f"{float(selected_dcf.get('wacc', 0)):.2f}%")
+        a2.metric("Growth Rate %", f"{float(selected_dcf.get('growth_rate', 0)):.2f}%")
+        a3.metric("Terminal Growth %", f"{float(selected_dcf.get('terminal_growth', 0)):.2f}%")
+        a4.metric("Beta", f"{float(selected_dcf.get('beta', 0)):.2f}")
+        st.caption(
+            "หมายเหตุ: DCF ของ ETF เป็น proxy จาก earnings yield (1/PE) + ปันผล ไม่ใช่ DCF "
+            "จากงบกระแสเงินสดของกิจการ — ใช้เป็นตัวชี้วัดคร่าว ๆ เท่านั้น"
+        )
 
     st.subheader("Heatmap Score (All ETFs)")
-    heatmap_df = score_df.set_index("Ticker")[["Total", "Technical", "MA", "DCF pts", "Momentum"]]
+    heat_cols = ["Score %", "Trend", "Timing", "Momentum", "Dividend"]
+    heatmap_df = score_df.set_index("Ticker")[heat_cols].astype(float)
     heatmap_fig = px.imshow(
         heatmap_df,
         color_continuous_scale=[
@@ -1440,95 +1421,82 @@ def render_dcf_analysis_page() -> None:
         text_auto=".0f",
         aspect="auto",
         zmin=0,
-        zmax=max(100.0, float(heatmap_df.to_numpy().max())),
+        zmax=100,
     )
     heatmap_fig.update_layout(coloraxis_colorbar_title="Score")
     st.plotly_chart(_apply_plotly_dark_theme(heatmap_fig), use_container_width=True)
+    st.caption("ช่องว่าง = ข้อมูลไม่พร้อม (NO DATA)")
 
 
 def show_result(result: dict) -> None:
-    """Render AI Advisor analysis output from a get_monthly_advice result dict."""
-    full = result.get("full_analysis")
-    if not isinstance(full, dict):
-        full = {
-            "analysis": result.get("analysis", {}),
-            "allocation": result.get("allocation", {}),
-        }
-    score_dcf_df = _full_analysis_score_dcf_df(full if isinstance(full, dict) else None)
-    if not score_dcf_df.empty:
-        st.subheader("Score breakdown (0–100)")
+    """Render AI Advisor output — ตัวเลขทุกตัวมาจากโมเดลโดยตรง ไม่ parse จากข้อความ AI.
+
+    (AUDIT.md C3/H5: เดิมหน้านี้คาดหวัง key ที่ get_monthly_advice ไม่เคยคืน
+    ทำให้ตารางคะแนนไม่แสดง และตาราง allocation ถูก regex จากข้อความ AI)
+    """
+    etf_scores = result.get("etf_scores") or []
+    score_rows: list[dict[str, object]] = []
+    for row in etf_scores:
+        if not isinstance(row, dict):
+            continue
+        data_ok = bool(row.get("data_ok", True))
+        score_rows.append(
+            {
+                "Ticker": str(row.get("ticker", "")).upper(),
+                "Price (USD)": row.get("price"),
+                "MA50": row.get("ma50"),
+                "MA200": row.get("ma200"),
+                "RSI": row.get("rsi"),
+                "Score %": row.get("total_pct"),
+                "Signal": str(row.get("signal", "")),
+                "Data": "OK" if data_ok else f"NO DATA ({row.get('error', '')})",
+            }
+        )
+    if score_rows:
+        st.subheader("คะแนนจากโมเดล (Score % = คะแนนที่คำนวณในโค้ด 0-100)")
+        score_df = pd.DataFrame(score_rows).sort_values("Score %", ascending=False, na_position="last")
         st.dataframe(
-            score_dcf_df[
-                [
-                    "Ticker",
-                    "Total",
-                    "Technical",
-                    "MA",
-                    "DCF pts",
-                    "Momentum",
-                    "RSI",
-                    "Signal",
-                ]
-            ].style.format({"RSI": "{:.2f}"}),
+            score_df.style.format(
+                {
+                    "Price (USD)": "${:,.2f}",
+                    "MA50": "${:,.2f}",
+                    "MA200": "${:,.2f}",
+                    "RSI": "{:.1f}",
+                    "Score %": "{:.1f}",
+                },
+                na_rep="N/A",
+            ),
             use_container_width=True,
         )
-        st.subheader("DCF: intrinsic value vs current price (USD)")
-        iv_fig = go.Figure(
-            data=[
-                go.Bar(
-                    name="Current price",
-                    x=score_dcf_df["Ticker"],
-                    y=score_dcf_df["Current (USD)"],
-                    marker_color=THEME["text_secondary"],
-                ),
-                go.Bar(
-                    name="DCF intrinsic",
-                    x=score_dcf_df["Ticker"],
-                    y=score_dcf_df["DCF intrinsic (USD)"],
-                    marker_color=THEME["accent"],
-                ),
-            ]
-        )
-        iv_fig.update_layout(barmode="group", legend_title_text="")
-        iv_fig.update_yaxes(title_text="USD")
-        st.plotly_chart(_apply_plotly_dark_theme(iv_fig), use_container_width=True)
 
-        st.subheader("Margin of safety (%)")
-        mos_fig = go.Figure(
-            data=[
-                go.Bar(
-                    x=score_dcf_df["Ticker"],
-                    y=score_dcf_df["Margin of Safety %"],
-                    marker_color=THEME["positive"],
-                )
-            ]
-        )
-        mos_fig.update_yaxes(title_text="%")
-        st.plotly_chart(_apply_plotly_dark_theme(mos_fig), use_container_width=True)
+    no_data = result.get("no_data_tickers") or []
+    if no_data:
+        st.error(f"ดึงข้อมูลไม่ได้: {', '.join(no_data)} — ตัวเหล่านี้ไม่ถูกนำมาคิดคะแนน/จัดสรร")
 
-    st.markdown("### คำอธิบายจาก AI")
-    advice_text = str(result.get("advice_text") or result.get("advice") or "")
-    st.markdown(advice_text)
-
-    discord_result = result.get("discord_result", {})
-    if discord_result.get("success"):
-        st.info("  Discord  ")
-    elif not discord_result.get("skipped"):
-        st.warning(f"  Discord  : {discord_result.get('error', 'unknown error')}")
-
-    allocation_df = _allocation_from_full_analysis(full if isinstance(full, dict) else None)
-    if allocation_df.empty:
-        allocation_df = _extract_allocation_df(advice_text)
-    if not allocation_df.empty:
-        st.markdown("### การจัดสรร DCA (จากโมเดล)")
+    allocation = result.get("allocation") or {}
+    if allocation:
+        st.markdown("### การจัดสรร DCA (คำนวณโดยโมเดล ไม่ใช่ AI)")
+        allocation_rows = [
+            {
+                "Ticker": ticker,
+                "Amount (THB)": item.get("amount_thb", 0),
+                "Percent": item.get("percent", 0),
+                "Group": item.get("group", ""),
+                "Score %": item.get("score"),
+            }
+            for ticker, item in allocation.items()
+        ]
+        allocation_df = pd.DataFrame(allocation_rows)
         st.dataframe(
             allocation_df.style.format(
-                {
-                    "Percent": "{:.2f}%",
-                    "Amount (THB)": "{:,.0f}",
-                }
-            )
+                {"Amount (THB)": "{:,.0f}", "Percent": "{:.0f}%", "Score %": "{:.1f}"},
+                na_rep="N/A",
+            ),
+            use_container_width=True,
         )
+        unallocated = float(result.get("unallocated_thb") or 0)
+        if unallocated > 0:
+            st.caption(f"ยังไม่จัดสรร {unallocated:,.0f} บาท (เศษจากการปัดหลักร้อย/ไม่มีสัญญาณรองรับ)")
         pie = px.pie(
             allocation_df,
             names="Ticker",
@@ -1538,7 +1506,17 @@ def show_result(result: dict) -> None:
         )
         st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
     else:
-        st.warning("ไม่พบข้อมูล allocation — ลองรันใหม่หรือตรวจสอบการเชื่อมต่อ")
+        st.warning("เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์จัดสรร — โมเดลแนะนำถือเงินสดรอ")
+
+    st.markdown("### คำอธิบายจาก AI")
+    advice_text = str(result.get("advice_text") or result.get("advice") or "")
+    st.markdown(advice_text)
+
+    discord_result = result.get("discord_result", {})
+    if discord_result.get("success"):
+        st.info("ส่งสรุปเข้า Discord แล้ว")
+    elif not discord_result.get("skipped"):
+        st.warning(f"ส่ง Discord ไม่สำเร็จ: {discord_result.get('error', 'unknown error')}")
 
 
 def render_ai_advisor_page() -> None:
@@ -1787,28 +1765,36 @@ def render_portfolio_page() -> None:
         holdings_df = get_portfolio_summary()
         total_summary = get_total_summary()
 
+    # ราคาที่ดึงไม่ได้ = แจ้งชัด ไม่ใช่แสดงเป็นขาดทุน -100% (AUDIT.md C1)
+    missing_prices = list(total_summary.get("missing_prices") or [])
+    if missing_prices:
+        st.error(
+            f"ดึงราคาปัจจุบันไม่ได้: {', '.join(missing_prices)} — "
+            "มูลค่าและกำไร/ขาดทุนด้านล่างคิดเฉพาะ ETF ที่มีราคาเท่านั้น"
+        )
+
     m1, m2, m3, m4, m5 = st.columns(5)
     if primary_currency == "USD":
-        invested = total_summary["total_invested_thb"] / today_fx_rate
-        current = total_summary["current_value_thb"] / today_fx_rate
-        pnl_value = total_summary["total_pnl_thb"] / today_fx_rate
-        m1.metric("  (USD)", f"{invested:,.2f}")
-        m2.metric("  (USD)", f"{current:,.2f}")
+        invested = float(total_summary["total_invested_thb"]) / today_fx_rate
+        current = float(total_summary["current_value_thb"]) / today_fx_rate
+        pnl_value = float(total_summary["total_pnl_thb"]) / today_fx_rate
+        m1.metric("เงินลงทุนรวม (USD)", f"{invested:,.2f}")
+        m2.metric("มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
         m3.metric(
-            " /  (USD)",
+            "กำไร/ขาดทุน (USD)",
             f"{pnl_value:,.2f}",
-            delta=f"{total_summary['total_return_pct']:.2f}%",
+            delta=f"{float(total_summary['total_return_pct']):.2f}%",
         )
     else:
-        m1.metric("  (THB)", f"{total_summary['total_invested_thb']:,.2f}")
-        m2.metric("  (THB)", f"{total_summary['current_value_thb']:,.2f}")
+        m1.metric("เงินลงทุนรวม (THB)", f"{float(total_summary['total_invested_thb']):,.2f}")
+        m2.metric("มูลค่าปัจจุบัน (THB)", f"{float(total_summary['current_value_thb']):,.2f}")
         m3.metric(
-            " /  (THB)",
-            f"{total_summary['total_pnl_thb']:,.2f}",
-            delta=f"{total_summary['total_return_pct']:.2f}%",
+            "กำไร/ขาดทุน (THB)",
+            f"{float(total_summary['total_pnl_thb']):,.2f}",
+            delta=f"{float(total_summary['total_return_pct']):.2f}%",
         )
-    m4.metric("FX Rate  ", f"{today_fx_rate:.2f} THB/USD")
-    m5.metric("  (THB)", f"{total_summary['total_fee_thb']:,.2f}")
+    m4.metric("FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
+    m5.metric("ค่าธรรมเนียมรวม (THB)", f"{float(total_summary['total_fee_thb']):,.2f}")
 
     if holdings_df.empty:
         st.info("No portfolio data found.")
@@ -1824,8 +1810,10 @@ def render_portfolio_page() -> None:
                 "P&L (THB)",
                 "Return (%)",
                 "Fee (THB)",
+                "Price OK",
             ]
         ].copy()
+        display_holdings["Price OK"] = display_holdings["Price OK"].map({True: "OK", False: "ดึงราคาไม่ได้"})
         st.dataframe(
             display_holdings.style.format(
                 {
@@ -1837,19 +1825,22 @@ def render_portfolio_page() -> None:
                     "P&L (THB)": "{:,.2f}",
                     "Return (%)": "{:,.2f}%",
                     "Fee (THB)": "{:,.2f}",
-                }
+                },
+                na_rep="N/A",
             ),
             use_container_width=True,
         )
 
-        pie_fig = px.pie(
-            holdings_df,
-            names="Ticker",
-            values="Current Value (THB)",
-            title="  (  THB)",
-            hole=0.35,
-        )
-        st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
+        priced = holdings_df[holdings_df["Price OK"]]
+        if not priced.empty:
+            pie_fig = px.pie(
+                priced,
+                names="Ticker",
+                values="Current Value (THB)",
+                title="สัดส่วนพอร์ต (มูลค่าปัจจุบัน THB)",
+                hole=0.35,
+            )
+            st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
 
     st.divider()
     st.subheader("Transaction History")
@@ -1902,13 +1893,16 @@ def render_dashboard() -> None:
 
         if st.button("Refresh Data"):
             st.cache_data.clear()
-            st.success("   ...")
+            st.success("ล้างแคชแล้ว กำลังโหลดข้อมูลใหม่...")
             st.rerun()
 
-        with st.spinner(" ..."):
-            prices = fetch_adjusted_close_data(tickers, years=10)
-        if prices.empty:
-            st.error("  ETF")
+        try:
+            with st.spinner("กำลังโหลดข้อมูลราคา..."):
+                prices = cached_prices(tickers, years=10)
+        except PriceDataUnavailableError as exc:
+            # ข้อมูลราคาพัง = หยุดทันที ห้ามแสดงหน้าวิเคราะห์จากข้อมูลว่าง (AUDIT.md C1)
+            st.error(f"ดึงข้อมูลราคา ETF ไม่สำเร็จ: {exc}")
+            st.info("ลองกด Refresh Data อีกครั้งในอีกสักครู่ (yfinance อาจจำกัดการเรียกชั่วคราว)")
             return
 
         base_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}

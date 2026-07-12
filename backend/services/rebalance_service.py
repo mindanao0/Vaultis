@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import yfinance as yf
-from groq import Groq
 
 from alerts.price_alert import get_current_prices
+from analysis.llm import chat_text
 
 DIME_FEE_RATE = 0.0015  # 0.15% ต่อ transaction
 
@@ -120,10 +119,6 @@ def _generate_ai_comment(
     prices: dict[str, float],
     holdings: list[dict[str, Any]],
 ) -> str:
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if not api_key or api_key == "your_key_here":
-        return "ไม่สามารถสร้างคำแนะนำได้ กรุณาตั้งค่า GROQ_API_KEY"
-
     values: dict[str, float] = {}
     for h in holdings:
         sym = str(h["symbol"]).upper()
@@ -158,25 +153,14 @@ def _generate_ai_comment(
         "อธิบายสั้น ๆ ว่าทำไมต้อง rebalance และประโยชน์ที่ได้รับ"
     )
 
+    system_prompt = (
+        "คุณเป็นที่ปรึกษาการลงทุนสำหรับนักลงทุนรายย่อยชาวไทย "
+        "ให้คำแนะนำเกี่ยวกับการ rebalance พอร์ตโฟลิโอ ETF "
+        "ตัวเลขทั้งหมดคำนวณมาแล้ว — อธิบายเท่านั้น ห้ามคำนวณใหม่ "
+        "อธิบายเป็นภาษาไทย กระชับ ชัดเจน ไม่เกิน 3 ประโยค"
+    )
     try:
-        client = Groq(api_key=api_key)
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,
-            max_tokens=300,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "คุณเป็นที่ปรึกษาการลงทุนสำหรับนักลงทุนรายย่อยชาวไทย "
-                        "ให้คำแนะนำเกี่ยวกับการ rebalance พอร์ตโฟลิโอ ETF "
-                        "อธิบายเป็นภาษาไทย กระชับ ชัดเจน ไม่เกิน 3 ประโยค"
-                    ),
-                },
-                {"role": "user", "content": user_msg},
-            ],
-        )
-        return resp.choices[0].message.content.strip()
+        return chat_text(system_prompt, user_msg, max_tokens=600, temperature=0.3)
     except Exception as exc:
         return f"ไม่สามารถสร้างคำแนะนำได้: {exc}"
 

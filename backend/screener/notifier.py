@@ -6,18 +6,18 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
-from groq import Groq
 
+from analysis.llm import chat_text
 from backend.screener.models import ScreenerResult
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
 SYSTEM_PROMPT = """
 You are Vaultis AI screener analyst.
 Always respond in Thai.
 Be concise — max 300 words.
+ตัวเลขและสัญญาณคำนวณมาแล้ว — อธิบายเท่านั้น ห้ามคำนวณใหม่
 End with: "ข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
 """.strip()
 
@@ -37,24 +37,11 @@ class ScreenerNotifier:
         lines.append("อธิบายแต่ละ symbol และจัดลำดับความน่าสนใจ")
         user_message = "\n".join(lines)
 
-        def _call_groq() -> str:
-            api_key = (os.getenv("GROQ_API_KEY") or "").strip()
-            if not api_key or api_key == "your_key_here":
-                raise ValueError("missing GROQ_API_KEY")
-            client = Groq(api_key=api_key)
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                temperature=0.1,
-                max_tokens=500,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-            )
-            return (response.choices[0].message.content or "").strip()
+        def _call_llm() -> str:
+            return chat_text(SYSTEM_PROMPT, user_message, max_tokens=1000, temperature=0.2)
 
         try:
-            text = await asyncio.to_thread(_call_groq)
+            text = await asyncio.to_thread(_call_llm)
             if not text:
                 raise RuntimeError("empty AI summary")
             return text

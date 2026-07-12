@@ -39,40 +39,62 @@ backend/          FastAPI REST + WebSocket server
   main.py           App init; APScheduler daily screener at 07:00 Asia/Bangkok
   database.py       SQLAlchemy / SQLite (vaultis.db)
   schemas.py        All Pydantic request/response models
-  models/orm.py     ORM models: Transaction, PriceAlert, Config
-  routers/          11 route groups (one file per feature)
+  models/orm.py     ORM models: Transaction, PriceAlert, Config, ...
+  routers/          19 route groups (one file per feature)
   services/         Business logic layer called by routers
   screener/         Daily technical screener engine + presets + history
 
-analysis/         17 standalone modules: returns, risk, correlation,
-                  backtesting (vectorbt), forecasting (Prophet), AI advisor
-                  (Groq), sentiment, macro (FRED), financial model scoring
+analysis/         Standalone analysis modules: returns, risk, correlation,
+                  backtesting (vectorbt), forecasting (Prophet), AI advisor,
+                  sentiment, macro (FRED), financial model scoring
+  llm.py            **Single entry point for every LLM call** (Haiku 4.5 → Groq fallback)
+  ta_compat.py      **Single indicator layer** (sma/rsi/macd/bbands) — pandas-ta is gone
+  financial_model.py `score_from_prices()` = the one scoring function for the whole system
 
-dashboard/app.py  Streamlit single-file app (~75 KB). Multi-page via sidebar.
+technical/
+  signal_rules.py   **Single source of truth for buy/sell signals** — every subsystem imports this
+  indicators.py     RSI, MA50/MA200 helpers
+
+dashboard/app.py  Streamlit single-file app. Multi-page via sidebar.
                   Calls analysis/ modules directly OR BACKEND_URL for live data.
 
 portfolio/        Transaction CSV tracker, DCA simulator, rebalance logic
-alerts/           Discord webhook builder
-data/             yfinance price fetcher with 3-retry logic
-technical/        RSI, MA50/MA200 indicators
+alerts/           Discord webhook builder + price alert store (JSON)
+data/             yfinance price fetcher (3 retries, then raises)
 jobs/             daily_check.py → fetch snapshot + AI summary → Discord
 main.py           Python `schedule` loop for background jobs
-config.json       Persistent app config (tickers, DCA budget, display prefs)
+config.json       Persistent app config (tickers, DCA budget, display prefs) — NO secrets
 ```
 
 ## Key Conventions
 
 **Thai language throughout.** User-facing text, error messages, and many docstrings are in Thai. English is used for ticker symbols, technical terms (RSI, MACD), and module/function names. Keep this convention when editing.
 
-**Dependency flow.** Routers → Services → Analysis modules → Data layer. Never import upward. Routers must not call `analysis/` directly; use a service.
+**Fail loud on missing data — never fabricate.** This system drives real-money decisions. A data-fetch failure must NEVER become a price, score, or signal:
+- `data/fetcher.py` raises `PriceDataUnavailableError` after 3 retries (it does not return an empty frame).
+- Scores/holdings carry a `data_ok` / `Price OK` flag; missing prices stay `NaN`, never `0.0`.
+- Tickers with `data_ok=False` are excluded from scoring and from DCA allocation.
+- Never introduce a `except: return 0` / `return "neutral"` / `fillna(0)` on a price path.
 
-**Caching.** Expensive calls (10-year price history, returns, risk, correlation) use `@cache_data_1h` from `utils/cache_utils.py`. Do not add new expensive computations in the request path without caching.
+**One signal definition.** `technical/signal_rules.py` defines RSI zones, trend, and the buy/sell label. `financial_model.score_from_prices()` is the only scoring function. The dashboard, screener, per-symbol analysis, and AI advisor all read from these — never re-implement a threshold locally. (Oversold in an uptrend = accumulate, NOT a sell.)
+
+**AI explains, code computes.** All numbers — scores, DCA allocation, price-alert levels — are computed in Python. The LLM receives finished figures and only writes the explanation. Never parse numbers back out of model output.
+
+**LLM calls go through `analysis/llm.py`.** `chat_text()` prefers Claude Haiku 4.5 (`ANTHROPIC_API_KEY`) and falls back to Groq llama-3.3-70b (`GROQ_API_KEY`). It handles truncation (retries at 2× budget). Do not instantiate `Groq()` or `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
+
+**Indicators go through `analysis/ta_compat.py`.** `pandas-ta` was removed (dead upstream, breaks on numpy≥2). Warm-up periods stay `NaN` — never fill them with 0 or 100.
+
+**Secrets are env-only.** `DISCORD_WEBHOOK_URL` and API keys live in `.env` / GitHub Secrets. `load_config()` overlays env over `config.json`, and `save_config()` refuses to write the webhook to disk (`config.json` is tracked in git).
+
+**Dependencies are pinned.** `requirements.txt` pins every package; CI reinstalls it on every scheduled run. Do not unpin or bump without running `pytest`.
+
+**Caching.** `utils/cache.py`'s `cache_data_1h` is currently a **no-op**. The dashboard caches prices with `@st.cache_data(ttl=3600)` (`cached_prices`). Backend request-path caching is still a known gap (see AUDIT.md H3).
 
 **JSONResponse for UTF-8.** All endpoints that may return Thai text use `JSONResponse(..., media_type="application/json; charset=utf-8")` instead of returning dicts directly.
 
-**Config normalization.** `utils/config_utils.py` `load_config()` merges `config.json` with defaults. Settings changes go through `save_config()`.
+**Config normalization.** `utils/config.py` `load_config()` merges `config.json` with defaults and env. Settings changes go through `save_config()`.
 
-**yfinance column handling.** Price data may have multi-level columns after `.download()`. The data layer normalizes to `Adj Close` before returning. Always use the `data/` fetchers, not raw yfinance calls.
+**yfinance column handling.** `.download()` returns MultiIndex columns even for a single ticker. Always normalize (see `portfolio/tracker._close_series_from`) — `df.get("Close")` returns a DataFrame and will break `pd.to_numeric`. Use `auto_adjust=True` for new call sites; use the `data/` fetchers where possible.
 
 ## Data Storage
 
@@ -86,12 +108,13 @@ Required for full functionality:
 
 | Variable | Used by |
 |---|---|
-| `ANTHROPIC_API_KEY` | `POST /api/transactions/upload-slip` (slip OCR) |
-| `GROQ_API_KEY` | AI Advisor, ETF analysis summaries (llama-3.3-70b-versatile) |
+| `ANTHROPIC_API_KEY` | **Primary LLM** — AI Advisor, ETF summaries, reports, slip OCR (Claude Haiku 4.5) |
+| `GROQ_API_KEY` | LLM fallback when `ANTHROPIC_API_KEY` is unset (llama-3.3-70b-versatile) |
 | `FRED_API_KEY` | Macro data endpoint |
-| `DISCORD_WEBHOOK_URL` | Scheduled job notifications |
+| `DISCORD_WEBHOOK_URL` | Scheduled job notifications (**env only — never in config.json**) |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Screener alerts + monthly report |
 | `BACKEND_URL` | Streamlit dashboard → API (defaults to Render backend) |
-| `DATABASE_URL` | PostgreSQL for sentiment (optional) |
+| `DATABASE_URL` | PostgreSQL for sentiment + screener history (optional) |
 | `NEWSAPI_KEY` | News sentiment analysis |
 | `REDDIT_CLIENT_ID/SECRET` | Reddit sentiment via PRAW |
 

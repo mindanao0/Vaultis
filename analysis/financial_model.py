@@ -11,6 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from analysis.ta_compat import ta
+from technical import signal_rules
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -42,7 +43,8 @@ def _close_series(hist: pd.DataFrame, ticker: str) -> pd.Series:
 
 
 def _download_close(ticker: str, period: str) -> pd.Series:
-    hist = yf.download(ticker, period=period, progress=False, auto_adjust=False)
+    # auto_adjust=True: ราคา adjusted มาตรฐานเดียวทั้งระบบ (AUDIT.md M1)
+    hist = yf.download(ticker, period=period, progress=False, auto_adjust=True)
     return _close_series(hist, ticker)
 
 
@@ -128,9 +130,13 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
         terminal_growth = max(0.01, wacc - 0.01)
 
     dividend = _safe_float(info.get("dividendRate"), 0.0)
-    pe_ratio = _safe_float(info.get("trailingPE"), 20.0) or 20.0
+    pe_ratio = _safe_float(info.get("trailingPE"), 0.0)
     if pe_ratio <= 0:
-        pe_ratio = 20.0
+        # AUDIT.md C4: ห้ามใช้ PE default แต่งกระแสเงินสดให้สินทรัพย์ที่ไม่มีกำไร
+        # (เช่น GLDM กองทองคำ) — intrinsic value ที่ได้จะไม่มีความหมายแต่ดูน่าเชื่อ
+        raise ValueError(
+            f"{ticker} ไม่มีข้อมูล P/E (สินทรัพย์ไม่มีกำไร เช่น กองทองคำ) — ข้ามการทำ DCF"
+        )
     earnings_per_price = 1 / pe_ratio
     base_cf = current_price * earnings_per_price + dividend
 
@@ -179,169 +185,224 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
     }
 
 
-def calculate_signal_score(ticker: str) -> dict[str, Any]:
-    t = yf.Ticker(ticker)
+# ---------------------------------------------------------------------------
+# ระบบให้คะแนนเดียวของทั้งระบบ (AUDIT.md C2)
+#
+# เดิมมี 2 สูตรที่ขัดกันเอง: calculate_signal_score ให้คะแนนสูงเมื่อ RSI ต่ำ
+# ส่วน _pipeline_score_ticker (ที่ advisor ใช้) ให้คะแนนสูงเมื่อ RSI อยู่กลาง ๆ
+# → VOO วันเดียวกันได้ 100% "Strong Buy" ในหน้าหนึ่ง และ 47% "Neutral" ในอีกหน้า
+#
+# ปรัชญาเดียวที่ใช้ตอนนี้ (สอดคล้องกับ technical/signal_rules.py):
+#   แนวโน้มยาว (MA200) เป็นเงื่อนไขตั้งต้น → จังหวะย่อในขาขึ้นคือโอกาสสะสมของ DCA
+#   overbought = ไม่ให้คะแนนจังหวะ | ต่ำกว่า MA200 = คะแนนแนวโน้มต่ำ
+#
+# DCF ไม่อยู่ในคะแนนอีกต่อไป — DCF ของ ETF เป็น earnings-yield proxy ไม่ใช่ DCF
+# ของกิจการจริง (AUDIT.md C4) จึงแสดงเป็นข้อมูลประกอบเท่านั้น ไม่ตัดสินซื้อ/ขาย
+# ---------------------------------------------------------------------------
 
-    rsi = get_rsi(ticker)
-    if rsi < 30:
-        tech_score = 30
-    elif rsi < 40:
-        tech_score = 25
-    elif rsi < 50:
-        tech_score = 20
-    elif rsi < 60:
-        tech_score = 10
-    else:
-        tech_score = 0
+TREND_MAX, TIMING_MAX, MOMENTUM_MAX, DIVIDEND_MAX = 40, 30, 20, 10
 
+
+def _trend_score(price: float, ma50: float, ma200: float) -> int:
+    """แนวโน้มระยะยาว (0-40) — เหนือ MA200 คือเงื่อนไขตั้งต้นของการสะสม."""
+    if price >= ma200:
+        return 40 if price >= ma50 else 30
+    return 10 if price >= ma50 else 0
+
+
+def _timing_score(price: float, ma200: float, rsi: float) -> int:
+    """จังหวะเข้า (0-30) ตามนิยามใน signal_rules — ย่อในขาขึ้นได้คะแนนเต็ม."""
+    zone = signal_rules.rsi_zone(rsi)
+    uptrend = price >= ma200
+    if zone == "oversold":
+        return 30 if uptrend else 10  # ย่อในขาลง = ยังไม่ใช่จังหวะ
+    if zone == "overbought":
+        return 0
+    return 20 if rsi < 50 else 10
+
+
+def _momentum_score(return_1m_pct: float, return_3m_pct: float) -> int:
+    """โมเมนตัม (0-20)."""
+    score = 0
+    if return_1m_pct > 0:
+        score += 10
+    if return_3m_pct > 0:
+        score += 10
+    return score
+
+
+def _dividend_score(div_yield: float) -> int:
+    """ปันผล (0-10). ``div_yield`` เป็นสัดส่วน เช่น 0.035 = 3.5%."""
+    if div_yield > 0.04:
+        return 10
+    if div_yield > 0.02:
+        return 5
+    if div_yield > 0:
+        return 2
+    return 0
+
+
+def _dividend_yield(ticker: str) -> float | None:
+    """ดึง dividend yield แบบสัดส่วน; ล้มเหลวคืน None (คะแนนปันผลจะถูกตัดออกจาก max)."""
     try:
-        price = _safe_float(t.fast_info["last_price"], 0.0)
+        info = yf.Ticker(ticker).info or {}
     except Exception:
-        price = _safe_float(_download_close(ticker, "5d").iloc[-1], 0.0)
+        return None
+    raw = info.get("dividendYield")
+    if raw is None:
+        return None
+    value = _safe_float(raw, -1.0)
+    if value < 0:
+        return None
+    # yfinance เปลี่ยน semantics ข้ามเวอร์ชัน: บางรุ่นคืน 0.035 บางรุ่นคืน 3.5
+    return value / 100.0 if value > 1.0 else value
 
-    hist = yf.download(ticker, period="1y", progress=False, auto_adjust=False)
-    close = _close_series(hist, ticker)
-    ma50 = _safe_float(close.tail(50).mean(), 0.0)
-    ma200 = _safe_float(close.tail(200).mean(), 0.0)
 
-    if price > ma50 and price > ma200:
-        ma_score = 20
-    elif price > ma200:
-        ma_score = 10
-    elif price > ma50:
-        ma_score = 5
-    else:
-        ma_score = 0
+def _signal_label(total_pct: float) -> str:
+    if total_pct >= 70:
+        return "Strong Buy"
+    if total_pct >= 55:
+        return "Buy"
+    if total_pct >= 40:
+        return "Neutral"
+    if total_pct >= 25:
+        return "Caution"
+    return "Avoid"
 
-    dcf = dcf_valuation(ticker)
-    mos = _safe_float(dcf["margin_of_safety"], 0.0)
-    if mos > 50:
-        dcf_score = 30
-    elif mos > 30:
-        dcf_score = 25
-    elif mos > 15:
-        dcf_score = 20
-    elif mos > 0:
-        dcf_score = 10
-    elif mos > -15:
-        dcf_score = 5
-    else:
-        dcf_score = 0
 
-    returns = close.pct_change()
+def score_from_prices(
+    ticker: str,
+    closes: pd.Series,
+    div_yield: float | None = None,
+) -> dict[str, Any]:
+    """คะแนนกลางจากอนุกรมราคา — ใช้ร่วมกันทุก entry point ของระบบ.
+
+    ต้องมีข้อมูลอย่างน้อย 200 วันเทรด ไม่งั้น raise (ผู้เรียกต้องแปลงเป็น NO DATA)
+    """
+    closes = pd.to_numeric(closes, errors="coerce").dropna()
+    if len(closes) < 200:
+        raise ValueError(f"{ticker}: ข้อมูลราคาน้อยกว่า 200 วันเทรด")
+
+    price = float(closes.iloc[-1])
+    ma50 = float(ta.sma(closes, length=50).iloc[-1])
+    ma200 = float(ta.sma(closes, length=200).iloc[-1])
+    rsi = float(ta.rsi(closes, length=14).iloc[-1])
+    if any(pd.isna(v) for v in (price, ma50, ma200, rsi)):
+        raise ValueError(f"{ticker}: คำนวณตัวชี้วัด MA/RSI ไม่ได้")
+
+    returns = closes.pct_change()
     return_1m = _safe_float(returns.tail(21).sum() * 100, 0.0)
     return_3m = _safe_float(returns.tail(63).sum() * 100, 0.0)
 
-    mom_score = 0
-    if return_1m > 0:
-        mom_score += 10
-    if return_3m > 0:
-        mom_score += 10
+    trend_s = _trend_score(price, ma50, ma200)
+    timing_s = _timing_score(price, ma200, rsi)
+    mom_s = _momentum_score(return_1m, return_3m)
 
-    info = t.info or {}
-    div_yield = _safe_float(info.get("dividendYield"), 0.0)
-    if div_yield > 0.04:
-        div_score = 10
-    elif div_yield > 0.02:
-        div_score = 5
-    elif div_yield > 0:
-        div_score = 2
-    else:
-        div_score = 0
+    max_score = TREND_MAX + TIMING_MAX + MOMENTUM_MAX
+    div_s = 0
+    if div_yield is not None:
+        div_s = _dividend_score(div_yield)
+        max_score += DIVIDEND_MAX
 
-    total = tech_score + ma_score + dcf_score + mom_score + div_score
-
-    # Tiebreaker for ranking among equal total scores: lower RSI first, then higher MoS.
-    tie_break = (-round(rsi, 4), -round(mos, 4))
-
-    signal = (
-        "Strong Buy"
-        if total >= 80
-        else "Buy"
-        if total >= 60
-        else "Neutral"
-        if total >= 40
-        else "Caution"
-        if total >= 20
-        else "Avoid"
-    )
+    total = trend_s + timing_s + mom_s + div_s
+    total_pct = round(total * 100.0 / max_score, 1)
+    central = signal_rules.dca_signal(price, ma50, ma200, rsi)
 
     return {
         "ticker": ticker,
-        "total_score": total,
-        "technical_score": tech_score,
-        "ma_score": ma_score,
-        "dcf_score": dcf_score,
-        "momentum_score": mom_score,
-        "dividend_score": div_score,
-        "max_score": 110,
-        "tiebreak": tie_break,
+        "data_ok": True,
+        "price": round(price, 2),
+        "ma50": round(ma50, 2),
+        "ma200": round(ma200, 2),
         "rsi": round(rsi, 2),
         "return_1m_pct": round(return_1m, 2),
         "return_3m_pct": round(return_3m, 2),
-        "dcf": dcf,
-        "signal": signal,
+        "trend_score": trend_s,
+        "timing_score": timing_s,
+        "momentum_score": mom_s,
+        "dividend_score": div_s,
+        "dividend_available": div_yield is not None,
+        "total_score": total,
+        "max_score": max_score,
+        "total_pct": total_pct,
+        "signal": _signal_label(total_pct),
+        "technical_signal": central,
+        "technical_signal_th": signal_rules.thai_description(central),
     }
 
 
+def calculate_signal_score(ticker: str) -> dict[str, Any]:
+    """คะแนนกลาง + ข้อมูล DCF ประกอบ (DCF ไม่ถูกนับเป็นคะแนน — AUDIT.md C4)."""
+    closes = _download_close(ticker, "2y")
+    result = score_from_prices(ticker, closes, div_yield=_dividend_yield(ticker))
+
+    try:
+        dcf = dcf_valuation(ticker)
+        dcf_available = True
+    except ValueError as exc:
+        dcf = {"ticker": ticker, "signal": "N/A", "error": str(exc)}
+        dcf_available = False
+
+    result["dcf"] = dcf
+    result["dcf_available"] = dcf_available
+    result["dcf_note"] = (
+        "DCF เป็นข้อมูลประกอบ ไม่ถูกนับเป็นคะแนน (เป็น earnings-yield proxy ของ ETF ไม่ใช่ DCF กิจการ)"
+    )
+    return result
+
+
+ALLOCATION_MIN_SCORE = 25.0  # ต่ำกว่านี้ (Caution/Avoid) ไม่จัดสรรเงินให้
+_TIER_MULTIPLIER = {"Strong Buy": 2.0, "Buy": 1.4, "Neutral": 1.0}
+
+
 def calculate_allocation(scores: dict[str, Any], budget_thb: float) -> dict[str, dict[str, Any]]:
-    strong_buy = {k: v for k, v in scores.items() if _safe_float(v.get("total_score"), 0.0) >= 60}
-    buy = {k: v for k, v in scores.items() if 40 <= _safe_float(v.get("total_score"), 0.0) < 60}
-    neutral = {k: v for k, v in scores.items() if 20 <= _safe_float(v.get("total_score"), 0.0) < 40}
+    """จัดสรรงบ DCA จากคะแนน `total_pct` — คำนวณในโค้ดเท่านั้น ห้ามให้ AI คิด (AUDIT.md C3).
+
+    น้ำหนัก = total_pct × ตัวคูณตามกลุ่ม (Strong Buy 2.0 / Buy 1.4 / Neutral 1.0)
+    แล้วแบ่งงบตามสัดส่วนน้ำหนัก — รับประกันว่า **คะแนนสูงกว่าได้เงินมากกว่าเสมอ**
+
+    (บั๊กเดิม: แบ่งงบเป็นก้อนต่อกลุ่ม 60%/30% ทำให้เมื่อมี Strong Buy 4 ตัวและ Buy 1 ตัว
+    ตัว Buy ที่คะแนนต่ำสุดได้เงินก้อนใหญ่สุดคนเดียว ขณะที่ Strong Buy หาร 4)
+
+    ticker ที่ data_ok=False, ไม่มีคะแนน, หรือคะแนน < 25 จะไม่ได้รับเงินเลย (AUDIT.md C1)
+    จำนวนเงินปัดลงหลักร้อยบาท เศษที่เหลือผู้เรียกรายงานเป็น unallocated
+    """
+
+    def _pct(v: dict[str, Any]) -> float:
+        return _safe_float(v.get("total_pct"), -1.0)
+
+    usable = {
+        k: v
+        for k, v in scores.items()
+        if isinstance(v, dict) and v.get("data_ok", True) and _pct(v) >= ALLOCATION_MIN_SCORE
+    }
+    if not usable or budget_thb <= 0:
+        return {}
+
+    weights: dict[str, float] = {}
+    groups: dict[str, str] = {}
+    for ticker, data in usable.items():
+        pct = _pct(data)
+        label = _signal_label(pct)
+        groups[ticker] = label
+        weights[ticker] = pct * _TIER_MULTIPLIER.get(label, 1.0)
+
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        return {}
 
     allocation: dict[str, dict[str, Any]] = {}
-
-    if strong_buy:
-        sb_budget = budget_thb * 0.6
-        total_sb = sum(_safe_float(v.get("total_score"), 0.0) for v in strong_buy.values())
-        if total_sb > 0:
-            for ticker, data in strong_buy.items():
-                pct = _safe_float(data.get("total_score"), 0.0) / total_sb
-                amount = int(round(sb_budget * pct / 100)) * 100
-                allocation[ticker] = {
-                    "amount_thb": amount,
-                    "percent": round(pct * 60),
-                    "group": "Strong Buy",
-                }
-
-    if buy:
-        b_budget = budget_thb * 0.3
-        total_b = sum(_safe_float(v.get("total_score"), 0.0) for v in buy.values())
-        if total_b > 0:
-            for ticker, data in buy.items():
-                pct = _safe_float(data.get("total_score"), 0.0) / total_b
-                amount = int(round(b_budget * pct / 100)) * 100
-                allocation[ticker] = {
-                    "amount_thb": amount,
-                    "percent": round(pct * 30),
-                    "group": "Buy",
-                }
-
-    if neutral and (not strong_buy and not buy):
-        n_budget = budget_thb
-        total_n = sum(_safe_float(v.get("total_score"), 0.0) for v in neutral.values())
-        if total_n > 0:
-            for ticker, data in neutral.items():
-                pct = _safe_float(data.get("total_score"), 0.0) / total_n
-                amount = int(round(n_budget * pct / 100)) * 100
-                allocation[ticker] = {
-                    "amount_thb": amount,
-                    "percent": round(pct * 100),
-                    "group": "Neutral",
-                }
-
-    if not strong_buy and buy:
-        b_budget = budget_thb * 0.9
-        total_b = sum(_safe_float(v.get("total_score"), 0.0) for v in buy.values())
-        if total_b > 0:
-            for ticker, data in buy.items():
-                pct = _safe_float(data.get("total_score"), 0.0) / total_b
-                amount = int(round(b_budget * pct / 100)) * 100
-                allocation[ticker] = {
-                    "amount_thb": amount,
-                    "percent": round(pct * 90),
-                    "group": "Buy",
-                }
+    for ticker in sorted(usable, key=lambda t: weights[t], reverse=True):
+        share = weights[ticker] / total_weight
+        amount = int(budget_thb * share / 100) * 100  # ปัดลงหลักร้อย
+        if amount <= 0:
+            continue
+        allocation[ticker] = {
+            "amount_thb": amount,
+            "percent": round(amount / budget_thb * 100),
+            "group": groups[ticker],
+            "score": _pct(usable[ticker]),
+        }
 
     return allocation
 
@@ -352,7 +413,18 @@ def run_full_analysis(budget_thb: float = 5000) -> dict[str, Any]:
     results: dict[str, Any] = {}
     for ticker in tickers:
         print(f"Analyzing {ticker}...")
-        results[ticker] = calculate_signal_score(ticker)
+        try:
+            results[ticker] = calculate_signal_score(ticker)
+        except Exception as exc:
+            # ข้อมูลพัง = ระบุชัดว่า NO DATA — ห้ามกลายเป็นคะแนน 0/สัญญาณ Avoid (AUDIT.md C1)
+            results[ticker] = {
+                "ticker": ticker,
+                "data_ok": False,
+                "error": str(exc),
+                "total_score": None,
+                "total_pct": None,
+                "signal": "NO DATA",
+            }
         time.sleep(1)
 
     allocation = calculate_allocation(results, budget_thb)
@@ -364,22 +436,22 @@ def run_full_analysis(budget_thb: float = 5000) -> dict[str, Any]:
     }
 
 
-# --- Lightweight multi-ticker scores for advisor / jobs pipeline ---
+# --- Multi-ticker scores for advisor / jobs pipeline ---
+# ใช้ score_from_prices ตัวเดียวกับ calculate_signal_score — คะแนนของ ETF ตัวเดียวกัน
+# ต้องเท่ากันทุกหน้าจอเสมอ (AUDIT.md C2)
 
 DEFAULT_ETF_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
-_DCF_SCORE_PLACEHOLDER = 15
-
 
 def _yf_close_series(ticker: str) -> pd.Series:
-    """ดึงราคาปิดรายวันย้อนหลัง ~1 ปี; ล้มเหลวคืน series ว่าง."""
+    """ดึงราคาปิดรายวันย้อนหลัง 2 ปี (พอสำหรับ MA200); ล้มเหลวคืน series ว่าง."""
     try:
         df = yf.download(
             tickers=ticker,
-            period="1y",
+            period="2y",
             interval="1d",
             progress=False,
-            auto_adjust=False,
+            auto_adjust=True,
         )
         if df.empty or "Close" not in df.columns:
             return pd.Series(dtype=float)
@@ -395,101 +467,37 @@ def _yf_close_series(ticker: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 
-def _pipeline_ma_score(price: float, ma50: float, ma200: float) -> int:
-    if price > ma200:
-        return 20
-    if price > ma50:
-        return 10
-    return 0
-
-
-def _pipeline_technical_score(rsi: float) -> int:
-    if 40 <= rsi <= 60:
-        return 30
-    if (30 <= rsi < 40) or (60 < rsi <= 70):
-        return 15
-    return 0
-
-
-def _pipeline_momentum_score_one_month(close: pd.Series) -> int:
-    if len(close) < 22:
-        return 0
-    last = float(close.iloc[-1])
-    prev = float(close.iloc[-22])
-    if prev == 0:
-        return 0
-    ret_pct = (last / prev - 1.0) * 100.0
-    if ret_pct > 2.0:
-        return 20
-    if ret_pct > 0.0:
-        return 10
-    return 0
-
-
-def _pipeline_signal_label(total_score: int) -> str:
-    if total_score >= 60:
-        return "Strong Buy"
-    if total_score >= 40:
-        return "Buy"
-    if total_score >= 20:
-        return "Neutral"
-    return "Avoid"
-
-
-def _pipeline_score_ticker(ticker: str) -> dict[str, Any]:
-    closes = _yf_close_series(ticker).ffill()
-    if len(closes) < 200:
-        return {
-            "ticker": ticker,
-            "price": None,
-            "ma50": None,
-            "ma200": None,
-            "rsi": None,
-            "total_score": 0,
-            "signal": "Avoid",
-        }
-
-    price = float(closes.iloc[-1])
-    ma50_series = ta.sma(closes, length=50)
-    ma200_series = ta.sma(closes, length=200)
-    rsi_series = ta.rsi(closes, length=14)
-
-    ma50 = float(ma50_series.iloc[-1])
-    ma200 = float(ma200_series.iloc[-1])
-    rsi = float(rsi_series.iloc[-1])
-    if pd.isna(ma50) or pd.isna(ma200) or pd.isna(rsi):
-        return {
-            "ticker": ticker,
-            "price": round(price, 2) if not pd.isna(price) else None,
-            "ma50": None,
-            "ma200": None,
-            "rsi": None,
-            "total_score": 0,
-            "signal": "Avoid",
-        }
-
-    ma_s = _pipeline_ma_score(price, ma50, ma200)
-    tech_s = _pipeline_technical_score(rsi)
-    mom_s = _pipeline_momentum_score_one_month(closes)
-    dcf_s = _DCF_SCORE_PLACEHOLDER
-    total = int(tech_s + ma_s + dcf_s + mom_s)
-
+def _no_data(ticker: str, reason: str) -> dict[str, Any]:
+    """ผลลัพธ์เมื่อข้อมูลไม่พร้อม — สถานะชัดเจน ไม่ใช่คะแนน 0/สัญญาณ Avoid (AUDIT.md C1)."""
     return {
         "ticker": ticker,
-        "price": round(price, 2),
-        "ma50": round(ma50, 2),
-        "ma200": round(ma200, 2),
-        "rsi": round(rsi, 2),
-        "total_score": total,
-        "signal": _pipeline_signal_label(total),
+        "price": None,
+        "ma50": None,
+        "ma200": None,
+        "rsi": None,
+        "total_score": None,
+        "total_pct": None,
+        "signal": "NO DATA",
+        "data_ok": False,
+        "error": reason,
     }
 
 
+def _score_ticker(ticker: str) -> dict[str, Any]:
+    closes = _yf_close_series(ticker)
+    if closes.empty:
+        return _no_data(ticker, "ดึงราคาไม่สำเร็จ")
+    try:
+        return score_from_prices(ticker, closes, div_yield=_dividend_yield(ticker))
+    except ValueError as exc:
+        return _no_data(ticker, str(exc))
+
+
 def build_etf_scores(tickers: list[str] | None = None) -> list[dict[str, Any]]:
-    """คำนวณคะแนนและสัญญาณต่อ ETF จาก yfinance + ตัวชี้วัด ``ta``.
+    """คำนวณคะแนนและสัญญาณต่อ ETF (คะแนนกลางเดียวกับ calculate_signal_score).
 
     ถ้า ``tickers`` เป็น ``None`` ใช้ค่าเริ่มต้น
     ``VOO``, ``SCHD``, ``QQQM``, ``XLV``, ``GLDM``.
     """
     symbols = DEFAULT_ETF_TICKERS if tickers is None else list(tickers)
-    return [_pipeline_score_ticker(sym.strip().upper()) for sym in symbols if sym.strip()]
+    return [_score_ticker(sym.strip().upper()) for sym in symbols if sym.strip()]

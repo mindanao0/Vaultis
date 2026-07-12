@@ -1,29 +1,37 @@
-prophet
-vectorbt
-matplotlib
-yfinance
-fredapi
-pandas
-numpy
-pandas-ta
-ta
-streamlit
-plotly
-requests
-feedparser
-praw
-schedule
-python-dotenv
-groq
-google-genai
-reportlab
-fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
-pydantic
-websockets
-apscheduler
-anthropic
-python-multipart
-numpy-financial
+# Pinned 2026-07-12 (Phase 1 fix จาก AUDIT.md ข้อ C5)
+# เหตุผล: CI ติดตั้งใหม่จากไฟล์นี้ทุกรอบ — เวอร์ชันลอยทำให้ระบบพัง/ตัวเลขเพี้ยนเงียบ ๆ
+# ห้ามอัปเกรดตัวใดโดยไม่รันเทสต์ก่อน โดยเฉพาะ yfinance (behavior เปลี่ยนบ่อย)
+# หมายเหตุ: ตัด pandas-ta (เลิกพัฒนา, พังกับ numpy 2) → ใช้ ta ผ่าน analysis/ta_compat.py
+#           ตัด google-genai (ไม่มีโค้ดเรียกใช้)
+
+numpy==1.26.4
+pandas==2.2.3
+yfinance==0.2.61
+ta==0.11.0
+vectorbt==0.26.2
+prophet==1.1.6
+numpy-financial==1.0.0
+
+matplotlib==3.9.2
+plotly==5.24.1
+streamlit==1.41.1
+
+fastapi==0.115.6
+uvicorn==0.34.0
+websockets==14.1
+python-multipart==0.0.20
+pydantic==2.10.4
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+apscheduler==3.11.0
+schedule==1.2.2
+
+requests==2.32.3
+python-dotenv==1.0.1
+feedparser==6.0.11
+praw==7.8.1
+fredapi==0.5.2
+reportlab==4.2.5
+
+groq==0.13.1
+anthropic==0.42.0

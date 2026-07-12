@@ -1,14 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Utilities for loading and saving application configuration."""
+"""Utilities for loading and saving application configuration.
+
+Secrets policy (AUDIT.md H1): Discord webhook URL ห้ามเก็บใน config.json
+(ไฟล์นี้ถูก track ใน git) — ให้ตั้งผ่าน env `DISCORD_WEBHOOK_URL` (.env / GitHub
+Secrets / Render env) ซึ่ง `load_config()` จะ overlay ให้อัตโนมัติ
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.json"
+load_dotenv(dotenv_path=CONFIG_PATH.parent / ".env", override=False)
 DEFAULT_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -54,9 +63,10 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     normalized_tickers = [str(ticker).strip().upper() for ticker in raw_tickers if str(ticker).strip()]
     merged["etf"]["tickers"] = list(dict.fromkeys(normalized_tickers)) or deepcopy(DEFAULT_CONFIG["etf"]["tickers"])
 
-    merged["notifications"]["discord_webhook_url"] = str(
-        merged["notifications"].get("discord_webhook_url", "")
-    ).strip()
+    # env มาก่อนค่าในไฟล์เสมอ — webhook เป็น secret ไม่ควรอยู่ใน config.json
+    env_webhook = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    file_webhook = str(merged["notifications"].get("discord_webhook_url", "")).strip()
+    merged["notifications"]["discord_webhook_url"] = env_webhook or file_webhook
     merged["notifications"]["weekly_summary"] = bool(merged["notifications"].get("weekly_summary", True))
     merged["notifications"]["dca_reminder"] = bool(merged["notifications"].get("dca_reminder", True))
     merged["notifications"]["rsi_alert"] = bool(merged["notifications"].get("rsi_alert", True))
@@ -85,9 +95,15 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Save configuration into config.json and return normalized config."""
+    """Save configuration into config.json and return normalized config.
+
+    webhook ไม่ถูกเขียนลงไฟล์เด็ดขาด (ไฟล์นี้อยู่ใน git — เคยหลุดมาแล้ว, AUDIT.md H1)
+    ค่า runtime ยังใช้ได้ปกติผ่าน env overlay ใน load_config()
+    """
     normalized = _normalize_config(config if isinstance(config, dict) else {})
-    CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    on_disk = deepcopy(normalized)
+    on_disk["notifications"]["discord_webhook_url"] = ""
+    CONFIG_PATH.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return normalized
 
 

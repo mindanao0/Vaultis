@@ -2,9 +2,9 @@ import logging
 from datetime import datetime
 
 import pandas as pd
-import pandas_ta  # noqa: F401
 import yfinance
 
+from analysis.ta_compat import ta
 from backend.screener.crossover_detector import CrossoverDetector
 from backend.screener.models import ScreenerPreset, ScreenerRule, ScreenerResult
 
@@ -16,48 +16,58 @@ class ScreenerEngine:
         self.detector = CrossoverDetector()
 
     def _fetch_df(self, symbol: str) -> pd.DataFrame:
-        df = yfinance.download(symbol, period="1y", interval="1d", progress=False)
+        # auto_adjust=True ระบุชัด: ใช้ราคา adjusted เป็นมาตรฐานเดียวทั้งระบบ
+        # (เดิมไม่ระบุ → พฤติกรรมแกว่งตามเวอร์ชัน yfinance — AUDIT.md M1)
+        df = yfinance.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        if df.empty or "Close" not in df.columns:
+            raise ValueError(f"ดึงข้อมูลราคา {symbol} ไม่สำเร็จ (ผลว่าง)")
         return df
 
     def _evaluate_rule(self, rule: ScreenerRule, df: pd.DataFrame) -> bool:
-        try:
-            price = df["Close"].iloc[-1]
-            if rule.field == "rsi":
-                rsi = df.ta.rsi(length=14).iloc[-1]
-                if rule.operator == "lt":
-                    return rsi < rule.value
-                if rule.operator == "gt":
-                    return rsi > rule.value
-            elif rule.field == "macd_cross":
-                cross = self.detector.detect_macd_cross(df)
-                if rule.operator == "cross_up":
-                    return cross == "bullish"
-                if rule.operator == "cross_down":
-                    return cross == "bearish"
-            elif rule.field == "price_vs_ma200":
-                ma200 = df["Close"].rolling(200).mean().iloc[-1]
-                if rule.operator == "gt":
-                    return price > ma200
-                if rule.operator == "lt":
-                    return price < ma200
-            elif rule.field == "golden_cross":
-                return self.detector.detect_golden_cross(df, int(rule.value or 3))
-            elif rule.field == "death_cross":
-                return self.detector.detect_death_cross(df, int(rule.value or 3))
-            elif rule.field == "bb_squeeze":
-                return self.detector.detect_bb_squeeze(df)
-            elif rule.field == "volume_spike":
-                return self.detector.detect_volume_spike(df, rule.value or 2.0)
-            elif rule.field == "price_drop_pct":
-                return self.detector.detect_price_drop_pct(df, rule.value or 5.0)
-        except Exception:
-            return False
+        # หมายเหตุ (AUDIT.md C1): ห้ามครอบ try/except คืน False —
+        # error ต้องเด้งขึ้นไปให้ run() log เป็น ERROR รายสัญลักษณ์
+        # ไม่งั้น "ตรวจไม่ได้" จะแยกไม่ออกจาก "ไม่มีสัญญาณ"
+        price = df["Close"].iloc[-1]
+        if rule.field == "rsi":
+            rsi = ta.rsi(df["Close"], length=14).iloc[-1]
+            if pd.isna(rsi):
+                raise ValueError("คำนวณ RSI ไม่ได้ (ข้อมูลไม่พอ)")
+            if rule.operator == "lt":
+                return rsi < rule.value
+            if rule.operator == "gt":
+                return rsi > rule.value
+        elif rule.field == "macd_cross":
+            cross = self.detector.detect_macd_cross(df)
+            if rule.operator == "cross_up":
+                return cross == "bullish"
+            if rule.operator == "cross_down":
+                return cross == "bearish"
+        elif rule.field == "price_vs_ma200":
+            ma200 = df["Close"].rolling(200).mean().iloc[-1]
+            if pd.isna(ma200):
+                raise ValueError("คำนวณ MA200 ไม่ได้ (ข้อมูลไม่พอ)")
+            if rule.operator == "gt":
+                return price > ma200
+            if rule.operator == "lt":
+                return price < ma200
+        elif rule.field == "golden_cross":
+            return self.detector.detect_golden_cross(df, int(rule.value or 3))
+        elif rule.field == "death_cross":
+            return self.detector.detect_death_cross(df, int(rule.value or 3))
+        elif rule.field == "bb_squeeze":
+            return self.detector.detect_bb_squeeze(df)
+        elif rule.field == "volume_spike":
+            return self.detector.detect_volume_spike(df, rule.value or 2.0)
+        elif rule.field == "price_drop_pct":
+            return self.detector.detect_price_drop_pct(df, rule.value or 5.0)
         return False
 
     def _compute_signal_strength(self, matched: int, total: int, df: pd.DataFrame) -> float:
         base = (matched / total) * 7
-        rsi = df.ta.rsi(length=14).iloc[-1]
+        rsi = ta.rsi(df["Close"], length=14).iloc[-1]
+        if pd.isna(rsi):
+            return min(round(base, 1), 10.0)
         bonus = 0
         if rsi < 35:
             bonus += 1.5

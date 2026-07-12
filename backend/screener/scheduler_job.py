@@ -6,7 +6,8 @@ from backend.screener.presets import get_preset
 
 async def run_daily_screener():
     symbols = ["VOO", "QQQM", "SCHD", "XLV", "GLDM"]
-    presets_to_run = ["oversold_momentum", "golden_cross_alert", "bb_breakout_watch"]
+    # เพิ่ม overbought_warning: ผู้ใช้ถือของจริง ต้องได้คำเตือนฝั่งแพงด้วย ไม่ใช่แค่สัญญาณซื้อ (AUDIT.md M14)
+    presets_to_run = ["oversold_momentum", "golden_cross_alert", "bb_breakout_watch", "overbought_warning"]
 
     engine = ScreenerEngine()
     notifier = ScreenerNotifier()

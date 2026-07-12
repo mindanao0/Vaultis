@@ -4,8 +4,10 @@ import asyncio
 from typing import Any
 
 import pandas as pd
-import pandas_ta as pta  # noqa: F401 — registers `df.ta` accessor
 import yfinance as yf
+
+from analysis.ta_compat import ta
+from technical import signal_rules
 
 from ..models.etf_models import TechnicalIndicators
 
@@ -55,23 +57,13 @@ def _cross_flags_last_n(ma50: pd.Series, ma200: pd.Series, n: int = 5) -> tuple[
 
 
 def _signal(price: float, rsi: float | None, ma50: float | None, ma200: float | None) -> str:
-    if pd.notna(ma200) and ma200 is not None and price < ma200:
-        return "bearish"
-    if rsi is not None and pd.notna(rsi) and rsi < 35:
-        return "bearish"
-    if (
-        rsi is not None
-        and pd.notna(rsi)
-        and 40 <= rsi <= 70
-        and ma50 is not None
-        and pd.notna(ma50)
-        and ma200 is not None
-        and pd.notna(ma200)
-        and price > ma50
-        and price > ma200
-    ):
-        return "bullish"
-    return "neutral"
+    """ใช้นิยามสัญญาณกลางจาก technical/signal_rules.py (AUDIT.md C2).
+
+    บั๊กเดิม: RSI < 35 ถูกตีเป็น "bearish" (แล้วต่อยอดเป็น strong_sell) ทั้งที่
+    subsystem อื่นตีเป็นจังหวะสะสม — ตอนนี้ oversold ไม่ใช่สัญญาณขายอีกต่อไป
+    """
+    central = signal_rules.dca_signal(price, ma50, ma200, rsi)
+    return signal_rules.to_technical_label(central)
 
 
 def _pick_col(df: pd.DataFrame, prefix: str) -> str | None:
@@ -93,7 +85,8 @@ class TechnicalService:
         sym = symbol.strip().upper()
 
         def _compute() -> TechnicalIndicators:
-            df = yf.download(sym, period="1y", interval="1d", progress=False, auto_adjust=False)
+            # auto_adjust=True: มาตรฐานราคา adjusted เดียวกันทั้งระบบ (AUDIT.md M1)
+            df = yf.download(sym, period="1y", interval="1d", progress=False, auto_adjust=True)
             df = _normalize_ohlcv(df)
             if df.empty or "Close" not in df.columns:
                 raise ValueError("no OHLCV")
@@ -106,9 +99,10 @@ class TechnicalService:
             ma200_s = close.rolling(200).mean()
             vol_ma20_s = vol.rolling(20).mean()
 
-            work.ta.rsi(length=14, append=True)
-            work.ta.macd(fast=12, slow=26, signal=9, append=True)
-            work.ta.bbands(length=20, std=2, append=True)
+            work["RSI_14"] = ta.rsi(close, length=14)
+            macd_frame = ta.macd(close, fast=12, slow=26, signal=9)
+            bb_frame = ta.bbands(close, length=20, std=2)
+            work = pd.concat([work, macd_frame, bb_frame], axis=1)
 
             last = work.iloc[-1]
             price = _scalar_float_required(last["Close"])
@@ -155,7 +149,6 @@ class TechnicalService:
                 signal=sig,
             )
 
-        try:
-            return await asyncio.to_thread(_compute)
-        except Exception:
-            return TechnicalIndicators(symbol=sym, price=0.0, signal="neutral")
+        # ห้าม fallback เป็น price=0/signal=neutral — ข้อมูลพังต้อง error ดัง
+        # ให้ router ตอบ 500 พร้อมเหตุผล ไม่ใช่ส่งบทวิเคราะห์จากตัวเลขขยะ (AUDIT.md C1)
+        return await asyncio.to_thread(_compute)

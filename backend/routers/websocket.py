@@ -47,18 +47,31 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _fetch_ticker_snapshot(ticker: str) -> dict[str, float] | None:
+    """ดึงราคา + %เปลี่ยนแปลง; ดึงไม่ได้คืน None — ห้าม broadcast 0.0 ปลอม (AUDIT.md C1)."""
+    try:
+        info = yf.Ticker(ticker).fast_info
+        price = float(info["last_price"])
+        prev = float(info["previous_close"])
+        change_pct = ((price - prev) / prev * 100.0) if prev > 0 else 0.0
+        return {"price": round(price, 2), "change_pct": round(change_pct, 2)}
+    except Exception as exc:
+        logger.warning("ws price fetch failed for %s: %s", ticker, exc)
+        return None
+
+
 async def _price_broadcast_loop() -> None:
     while True:
         try:
-            prices: dict[str, float] = {}
+            prices: dict[str, dict[str, float]] = {}
             for ticker in TICKERS:
-                try:
-                    t = yf.Ticker(ticker)
-                    prices[ticker] = t.fast_info["last_price"]
-                except Exception:
-                    prices[ticker] = 0.0
+                # yfinance เป็น sync I/O — ต้องออกจาก event loop ไม่งั้น API ทั้งตัวค้าง (AUDIT.md M13)
+                snapshot = await asyncio.to_thread(_fetch_ticker_snapshot, ticker)
+                if snapshot is not None:
+                    prices[ticker] = snapshot
 
-            await manager.broadcast({"type": "price_update", "data": prices})
+            if prices:
+                await manager.broadcast({"type": "price_update", "data": prices})
         except Exception as exc:
             logger.exception("broadcast loop error: %s", exc)
 
