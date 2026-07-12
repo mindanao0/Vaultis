@@ -23,7 +23,7 @@ def test_forecast():
     print(f"mae         : {bt_result['mae']}")
     print(f"rmse        : {bt_result['rmse']}")
     print(f"mape        : {bt_result['mape']}")
-    print(f"accuracy_pct: {bt_result['accuracy_pct']}%")
+    print(f"note: {bt_result.get('note')}")
     print(f"n_folds     : {bt_result['n_folds']}")
 
     assert result["symbol"] is not None

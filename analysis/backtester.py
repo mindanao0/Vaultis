@@ -70,13 +70,12 @@ class WalkForwardBacktester:
                 "rmse": None,
                 "mape": None,
                 "n_folds": 0,
-                "accuracy_pct": None,
+                "note": "ไม่มี fold ที่ทดสอบได้",
             }
 
         avg_mae = float(np.mean([e["mae"] for e in errors]))
         avg_rmse = float(np.mean([e["rmse"] for e in errors]))
         avg_mape = float(np.mean([e["mape"] for e in errors]))
-        accuracy_pct = round(100.0 - avg_mape, 2)
 
         return {
             "symbol": symbol,
@@ -84,5 +83,12 @@ class WalkForwardBacktester:
             "rmse": round(avg_rmse, 4),
             "mape": round(avg_mape, 4),
             "n_folds": n_folds,
-            "accuracy_pct": accuracy_pct,
+            # AUDIT.md M3: เดิมมี ``accuracy_pct = 100 - MAPE`` ซึ่งทำให้ MAPE 3%
+            # กลายเป็น "แม่นยำ 97%" — เป็นการสื่อสารที่ทำให้เข้าใจผิดอย่างมากกับคนที่ใช้เงินจริง
+            # (พยากรณ์ราคาแบบ naive "พรุ่งนี้เท่าวันนี้" ก็ได้ MAPE ต่ำเช่นกัน)
+            "note": (
+                f"MAPE เฉลี่ย {avg_mape:.2f}% จาก {n_folds} ช่วงทดสอบ — "
+                "ค่านี้ไม่ใช่ 'ความแม่นยำ' และไม่ได้แปลว่าทำนายทิศทางถูก "
+                "ใช้ประกอบการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
+            ),
         }

@@ -27,6 +27,30 @@ class PriceDataUnavailableError(RuntimeError):
     """ดึงข้อมูลราคาไม่สำเร็จหลัง retry ครบ — ผู้เรียกต้องแสดงข้อผิดพลาด ห้ามเดาค่าแทน."""
 
 
+def normalize_close_series(df: pd.DataFrame) -> pd.Series:
+    """ดึงคอลัมน์ Close จากผลลัพธ์ yfinance เป็น Series เดียว.
+
+    yfinance รุ่นใหม่คืน MultiIndex (Price, Ticker) แม้ดึง ticker เดียว →
+    ``df["Close"]`` / ``df.get("Close")`` จะได้ DataFrame ทำให้ ``pd.to_numeric`` พัง
+    (บั๊กนี้ทำให้ FX rate ไม่เคยดึงได้จริงเลย — AUDIT.md)
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Close" not in df.columns.get_level_values(0):
+            return pd.Series(dtype=float)
+        close = df.xs("Close", axis=1, level=0)
+    else:
+        if "Close" not in df.columns:
+            return pd.Series(dtype=float)
+        close = df["Close"]
+    if isinstance(close, pd.DataFrame):
+        if close.empty or close.shape[1] == 0:
+            return pd.Series(dtype=float)
+        close = close.iloc[:, 0]
+    return pd.to_numeric(close, errors="coerce").dropna()
+
+
 def fetch_adjusted_close_data(
     tickers: List[str] | None = None,
     years: int = 10,

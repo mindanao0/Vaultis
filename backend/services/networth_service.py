@@ -7,29 +7,30 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from utils.config import load_config
+from utils import fx
 
 from ..models.networth_models import Asset, Liability, NetWorthResponse, SnapshotRequest
 from ..models.orm import NetWorthSnapshot
 from ..services.portfolio_service import get_holdings
 
 
-def _fx_rate() -> float:
-    return float(load_config()["display"].get("default_fx_rate", 33.5))
-
-
 def _etf_assets_live(db: Session) -> list[Asset]:
-    """Return current ETF holdings as Asset objects valued in THB."""
-    holdings = get_holdings(db)
-    fx = _fx_rate()
+    """ETF holdings ที่มีราคาจริง → Asset (THB).
+
+    ใช้ FX สดจากแหล่งกลาง — เดิมใช้ ``default_fx_rate`` 33.5 คงที่จาก config
+    ทำให้มูลค่า Net Worth ต่างจากหน้า Portfolio (AUDIT.md M5)
+    ถือครองที่ดึงราคาไม่ได้จะถูกข้าม (ไม่นับเป็น 0 — AUDIT.md C1)
+    """
+    holdings = get_holdings()
+    rate = fx.get_usdthb_rate()
     return [
         Asset(
             name=h["ticker"],
             type="etf",
-            value_thb=round(h["current_value_usd"] * fx, 2),
+            value_thb=round(float(h["current_value_usd"]) * rate, 2),
         )
         for h in holdings
-        if h["current_value_usd"] > 0
+        if h.get("price_ok") and h.get("current_value_usd")
     ]
 
 

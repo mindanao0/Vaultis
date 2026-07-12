@@ -27,14 +27,15 @@ _SYSTEM_PROMPT = (
 # ── data aggregators ─────────────────────────────────────────────────────────
 
 def get_portfolio_summary(db: Session) -> dict[str, Any]:
-    summary = portfolio_service.get_portfolio_summary(db)
-    holdings = portfolio_service.get_holdings(db)
-    top = sorted(holdings, key=lambda h: h["current_value_usd"], reverse=True)[:3]
+    summary = portfolio_service.get_portfolio_summary()
+    holdings = [h for h in portfolio_service.get_holdings() if h.get("price_ok")]
+    top = sorted(holdings, key=lambda h: h["current_value_usd"] or 0, reverse=True)[:3]
     return {
         "holdings_count": summary["holdings_count"],
         "current_value_usd": summary["current_value_usd"],
         "invested_usd": summary["invested_usd"],
         "pnl_usd": summary["pnl_usd"],
+        "missing_prices": summary.get("missing_prices", []),
         "top_holdings": [
             {"ticker": h["ticker"], "return_pct": h["return_pct"]}
             for h in top
@@ -136,13 +137,18 @@ def generate_narrative(all_data: dict[str, Any], month: str) -> str:
 
     preset_txt = ", ".join(f"{k}:{v}" for k, v in sc["by_preset"].items()) or "ไม่มี"
 
+    missing = pf.get("missing_prices") or []
+    missing_txt = (
+        f"\n- ⚠️ ดึงราคาไม่ได้ (ไม่ถูกนับในมูลค่า): {', '.join(map(str, missing))}" if missing else ""
+    )
+
     user_msg = (
         f"สรุปข้อมูลการเงินเดือน {month}\n\n"
         f"[พอร์ตโฟลิโอ]\n"
         f"- มูลค่ารวม: {pf['current_value_usd']:,.2f} USD\n"
         f"- กำไร/ขาดทุน: {pf['pnl_usd']:+,.2f} USD\n"
         f"- จำนวน ETF: {pf['holdings_count']} ตัว\n"
-        f"- Top holdings: {top_txt}\n\n"
+        f"- Top holdings: {top_txt}{missing_txt}\n\n"
         f"[Net Worth]\n"
         f"- {nw_txt}\n\n"
         f"[Screener Signals (30 วัน)]\n"

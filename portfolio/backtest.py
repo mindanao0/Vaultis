@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
+from analysis.risk import DEFAULT_RISK_FREE_RATE
 from data.fetcher import fetch_adjusted_close_data
 
 
@@ -37,7 +38,7 @@ def _build_value_curve(returns: pd.Series, initial_investment: float) -> pd.Seri
 
 
 def _calculate_metrics(value_curve: pd.Series, daily_returns: pd.Series) -> Dict[str, float]:
-    """คำนวณผลลัพธ์หลักของ backtest."""
+    """คำนวณผลลัพธ์หลักของ backtest (Sharpe หัก risk-free เดียวกับหน้า Risk)."""
     total_return = (float(value_curve.iloc[-1]) / float(value_curve.iloc[0])) - 1.0
     num_days = max((value_curve.index[-1] - value_curve.index[0]).days, 1)
     annualized_return = (1.0 + total_return) ** (365.25 / num_days) - 1.0
@@ -49,7 +50,8 @@ def _calculate_metrics(value_curve: pd.Series, daily_returns: pd.Series) -> Dict
     volatility = float(daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR))
     sharpe_ratio = 0.0
     if volatility > 0:
-        sharpe_ratio = float((daily_returns.mean() * TRADING_DAYS_PER_YEAR) / volatility)
+        excess = daily_returns.mean() * TRADING_DAYS_PER_YEAR - DEFAULT_RISK_FREE_RATE
+        sharpe_ratio = float(excess / volatility)
 
     return {
         "Total Return %": total_return * 100.0,
@@ -64,7 +66,12 @@ def run_portfolio_backtest(
     weights: Dict[str, float],
     initial_capital: float = 10000.0,
 ) -> pd.DataFrame:
-    """ทดสอบผลตอบแทนพอร์ตย้อนหลังจากสัดส่วนที่กำหนด (ใช้ข้อมูลราคาที่ส่งเข้ามา)."""
+    """ทดสอบผลตอบแทนพอร์ตย้อนหลัง (rebalance รายวันตามน้ำหนักที่กำหนด).
+
+    เริ่มนับจากวันแรกที่ **ทุก ETF ในพอร์ตมีราคาแล้ว** — เดิมใช้ ``fillna(0.0)``
+    ทำให้ ETF ที่ยังไม่เกิด (เช่น QQQM ก่อน ต.ค. 2020) ถูกนับเป็นผลตอบแทน 0%
+    ทั้งที่ถือน้ำหนักอยู่ → ฉุดผลย้อนหลังของทั้งพอร์ตให้ต่ำกว่าความจริง (AUDIT.md M4)
+    """
     try:
         if price_df.empty:
             raise ValueError("price_df ว่าง ไม่สามารถทำ backtest ได้")
@@ -78,8 +85,17 @@ def run_portfolio_backtest(
         active_weights = normalized_weights[valid_assets]
         active_weights = active_weights / active_weights.sum()
 
-        portfolio_prices = price_df[valid_assets].ffill().dropna(how="all")
-        portfolio_returns = portfolio_prices.pct_change().fillna(0.0).mul(active_weights, axis=1).sum(axis=1)
+        # ตัดช่วงก่อนที่ทุกตัวจะมีข้อมูลออก แทนการเติมผลตอบแทน 0%
+        portfolio_prices = price_df[valid_assets].ffill().dropna(how="any")
+        if len(portfolio_prices) < 2:
+            raise ValueError(
+                "ข้อมูลราคาที่ทุก ETF มีร่วมกันไม่พอทำ backtest "
+                "(ETF ที่เพิ่งเกิดใหม่จะตัดช่วงเริ่มต้นของพอร์ตให้สั้นลง)"
+            )
+
+        portfolio_returns = (
+            portfolio_prices.pct_change().fillna(0.0).mul(active_weights, axis=1).sum(axis=1)
+        )
         portfolio_value = _build_value_curve(portfolio_returns, initial_capital)
 
         return pd.DataFrame({"Portfolio Value": portfolio_value, "Portfolio Return": portfolio_returns})

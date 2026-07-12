@@ -54,7 +54,9 @@ async def get_forecast(symbol: str, days: int = 30):
             "mae": bt_result["mae"],
             "rmse": bt_result["rmse"],
             "mape": bt_result["mape"],
-            "accuracy_pct": bt_result["accuracy_pct"],
+            "n_folds": bt_result.get("n_folds", 0),
+            # เลิกส่ง accuracy_pct (= 100 - MAPE) ซึ่งสื่อว่า "แม่น 97%" อย่างเข้าใจผิด — AUDIT.md M3
+            "note": bt_result.get("note", ""),
         },
         "chart_base64": chart_b64,
         "disclaimer": forecast_result["disclaimer"],

@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""Streamlit dashboard   ETF  ."""
+"""Streamlit dashboard สำหรับวิเคราะห์และติดตามพอร์ต ETF ระยะยาว."""
 
 from __future__ import annotations
 
@@ -502,7 +502,7 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
 
 
 def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
-    """Render monthly PDF export controls with Streamlit download button."""
+    """ปุ่มสร้าง/ดาวน์โหลดรายงานรายเดือนเป็น PDF."""
     config = load_config()
     month_text = datetime.today().strftime("%B %Y")
     default_budget = float(config["dca"]["monthly_budget_thb"])
@@ -518,7 +518,7 @@ def _render_pdf_export_panel(section_key: str, prepare_label: str, download_labe
     cache_key = f"{section_key}_pdf_bytes"
     file_key = f"{section_key}_pdf_filename"
     if st.button(prepare_label, key=f"{section_key}_prepare_pdf"):
-        with st.spinner("  PDF..."):
+        with st.spinner("กำลังสร้าง PDF..."):
             st.session_state[cache_key] = generate_monthly_report(month=month_text, budget_thb=float(budget_thb))
             st.session_state[file_key] = f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"
         st.success("PDF prepared successfully.")
@@ -534,7 +534,7 @@ def _render_pdf_export_panel(section_key: str, prepare_label: str, download_labe
 
 
 def _is_valid_etf_ticker(ticker: str) -> bool:
-    """Validate ticker by fetching 1-day data from yfinance."""
+    """ตรวจว่า ticker มีอยู่จริงโดยลองดึงข้อมูล 1 วันจาก yfinance."""
     cleaned_ticker = str(ticker).strip().upper()
     if not cleaned_ticker:
         return False
@@ -555,9 +555,9 @@ def _is_valid_etf_ticker(ticker: str) -> bool:
 
 
 def render_settings_page() -> None:
-    """  config.json."""
+    """หน้าตั้งค่า — บันทึกลง config.json."""
     st.header("Settings")
-    st.caption(" , ETF,    ")
+    st.caption("ตั้งค่า DCA, ETF ที่ติดตาม, การแจ้งเตือน และการแสดงผล")
 
     config = load_config()
     current_tickers = get_tickers()
@@ -576,14 +576,14 @@ def render_settings_page() -> None:
 
     st.subheader("1) DCA Settings")
     dca_budget = st.number_input(
-        "  DCA   (THB)",
+        "งบ DCA ต่อเดือน (บาท)",
         min_value=100.0,
         value=float(config["dca"]["monthly_budget_thb"]),
         step=100.0,
         format="%.0f",
     )
     dca_day = st.number_input(
-        "  DCA  ",
+        "วันที่ DCA ของเดือน",
         min_value=1,
         max_value=31,
         value=int(config["dca"]["day_of_month"]),
@@ -592,7 +592,7 @@ def render_settings_page() -> None:
 
     st.divider()
     st.subheader("2) ETF Management")
-    st.caption("ETF  ")
+    st.caption("ETF ที่ระบบติดตามและนำมาคิดคะแนน")
     for ticker in current_tickers:
         col_ticker, col_remove = st.columns([4, 1])
         with col_ticker:
@@ -601,27 +601,27 @@ def render_settings_page() -> None:
             if st.button("Remove", key=f"remove_{ticker}"):
                 try:
                     remove_ticker(ticker)
-                    st.success(f"  ETF {ticker}  ")
+                    st.success(f"ลบ ETF {ticker} แล้ว")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"  ETF  : {exc}")
+                    st.error(f"ลบ ETF ไม่สำเร็จ: {exc}")
 
-    new_ticker = st.text_input("  ETF  ", value="", placeholder="  VTI")
-    if st.button("  ETF", type="secondary"):
+    new_ticker = st.text_input("เพิ่ม ETF ใหม่", value="", placeholder="เช่น VTI")
+    if st.button("เพิ่ม ETF", type="secondary"):
         candidate = new_ticker.strip().upper()
         if not candidate:
-            st.warning("  Ticker  ")
+            st.warning("กรุณากรอก Ticker ก่อน")
         elif candidate in current_tickers:
-            st.info(f"{candidate}  ")
+            st.info(f"{candidate} มีอยู่ในรายการแล้ว")
         elif not _is_valid_etf_ticker(candidate):
-            st.error("  ETF     Ticker")
+            st.error("ไม่พบ ETF นี้ใน yfinance — ตรวจสอบ Ticker อีกครั้ง")
         else:
             try:
                 add_ticker(candidate)
-                st.success(f"  ETF {candidate}  ")
+                st.success(f"เพิ่ม ETF {candidate} แล้ว")
                 st.rerun()
             except Exception as exc:
-                st.error(f"  ETF  : {exc}")
+                st.error(f"เพิ่ม ETF ไม่สำเร็จ: {exc}")
 
     st.divider()
     st.subheader("3) Notification Settings")
@@ -631,55 +631,55 @@ def render_settings_page() -> None:
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
 
     if webhook_url.strip():
-        st.success("Discord Webhook:  ")
+        st.success("Discord Webhook: ตั้งค่าแล้ว")
     else:
-        st.error("Discord Webhook:   DISCORD_WEBHOOK_URL   .env")
+        st.error("Discord Webhook: ยังไม่ได้ตั้ง — ใส่ DISCORD_WEBHOOK_URL ในไฟล์ .env")
 
     weekly_summary_enabled = st.checkbox(
-        "Weekly Summary  ",
+        "ส่ง Weekly Summary ทุกวันจันทร์",
         value=bool(config["notifications"]["weekly_summary"]),
     )
     dca_reminder_enabled = st.checkbox(
-        "DCA Reminder   1  ",
+        "เตือน DCA ล่วงหน้า 1 วัน",
         value=bool(config["notifications"]["dca_reminder"]),
     )
     rsi_alert_enabled = st.checkbox(
-        "RSI Alert   Oversold/Overbought",
+        "เตือนเมื่อ RSI เข้าเขต Oversold/Overbought",
         value=bool(config["notifications"]["rsi_alert"]),
     )
-    if st.button("  Discord"):
+    if st.button("ทดสอบส่ง Discord"):
         if not webhook_url.strip():
-            st.error("  DISCORD_WEBHOOK_URL   Discord  ")
+            st.error("ยังไม่ได้ตั้ง DISCORD_WEBHOOK_URL จึงส่งไม่ได้")
         else:
             test_result = test_alert(webhook_url=webhook_url)
             if test_result.get("success"):
-                st.success("  Discord  ")
+                st.success("ส่งข้อความทดสอบไป Discord สำเร็จ")
             else:
-                st.error(f" : {test_result.get('error', 'unknown error')}")
+                st.error(f"ส่งไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
 
     st.divider()
     st.subheader("4) Display Settings")
     current_default_page = str(config["display"]["default_page"])
     default_page = st.selectbox(
-        "Default Page  ",
+        "หน้าเริ่มต้นเมื่อเปิดแอป",
         page_options,
         index=page_options.index(current_default_page) if current_default_page in page_options else 0,
     )
     currency = st.radio(
-        " ",
+        "สกุลเงินหลักที่แสดงผล",
         options=["THB", "USD"],
         index=0 if str(config["display"]["currency"]).upper() == "THB" else 1,
         horizontal=True,
     )
     default_fx_rate = st.number_input(
-        "  Default ( )",
+        "อัตราแลกเปลี่ยนสำรอง (ใช้เมื่อดึงค่าสดไม่ได้)",
         min_value=1.0,
         value=float(config["display"]["default_fx_rate"]),
         step=0.1,
         format="%.4f",
     )
 
-    if st.button("  Settings", type="primary"):
+    if st.button("บันทึก Settings", type="primary"):
         updated_config = {
             **config,
             "dca": {
@@ -701,10 +701,10 @@ def render_settings_page() -> None:
         }
         try:
             save_config(updated_config)
-            st.success("  Settings   config.json  ")
-            st.info("  scheduler     restart  ")
+            st.success("บันทึก Settings ลง config.json แล้ว")
+            st.info("ถ้ามี scheduler รันอยู่ ให้ restart เพื่อโหลดค่าใหม่")
         except Exception as exc:
-            st.error(f" : {exc}")
+            st.error(f"บันทึกไม่สำเร็จ: {exc}")
 
 
 def _style_alert_rows(row: pd.Series) -> list[str]:
@@ -718,11 +718,11 @@ def _style_alert_rows(row: pd.Series) -> list[str]:
 
 
 def render_price_alerts_page() -> None:
-    """  Price Alerts: AI  ,  ,   active alerts."""
+    """หน้า Price Alerts: ระดับที่ระบบแนะนำ, ตั้งเอง, และรายการที่รออยู่."""
     st.header("Price Alerts")
     tickers = get_tickers()
     if not tickers:
-        st.warning("  ETF     Settings")
+        st.warning("ยังไม่มี ETF ในระบบ — เพิ่มได้ที่หน้า Settings")
         return
 
     all_alerts = list_alerts(include_triggered=True)
@@ -734,14 +734,14 @@ def render_price_alerts_page() -> None:
     if "ai_alert_suggestions" not in st.session_state:
         st.session_state["ai_alert_suggestions"] = []
 
-    if st.button("    AI   Price Alerts", type="primary", key="ai_suggest_alerts_btn"):
-        with st.spinner("  ETF   AI..."):
+    if st.button("คำนวณระดับ Price Alert ที่แนะนำ", type="primary", key="ai_suggest_alerts_btn"):
+        with st.spinner("กำลังคำนวณจากแนวรับ/แนวต้าน และ MA..."):
             try:
                 ai_result = ai_suggest_alerts()
                 st.session_state["ai_alert_suggestions"] = ai_result.get("alerts", [])
-                st.success("AI   Price Alerts  ")
+                st.success("คำนวณระดับ Price Alert เรียบร้อย")
             except Exception as exc:
-                st.error(f"AI  : {exc}")
+                st.error(f"คำนวณไม่สำเร็จ: {exc}")
 
     suggested_alerts = st.session_state.get("ai_alert_suggestions", [])
     if suggested_alerts:
@@ -758,15 +758,15 @@ def render_price_alerts_page() -> None:
             with st.container(border=True):
                 st.markdown(f"### {ticker}")
                 if current_price is not None:
-                    st.markdown(f" : **${float(current_price):,.2f}**")
+                    st.markdown(f"ราคาปัจจุบัน: **${float(current_price):,.2f}**")
                 else:
-                    st.markdown(" : **N/A**")
-                st.markdown(f"  Buy Alert: **${buy_alert:,.2f}**   {buy_reason}")
-                st.markdown(f"  Warning Alert: **${warning_alert:,.2f}**   {warning_reason}")
+                    st.markdown("ราคาปัจจุบัน: **N/A**")
+                st.markdown(f"🟢 ระดับน่าสะสม: **${buy_alert:,.2f}** — {buy_reason}")
+                st.markdown(f"🔴 ระดับควรระวัง: **${warning_alert:,.2f}** — {warning_reason}")
 
                 c1, c2 = st.columns(2)
                 with c1:
-                    if st.button("  Alert   (Buy)", key=f"set_ai_buy_{ticker}"):
+                    if st.button("ตั้ง Buy Alert", key=f"set_ai_buy_{ticker}"):
                         try:
                             add_or_update_alert(
                                 ticker=ticker,
@@ -774,12 +774,12 @@ def render_price_alerts_page() -> None:
                                 price=buy_alert,
                                 note=f"AI Buy: {buy_reason}",
                             )
-                            st.success(f"  Buy Alert   {ticker}  ")
+                            st.success(f"ตั้ง Buy Alert ให้ {ticker} แล้ว")
                             st.rerun()
                         except Exception as exc:
-                            st.error(f"  Buy Alert  : {exc}")
+                            st.error(f"ตั้ง Buy Alert ไม่สำเร็จ: {exc}")
                 with c2:
-                    if st.button("  Alert   (Warning)", key=f"set_ai_warn_{ticker}"):
+                    if st.button("ตั้ง Warning Alert", key=f"set_ai_warn_{ticker}"):
                         try:
                             add_or_update_alert(
                                 ticker=ticker,
@@ -787,36 +787,36 @@ def render_price_alerts_page() -> None:
                                 price=warning_alert,
                                 note=f"AI Warning: {warning_reason}",
                             )
-                            st.success(f"  Warning Alert   {ticker}  ")
+                            st.success(f"ตั้ง Warning Alert ให้ {ticker} แล้ว")
                             st.rerun()
                         except Exception as exc:
-                            st.error(f"  Warning Alert  : {exc}")
+                            st.error(f"ตั้ง Warning Alert ไม่สำเร็จ: {exc}")
     else:
-        st.info("  AI   Buy/Warning alerts   ETF  ")
+        st.info("กดปุ่มด้านบนเพื่อให้ระบบคำนวณระดับ Buy/Warning ของ ETF ทุกตัว")
 
     st.divider()
     st.subheader("2) Manual Alert")
     col_ticker, col_type, col_price = st.columns([2, 2, 2])
     with col_ticker:
-        selected_ticker = st.selectbox("  ETF", tickers, key="price_alert_ticker")
+        selected_ticker = st.selectbox("เลือก ETF", tickers, key="price_alert_ticker")
     with col_type:
         selected_type = st.selectbox(
-            " ",
+            "เงื่อนไข",
             options=["below", "above"],
-            format_func=lambda x: "Below ( )" if x == "below" else "Above ( )",
+            format_func=lambda x: "Below (ราคาต่ำกว่า)" if x == "below" else "Above (ราคาสูงกว่า)",
             key="price_alert_type",
         )
     with col_price:
-        target_price = st.number_input("  (USD)", min_value=0.01, value=100.0, step=0.5, format="%.2f")
-    note = st.text_input("Note", value="", placeholder="e.g. DCA plan")
+        target_price = st.number_input("ราคาเป้าหมาย (USD)", min_value=0.01, value=100.0, step=0.5, format="%.2f")
+    note = st.text_input("หมายเหตุ", value="", placeholder="เช่น จังหวะ DCA")
 
     current_price = latest_prices.get(selected_ticker)
     if current_price is not None:
-        st.caption(f"  {selected_ticker}: ${current_price:,.2f}")
+        st.caption(f"ราคาปัจจุบันของ {selected_ticker}: ${current_price:,.2f}")
     else:
-        st.caption(f"  {selected_ticker}  ")
+        st.caption(f"ดึงราคาปัจจุบันของ {selected_ticker} ไม่ได้")
 
-    if st.button("  Alert", type="primary"):
+    if st.button("เพิ่ม Alert", type="primary"):
         try:
             created = add_alert(
                 ticker=selected_ticker,
@@ -825,25 +825,25 @@ def render_price_alerts_page() -> None:
                 note=note,
             )
             st.success(
-                f"  Alert  : {created['ticker']} {created['alert_type']} ${float(created['price']):,.2f}"
+                f"เพิ่ม Alert แล้ว: {created['ticker']} {created['alert_type']} ${float(created['price']):,.2f}"
             )
             st.rerun()
         except Exception as exc:
-            st.error(f"  Alert  : {exc}")
+            st.error(f"เพิ่ม Alert ไม่สำเร็จ: {exc}")
 
-    if st.button("  Alert  "):
+    if st.button("ตรวจ Alert ตอนนี้"):
         result = check_alerts()
         triggered_count = len(result.get("triggered", []))
         if triggered_count > 0:
-            st.success(f"  Alert trigger   {triggered_count}   (  Discord  )")
+            st.success(f"มี Alert ถึงเงื่อนไข {triggered_count} รายการ (ส่ง Discord แล้ว)")
         else:
-            st.info("  Alert  ")
+            st.info("ยังไม่มี Alert ที่ถึงเงื่อนไข")
         st.rerun()
 
     st.divider()
     st.subheader("3) Active Alerts")
     if not active_alerts:
-        st.info("  Active Alerts")
+        st.info("ยังไม่มี Alert ที่รออยู่")
     else:
         active_rows: list[dict[str, object]] = []
         for item in active_alerts:
@@ -856,32 +856,32 @@ def render_price_alerts_page() -> None:
                 {
                     "ID": item.get("id"),
                     "ETF": ticker,
-                    " ": " " if alert_type == "below" else " ",
-                    "  (USD)": target,
-                    "  (USD)": now_price,
+                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
+                    "ราคาเป้าหมาย (USD)": target,
+                    "ราคาปัจจุบัน (USD)": now_price,
                     "Distance %": distance,
-                    "Status": "  Near Trigger" if bool(item.get("is_near_trigger")) else "Pending",
-                    " ": str(item.get("note", "")).strip() or "-",
-                    " ": str(item.get("created_at", "")),
+                    "Status": "ใกล้ trigger" if bool(item.get("is_near_trigger")) else "รออยู่",
+                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
+                    "สร้างเมื่อ": str(item.get("created_at", "")),
                 }
             )
 
         pending_df = pd.DataFrame(active_rows)
         show_cols = [
             "ETF",
-            " ",
-            "  (USD)",
-            "  (USD)",
+            "เงื่อนไข",
+            "ราคาเป้าหมาย (USD)",
+            "ราคาปัจจุบัน (USD)",
             "Distance %",
             "Status",
-            " ",
-            " ",
+            "หมายเหตุ",
+            "สร้างเมื่อ",
         ]
         st.dataframe(
             pending_df[show_cols].style.format(
                 {
-                    "  (USD)": "${:,.2f}",
-                    "  (USD)": "${:,.2f}",
+                    "ราคาเป้าหมาย (USD)": "${:,.2f}",
+                    "ราคาปัจจุบัน (USD)": "${:,.2f}",
                     "Distance %": "{:+.2f}%",
                 },
                 na_rep="N/A",
@@ -889,20 +889,20 @@ def render_price_alerts_page() -> None:
             use_container_width=True,
         )
 
-        delete_options = {f"{row['ETF']} | {row[' ']} | ${row['  (USD)']:,.2f}": row["ID"] for _, row in pending_df.iterrows()}
-        selected_delete_key = st.selectbox("  Alert  ", options=list(delete_options.keys()), key="delete_price_alert")
-        if st.button("  Alert"):
+        delete_options = {f"{row['ETF']} | {row['เงื่อนไข']} | ${row['ราคาเป้าหมาย (USD)']:,.2f}": row["ID"] for _, row in pending_df.iterrows()}
+        selected_delete_key = st.selectbox("เลือก Alert ที่จะลบ", options=list(delete_options.keys()), key="delete_price_alert")
+        if st.button("ลบ Alert"):
             selected_alert_id = delete_options.get(selected_delete_key)
             if selected_alert_id and delete_alert(str(selected_alert_id)):
-                st.success("  Alert  ")
+                st.success("ลบ Alert แล้ว")
                 st.rerun()
             else:
-                st.warning("  Alert  ")
+                st.warning("ลบ Alert ไม่สำเร็จ")
 
     st.divider()
     st.subheader("4) Alert History")
     if not history_alerts:
-        st.info("  Alert   trigger")
+        st.info("ยังไม่มี Alert ที่เคย trigger")
     else:
         history_rows: list[dict[str, object]] = []
         for item in history_alerts:
@@ -910,10 +910,10 @@ def render_price_alerts_page() -> None:
             history_rows.append(
                 {
                     "ETF": str(item.get("ticker", "")).strip().upper(),
-                    " ": " " if alert_type == "below" else " ",
-                    "  (USD)": float(item.get("price", 0.0)),
-                    "  Trigger (USD)": item.get("triggered_price"),
-                    " ": str(item.get("note", "")).strip() or "-",
+                    "เงื่อนไข": "ต่ำกว่า" if alert_type == "below" else "สูงกว่า",
+                    "ราคาเป้าหมาย (USD)": float(item.get("price", 0.0)),
+                    "ราคาตอน Trigger (USD)": item.get("triggered_price"),
+                    "หมายเหตุ": str(item.get("note", "")).strip() or "-",
                     "Triggered At": str(item.get("triggered_at", "")),
                 }
             )
@@ -921,8 +921,8 @@ def render_price_alerts_page() -> None:
         st.dataframe(
             history_df.style.format(
                 {
-                    "  (USD)": "${:,.2f}",
-                    "  Trigger (USD)": "${:,.2f}",
+                    "ราคาเป้าหมาย (USD)": "${:,.2f}",
+                    "ราคาตอน Trigger (USD)": "${:,.2f}",
                 },
                 na_rep="N/A",
             ),
@@ -931,7 +931,7 @@ def render_price_alerts_page() -> None:
 
 
 def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
-    """  MA50, MA200   RSI  ."""
+    """คำนวณ MA50, MA200 และ RSI จากราคาปิดแบบปรับแล้ว."""
     try:
         signals = pd.DataFrame(index=price_series.index)
         signals["Price"] = price_series
@@ -940,12 +940,12 @@ def calculate_technical_signals(price_series: pd.Series) -> pd.DataFrame:
         signals["RSI14"] = ta.rsi(price_series, length=14)
         return signals
     except Exception as exc:
-        raise RuntimeError(f"  Technical Signals: {exc}") from exc
+        raise RuntimeError(f"คำนวณ Technical Signals ไม่สำเร็จ: {exc}") from exc
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlc_data(tickers: list[str], years: int = 10) -> dict[str, pd.DataFrame]:
-    """  OHLC   ETF   Candlestick."""
+    """ดึงข้อมูล OHLC ของ ETF สำหรับกราฟ Candlestick."""
     try:
         end_date = pd.Timestamp.today()
         start_date = end_date - pd.DateOffset(years=years)
@@ -997,20 +997,20 @@ def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -
 
 
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
-    """  Technical Signals   Candlestick + RSI + Signal Cards."""
+    """หน้า Technical Signals: กราฟ Candlestick + RSI + การ์ดสรุปสัญญาณ."""
     st.header("Technical Signals")
     technical_tickers = get_tickers()
     if not technical_tickers:
-        st.warning("  ETF     Settings")
+        st.warning("ยังไม่มี ETF ในระบบ — เพิ่มได้ที่หน้า Settings")
         return
 
-    selected_ticker = st.selectbox("  ETF", technical_tickers, index=0)
+    selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
 
-    with st.spinner(" ..."):
+    with st.spinner("กำลังโหลดข้อมูลราคา..."):
         ohlc_map = fetch_ohlc_data(technical_tickers, years=10)
     selected_ohlc = ohlc_map.get(selected_ticker)
     if selected_ohlc is None or selected_ohlc.empty:
-        st.warning(f"  OHLC   {selected_ticker}")
+        st.warning(f"ไม่พบข้อมูล OHLC ของ {selected_ticker}")
         return
 
     selected_signals = calculate_technical_signals(prices[selected_ticker]).dropna(subset=["MA50", "MA200", "RSI14"])
@@ -1109,7 +1109,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         ticker_signals = calculate_technical_signals(ticker_prices).dropna(subset=["MA50", "MA200", "RSI14"])
         if ticker_signals.empty:
             with columns[idx]:
-                st.warning(f"{ticker}:  ")
+                st.warning(f"{ticker}: ข้อมูลไม่พอคำนวณสัญญาณ")
             continue
 
         latest = ticker_signals.iloc[-1]
@@ -1135,7 +1135,7 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
 def _build_weight_sliders(
     tickers: list[str], default_weights: dict[str, float], key_prefix: str
 ) -> dict[str, float]:
-    """  slider   normalize   1."""
+    """สร้าง slider ปรับน้ำหนัก แล้ว normalize ให้รวมเป็น 1."""
     raw_weights: dict[str, float] = {}
     for ticker in tickers:
         raw_weights[ticker] = st.slider(
@@ -1149,31 +1149,44 @@ def _build_weight_sliders(
 
     total_weight = sum(raw_weights.values())
     if total_weight <= 0:
-        raise ValueError("  0")
+        raise ValueError("ผลรวมน้ำหนักต้องมากกว่า 0")
 
     return {k: v / total_weight for k, v in raw_weights.items()}
 
 
 def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """  Backtest  ."""
+    """หน้า Backtest: เทียบผลพอร์ตย้อนหลังกับ benchmark."""
     st.header("Backtest")
     benchmark_ticker = "VOO" if "VOO" in tickers else tickers[0]
-    st.caption(f"  +   ETF   {benchmark_ticker}")
+    st.caption(f"เทียบพอร์ตตามน้ำหนักที่กำหนดกับ {benchmark_ticker}")
+    st.info(
+        "โมเดลนี้ปรับสัดส่วนกลับ (rebalance) **ทุกวันทำการ** และไม่คิดค่าธรรมเนียม/ภาษี — "
+        "ผลจริงจากการ DCA เดือนละครั้งจะต่างจากนี้ | เริ่มนับจากวันแรกที่ทุก ETF ในพอร์ตมีข้อมูล"
+    )
 
     initial_capital = st.number_input(
-        "  (USD)",
+        "เงินลงทุนเริ่มต้น (USD)",
         min_value=100.0,
         value=10000.0,
         step=100.0,
         format="%.2f",
     )
-    st.markdown("**  ETF**")
+    st.markdown("**น้ำหนักแต่ละ ETF**")
     normalized_weights = _build_weight_sliders(tickers, default_weights, "backtest_weight")
 
     if st.button("Run Backtest", type="primary"):
-        backtest_df = run_portfolio_backtest(prices, normalized_weights, initial_capital=initial_capital)
+        try:
+            backtest_df = run_portfolio_backtest(prices, normalized_weights, initial_capital=initial_capital)
+        except RuntimeError as exc:
+            st.error(str(exc))
+            return
 
+        start_date = backtest_df.index[0]
+        st.caption(f"ช่วงที่ทดสอบจริง: {start_date:%d/%m/%Y} – {backtest_df.index[-1]:%d/%m/%Y}")
+
+        # benchmark ต้องเริ่มวันเดียวกับพอร์ต ไม่งั้นเทียบผลตอบแทนกันไม่ได้
         benchmark_prices = prices[benchmark_ticker].ffill().dropna()
+        benchmark_prices = benchmark_prices.loc[benchmark_prices.index >= start_date]
         benchmark = (benchmark_prices / benchmark_prices.iloc[0]) * initial_capital
         comparison_df = backtest_df[["Portfolio Value"]].join(
             benchmark.rename(f"Benchmark ({benchmark_ticker})"), how="inner"
@@ -1193,22 +1206,22 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
         col1.metric("Final Portfolio Value", f"${final_portfolio:,.2f}")
         col2.metric(f"Final Benchmark ({benchmark_ticker})", f"${final_benchmark:,.2f}")
     else:
-        st.info("  Run Backtest  ")
+        st.info("กดปุ่ม Run Backtest เพื่อดูผล")
 
 
 def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """  DCA Simulator  ."""
+    """หน้า DCA Simulator: จำลองการทยอยลงทุนรายเดือน."""
     st.header("DCA Simulator")
-    st.caption("  DCA  ")
+    st.caption("จำลองการซื้อทุกเดือนด้วยงบเท่ากัน (ไม่รวมค่าธรรมเนียม)")
 
     monthly_investment = st.number_input(
-        "  DCA   (USD)",
+        "งบ DCA ต่อเดือน (USD)",
         min_value=50.0,
         value=1000.0,
         step=50.0,
         format="%.2f",
     )
-    st.markdown("**  ETF**")
+    st.markdown("**น้ำหนักแต่ละ ETF**")
     normalized_weights = _build_weight_sliders(tickers, default_weights, "dca_weight")
 
     dca_df = simulate_monthly_dca(prices, normalized_weights, monthly_investment=monthly_investment)
@@ -1217,7 +1230,7 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
         dca_df,
         x=dca_df.index,
         y=["Total Invested", "Portfolio Value"],
-        title="  vs  ",
+        title="เงินลงทุนสะสม vs มูลค่าพอร์ต",
     )
     st.plotly_chart(_apply_plotly_dark_theme(dca_fig), use_container_width=True)
 
@@ -1295,7 +1308,7 @@ def cached_full_analysis(budget_thb: float) -> dict:
 
 
 def render_dcf_analysis_page() -> None:
-    """DCF analysis page with ETF drill-down and full heatmap."""
+    """หน้า DCF Analysis: เจาะราย ETF + heatmap คะแนนรวม."""
     st.header("DCF Analysis")
     st.caption("Model-driven DCF details, score breakdown, and full ETF heatmap")
 
@@ -1520,7 +1533,7 @@ def show_result(result: dict) -> None:
 
 
 def render_ai_advisor_page() -> None:
-    """  AI Advisor:   DCA   Claude."""
+    """หน้า AI Advisor: คะแนนและแผน DCA คำนวณในระบบ — AI อธิบายเหตุผล."""
     st.header("AI Advisor")
     st.caption("คะแนนและ DCF คำนวณในระบบ — Groq ใช้เพื่ออธิบายเหตุผลเท่านั้น")
     config = load_config()
@@ -1531,7 +1544,7 @@ def render_ai_advisor_page() -> None:
         st.session_state["ai_running"] = False
 
     budget_thb = st.number_input(
-        "  DCA   ( )",
+        "งบ DCA เดือนนี้ (บาท)",
         min_value=500.0,
         value=float(config["dca"]["monthly_budget_thb"]),
         step=500.0,
@@ -1551,22 +1564,26 @@ def render_ai_advisor_page() -> None:
     if st.session_state["ai_result"]:
         show_result(st.session_state["ai_result"])
     else:
-        st.info("    ' '")
+        st.info("กดปุ่ม 'Analyze This Month' เพื่อวิเคราะห์")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_macro_data() -> pd.DataFrame:
-    """  Macro indicators   1  ."""
-    macro_tickers = {
-        "Fed Rate": "^IRX",
-        "CPI Inflation": "CPIAUCSL",
+    """ดึงตัวชี้วัด macro ย้อนหลัง 1 ปี.
+
+    AUDIT.md H7 (แก้แล้ว):
+    - CPI เดิมใช้ ``CPIAUCSL`` (FRED series ID) เป็น Yahoo ticker → **404 ตลอด**
+      คอลัมน์ว่างเสมอ ตอนนี้ดึงจาก FRED และแปลงเป็นอัตราเงินเฟ้อ YoY (%)
+    - "Fed Rate" เดิมใช้ ``^IRX`` (T-bill 13 สัปดาห์) ติดป้ายผิด → ดึง FEDFUNDS จริงจาก FRED
+    """
+    yahoo_tickers = {
         "10Y Treasury Yield": "^TNX",
         "DXY Dollar Index": "DX-Y.NYB",
         "VIX Fear Index": "^VIX",
     }
     try:
         downloaded = yf.download(
-            tickers=list(macro_tickers.values()),
+            tickers=list(yahoo_tickers.values()),
             period="1y",
             interval="1d",
             auto_adjust=False,
@@ -1574,52 +1591,87 @@ def fetch_macro_data() -> pd.DataFrame:
             group_by="ticker",
         )
     except Exception:
-        st.warning("Some required macro metrics are missing.")
+        st.warning("ดึงข้อมูล macro จาก Yahoo ไม่สำเร็จ")
         return pd.DataFrame()
 
     if downloaded.empty:
         return pd.DataFrame()
 
     close_df = pd.DataFrame(index=downloaded.index)
-    for label, ticker in macro_tickers.items():
+    for label, ticker in yahoo_tickers.items():
         series = pd.Series(dtype="float64")
         if isinstance(downloaded.columns, pd.MultiIndex):
             if ticker in downloaded.columns.get_level_values(0) and "Close" in downloaded[ticker]:
                 series = downloaded[ticker]["Close"]
         elif "Close" in downloaded.columns:
-            #   yfinance  
             series = downloaded["Close"]
         close_df[label] = pd.to_numeric(series, errors="coerce")
 
     close_df = close_df.sort_index().ffill()
 
-    #   %   x10
+    # ^TNX รายงานเป็น 10 เท่าของ % (เช่น 42.5 = 4.25%)
     if "10Y Treasury Yield" in close_df.columns and close_df["10Y Treasury Yield"].dropna().median() > 20:
         close_df["10Y Treasury Yield"] = close_df["10Y Treasury Yield"] / 10
+
+    # Fed Funds Rate + เงินเฟ้อ YoY จาก FRED (รายเดือน → reindex เป็นรายวัน)
+    fred_data = _fetch_fred_macro()
+    for label, series in fred_data.items():
+        if series.empty:
+            close_df[label] = pd.NA
+            continue
+        aligned = series.reindex(
+            series.index.union(close_df.index)
+        ).ffill().reindex(close_df.index)
+        close_df[label] = pd.to_numeric(aligned, errors="coerce")
 
     return close_df
 
 
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _fetch_fred_macro() -> dict[str, pd.Series]:
+    """Fed Funds Rate (%) และอัตราเงินเฟ้อ CPI YoY (%) จาก FRED."""
+    from analysis.macro import _cpi_yoy_percent
+
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key or api_key == "your_key_here":
+        return {"Fed Rate": pd.Series(dtype=float), "CPI Inflation (YoY %)": pd.Series(dtype=float)}
+    try:
+        from fredapi import Fred
+
+        fred = Fred(api_key=api_key)
+        fed = pd.to_numeric(fred.get_series("FEDFUNDS"), errors="coerce").dropna().sort_index()
+        cpi_index = pd.to_numeric(fred.get_series("CPIAUCSL"), errors="coerce").dropna().sort_index()
+        return {"Fed Rate": fed, "CPI Inflation (YoY %)": _cpi_yoy_percent(cpi_index)}
+    except Exception:
+        return {"Fed Rate": pd.Series(dtype=float), "CPI Inflation (YoY %)": pd.Series(dtype=float)}
+
+
 def _vix_regime_text(vix_value: float) -> str:
     if vix_value < 20:
-        return " "
+        return "สงบ"
     if vix_value <= 30:
-        return " "
-    return " "
+        return "ระวัง"
+    return "ผันผวนสูง"
 
 
 def render_macro_page() -> None:
-    """  Macro:  ."""
+    """หน้า Macro: ภาวะตลาดโดยรวม."""
     st.header("Macro")
-    st.caption("VIX regime guide")
+    st.caption("Fed Rate + เงินเฟ้อ (FRED) | พันธบัตร/DXY/VIX (Yahoo)")
 
-    with st.spinner(" ..."):
+    with st.spinner("กำลังโหลดข้อมูล macro..."):
         macro_df = fetch_macro_data()
     if macro_df.empty:
-        st.error("  Macro  ")
+        st.error("ดึงข้อมูล Macro ไม่สำเร็จ")
         return
 
-    required_cols = ["Fed Rate", "CPI Inflation", "10Y Treasury Yield", "DXY Dollar Index", "VIX Fear Index"]
+    required_cols = [
+        "Fed Rate",
+        "CPI Inflation (YoY %)",
+        "10Y Treasury Yield",
+        "DXY Dollar Index",
+        "VIX Fear Index",
+    ]
     available_cols = [col for col in required_cols if col in macro_df.columns]
     if len(available_cols) < len(required_cols):
         st.warning("VIX data is unavailable for the selected period.")
@@ -1648,18 +1700,18 @@ def render_macro_page() -> None:
             if col_name == "VIX Fear Index":
                 regime = _vix_regime_text(latest)
                 st.metric(col_name, f"{latest:.2f} {regime}", delta_fmt)
-            elif col_name in {"Fed Rate", "CPI Inflation", "10Y Treasury Yield"}:
+            elif col_name in {"Fed Rate", "CPI Inflation (YoY %)", "10Y Treasury Yield"}:
                 st.metric(col_name, f"{latest:.2f}%", delta_fmt)
             else:
                 st.metric(col_name, f"{latest:.2f}", delta_fmt)
 
-    st.markdown("  VIX: < 20 ( ) | 20-30 ( ) | > 30 ( )")
+    st.markdown("เกณฑ์ VIX: < 20 (สงบ) | 20-30 (ระวัง) | > 30 (ผันผวนสูง)")
 
     vix_series = macro_df["VIX Fear Index"].dropna()
     if vix_series.empty:
-        st.warning("  VIX   1  ")
+        st.warning("ไม่มีข้อมูล VIX ย้อนหลัง 1 ปี")
     else:
-        st.subheader("VIX   1  ")
+        st.subheader("VIX ย้อนหลัง 1 ปี")
         vix_fig = px.line(
             x=vix_series.index,
             y=vix_series.values,
@@ -1672,37 +1724,40 @@ def render_macro_page() -> None:
 
     if all(metric in latest_values for metric in required_cols):
         fed = latest_values["Fed Rate"]
-        cpi = latest_values["CPI Inflation"]
+        cpi = latest_values["CPI Inflation (YoY %)"]
         ten_y = latest_values["10Y Treasury Yield"]
         dxy = latest_values["DXY Dollar Index"]
         vix = latest_values["VIX Fear Index"]
         vix_regime = _vix_regime_text(vix)
-        policy_gap = cpi - fed
+        real_rate = fed - cpi  # ดอกเบี้ยที่แท้จริง (real rate)
 
-        st.subheader("  Macro Environment")
+        st.subheader("สรุปภาวะ Macro")
         st.markdown(
             "\n".join(
                 [
-                    f"- Fed Rate   **{fed:.2f}%**   CPI   **{cpi:.2f}%** ( -  **{policy_gap:+.2f}%**).",
-                    f"- Bond Yield 10   **{ten_y:.2f}%**  .",
-                    f"- DXY   **{dxy:.2f}**    .",
-                    f"- VIX   **{vix:.2f}**   **{vix_regime}**  .",
+                    f"- Fed Rate อยู่ที่ **{fed:.2f}%** เทียบกับเงินเฟ้อ **{cpi:.2f}%** "
+                    f"→ ดอกเบี้ยที่แท้จริง **{real_rate:+.2f}%** "
+                    f"({'นโยบายตึงตัว' if real_rate > 1 else 'นโยบายผ่อนคลาย' if real_rate < 0 else 'ค่อนข้างเป็นกลาง'})",
+                    f"- พันธบัตร 10 ปีให้ผลตอบแทน **{ten_y:.2f}%**",
+                    f"- ดัชนีดอลลาร์ (DXY) อยู่ที่ **{dxy:.2f}**",
+                    f"- VIX อยู่ที่ **{vix:.2f}** → ตลาด{vix_regime}",
                 ]
             )
         )
     else:
-        st.subheader("  Macro Environment")
-        st.info("Not enough macro data for a full summary.")
+        st.subheader("สรุปภาวะ Macro")
+        missing = [c for c in required_cols if c not in latest_values]
+        st.info(f"ข้อมูลไม่ครบ ไม่สามารถสรุปได้ (ขาด: {', '.join(missing)})")
 
 
 def render_portfolio_page() -> None:
-    """  Portfolio:  ."""
+    """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ต."""
     st.header("Portfolio")
-    st.caption("  ETF  / ")
+    st.caption("บันทึกการซื้อ ETF และดูกำไร/ขาดทุนปัจจุบัน")
     _render_pdf_export_panel(
         section_key="portfolio",
         prepare_label="Export Portfolio Report",
-        download_label="  PDF  ",
+        download_label="ดาวน์โหลด PDF",
     )
     st.divider()
     config = load_config()
@@ -1710,7 +1765,7 @@ def render_portfolio_page() -> None:
     default_fx_rate = float(config["display"]["default_fx_rate"])
 
     st.subheader("Add Transaction")
-    with st.spinner(" ..."):
+    with st.spinner("กำลังดึงอัตราแลกเปลี่ยน..."):
         today_fx_rate = get_today_fx_rate_thb()
     if not today_fx_rate or today_fx_rate <= 0:
         today_fx_rate = default_fx_rate
@@ -1720,10 +1775,10 @@ def render_portfolio_page() -> None:
             buy_date = st.date_input("Date")
             ticker = st.text_input("ETF (Ticker)", value="VOO").strip().upper()
         with col2:
-            shares = st.number_input("  Shares", min_value=0.0001, value=1.0, step=0.1, format="%.4f")
-            price_usd = st.number_input("  USD", min_value=0.0001, value=100.0, step=0.1, format="%.4f")
+            shares = st.number_input("จำนวนหุ้น (Shares)", min_value=0.0001, value=1.0, step=0.1, format="%.4f")
+            price_usd = st.number_input("ราคาต่อหุ้น (USD)", min_value=0.0001, value=100.0, step=0.1, format="%.4f")
         with col3:
-            amount_thb = st.number_input("  THB", min_value=0.01, value=1000.0, step=10.0, format="%.2f")
+            amount_thb = st.number_input("จำนวนเงินที่จ่าย (บาท)", min_value=0.01, value=1000.0, step=10.0, format="%.2f")
             fx_rate_thb = st.number_input(
                 "FX Rate (THB/USD)",
                 min_value=0.0001,
@@ -1731,7 +1786,7 @@ def render_portfolio_page() -> None:
                 step=0.01,
                 format="%.4f",
             )
-            note = st.text_input("Note", value="")
+            note = st.text_input("หมายเหตุ", value="")
 
         trade_number, estimated_fee_thb = estimate_dime_fee_thb(
             trade_date=buy_date,
@@ -1739,8 +1794,8 @@ def render_portfolio_page() -> None:
             price_usd=float(price_usd),
             fx_rate_thb=float(fx_rate_thb),
         )
-        st.caption(f"  {trade_number}  ")
-        st.caption(f" : {estimated_fee_thb:,.2f}  ")
+        st.caption(f"เป็นการเทรดลำดับที่ {trade_number} ของเดือนนี้")
+        st.caption(f"ค่าธรรมเนียมโดยประมาณ: {estimated_fee_thb:,.2f} บาท")
 
         submitted = st.form_submit_button("Save Transaction", type="primary")
         if submitted:
@@ -1754,10 +1809,10 @@ def render_portfolio_page() -> None:
                     amount_thb=float(amount_thb),
                     note=note,
                 )
-                st.success("Transaction saved.")
+                st.success("บันทึกธุรกรรมแล้ว")
                 st.rerun()
             except Exception as exc:
-                st.error(f" : {exc}")
+                st.error(f"บันทึกไม่สำเร็จ: {exc}")
 
     st.divider()
     st.subheader("Portfolio Summary")
@@ -1850,10 +1905,10 @@ def render_portfolio_page() -> None:
         st.info("No transactions found.")
         return
 
-    ticker_options = [" "] + sorted(all_transactions["ticker"].dropna().astype(str).str.upper().unique().tolist())
-    selected_ticker = st.selectbox("  ETF", ticker_options, index=0)
+    ticker_options = ["ทั้งหมด"] + sorted(all_transactions["ticker"].dropna().astype(str).str.upper().unique().tolist())
+    selected_ticker = st.selectbox("กรอง ETF", ticker_options, index=0)
     filtered_transactions = all_transactions.copy()
-    if selected_ticker != " ":
+    if selected_ticker != "ทั้งหมด":
         filtered_transactions = get_transactions(selected_ticker)
 
     filtered_transactions = filtered_transactions.rename(
@@ -1864,7 +1919,7 @@ def render_portfolio_page() -> None:
             "price_usd": "Price (USD)",
             "fx_rate_thb": "FX Rate (THB/USD)",
             "amount_thb": "Amount (THB)",
-            "fee_thb": "  (THB)",
+            "fee_thb": "ค่าธรรมเนียม (บาท)",
             "note": "Note",
         }
     )
@@ -1875,7 +1930,7 @@ def render_portfolio_page() -> None:
                 "Price (USD)": "${:,.4f}",
                 "FX Rate (THB/USD)": "{:,.4f}",
                 "Amount (THB)": "{:,.2f}",
-                "  (THB)": "{:,.2f}",
+                "ค่าธรรมเนียม (บาท)": "{:,.2f}",
             }
         ),
         use_container_width=True,
@@ -1883,7 +1938,7 @@ def render_portfolio_page() -> None:
 
 
 def render_dashboard() -> None:
-    """  dashboard   Vaultis."""
+    """เรนเดอร์ dashboard หลักของ Vaultis."""
     try:
         st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
         _inject_premium_theme()
@@ -1950,7 +2005,7 @@ def render_dashboard() -> None:
         _render_pdf_export_panel(
             section_key="overview",
             prepare_label="Export Monthly Report",
-            download_label="  PDF  ",
+            download_label="ดาวน์โหลด PDF",
         )
         st.divider()
         _render_realtime_price_ticker_bar()
@@ -1970,7 +2025,7 @@ def render_dashboard() -> None:
             with st.spinner(" ..."):
                 returns_df = calculate_period_returns(prices)
             st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
-            st.caption("*QQQM   Trading   2020")
+            st.caption("*QQQM เริ่มซื้อขายปี 2020 — ช่วงก่อนหน้าจึงไม่มีข้อมูล")
 
         with col2:
             st.subheader("Risk Metrics")
@@ -1986,7 +2041,7 @@ def render_dashboard() -> None:
             return
         available_tickers = [ticker for ticker in tickers if ticker in corr_df.index and ticker in corr_df.columns]
         if len(available_tickers) < 2:
-            st.warning("  correlation   ETF  ")
+            st.warning("ต้องมี ETF อย่างน้อย 2 ตัวจึงจะคำนวณ correlation ได้")
             return
         corr_for_display = corr_df.loc[available_tickers, available_tickers]
         heatmap = px.imshow(
@@ -2017,18 +2072,18 @@ def render_dashboard() -> None:
         max_value = float(corr_pairs.loc[max_pair])
         min_value = float(corr_pairs.loc[min_pair])
 
-        st.markdown("**Insight   Correlation Heatmap**")
+        st.markdown("**อ่านค่าจาก Correlation Heatmap**")
         st.markdown(
             f"-   correlation  : **{max_pair[0]} - {max_pair[1]} ({max_value:.2f})**    "
         )
         st.markdown(
             f"-   correlation  : **{min_pair[0]} - {min_pair[1]} ({min_value:.2f})**    "
         )
-        st.markdown("-   correlation  ")
+        st.markdown("- correlation ต่ำ = กระจายความเสี่ยงได้ดีกว่า")
 
-        st.info("  Backtest   DCA Simulator   Sidebar  ")
+        st.info("ดู Backtest และ DCA Simulator ได้จากเมนูด้านซ้าย")
     except Exception as exc:
-        st.error(f"  dashboard: {exc}")
+        st.error(f"เกิดข้อผิดพลาดใน dashboard: {exc}")
 
 
 if __name__ == "__main__":

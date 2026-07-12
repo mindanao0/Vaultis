@@ -49,15 +49,14 @@ class ScreenerNotifier:
             print(f"[screener_notifier] build_ai_summary error: {e}")
             return "ไม่สามารถสร้าง AI summary ได้ในขณะนี้\n\nข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
 
-    async def send_telegram(self, results: list[ScreenerResult], ai_summary: str):
-        if not results:
-            return
+    async def send_telegram(self, results: list[ScreenerResult], ai_summary: str) -> bool:
+        """ส่งสัญญาณเข้า Telegram; ถ้าไม่ได้ตั้งค่า/ล้มเหลว จะ fallback ไป Discord.
 
-        token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-        chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
-        if not token or not chat_id:
-            print("[screener_notifier] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
-            return
+        AUDIT.md M14: เดิมถ้าไม่ได้ตั้ง Telegram สัญญาณจะหายเงียบ (log อย่างเดียว)
+        และไม่เคยเช็ค HTTP status ที่ Telegram ตอบกลับด้วย
+        """
+        if not results:
+            return False
 
         header = "🔍 *Vaultis Screener Alert*"
         table_header = "*symbol | price | strength | signals*"
@@ -65,12 +64,47 @@ class ScreenerNotifier:
         for r in results:
             signals = ", ".join(r.matched_rules) if r.matched_rules else "-"
             rows.append(f"`{r.symbol} | {r.price:.2f} | {r.signal_strength:.1f} | {signals}`")
-
         message = "\n".join([header, table_header, *rows, "", ai_summary])
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
 
-        try:
-            await asyncio.to_thread(requests.post, url, json=payload, timeout=15)
-        except Exception as e:
-            print(f"[screener_notifier] send_telegram error: {e}")
+        token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+        if token and chat_id:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+            try:
+                resp = await asyncio.to_thread(requests.post, url, json=payload, timeout=15)
+                if resp.status_code < 400:
+                    return True
+                print(f"[screener_notifier] telegram {resp.status_code}: {resp.text[:200]}")
+            except Exception as e:
+                print(f"[screener_notifier] send_telegram error: {e}")
+        else:
+            print("[screener_notifier] ไม่ได้ตั้ง TELEGRAM_BOT_TOKEN/CHAT_ID — ใช้ Discord แทน")
+
+        return await self._send_discord_fallback(results, ai_summary)
+
+    async def _send_discord_fallback(self, results: list[ScreenerResult], ai_summary: str) -> bool:
+        from alerts.notifier import send_discord_webhook
+        from utils.config import load_config
+
+        webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
+        if not webhook_url:
+            print("[screener_notifier] ไม่มีช่องทางแจ้งเตือนเลย — สัญญาณ screener ไม่ถูกส่ง")
+            return False
+
+        lines = [
+            f"• {r.symbol} ${r.price:.2f} | strength {r.signal_strength:.1f} | {', '.join(r.matched_rules) or '-'}"
+            for r in results
+        ]
+        description = "\n".join([*lines, "", ai_summary])[:3900]
+        result = await asyncio.to_thread(
+            send_discord_webhook,
+            webhook_url=webhook_url,
+            title="🔍 Vaultis Screener Alert",
+            description=description,
+            is_positive=True,
+            embed_color=0x3498DB,
+        )
+        if not result.get("success"):
+            print(f"[screener_notifier] discord fallback failed: {result.get('error')}")
+        return bool(result.get("success"))

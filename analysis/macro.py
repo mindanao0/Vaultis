@@ -31,6 +31,19 @@ _YF_SYMBOLS = {
 }
 
 
+def _cpi_yoy_percent(cpi_series: pd.Series) -> pd.Series:
+    """แปลงดัชนี CPI เป็นอัตราเงินเฟ้อ YoY (%) — ตัวเลขที่คนหมายถึงจริง ๆ.
+
+    (AUDIT.md H7: เดิมรายงาน "inflation_cpi.value" เป็น **ระดับดัชนี** (~320)
+    ซึ่งขึ้นแทบตลอด → เทรนด์เป็น "ขาขึ้น" เสมอ ข้อความ "เงินเฟ้อชะลอ" แทบไม่มีวันโผล่
+    แม้เงินเฟ้อจะลดลงจริง)
+    """
+    cleaned = pd.to_numeric(cpi_series, errors="coerce").dropna()
+    if len(cleaned) < 13:
+        return pd.Series(dtype=float)
+    return (cleaned.pct_change(periods=12) * 100.0).dropna()
+
+
 def _to_float(value: Any) -> float | None:
     """แปลงค่าเป็น float แบบปลอดภัย."""
     if value is None or pd.isna(value):
@@ -171,18 +184,19 @@ def get_macro_data() -> dict[str, Any]:
         fred = Fred(api_key=fred_api_key)
 
         fed_funds_series = _fetch_fred_series(fred, _FRED_SERIES["fed_funds_rate"])
-        cpi_series = _fetch_fred_series(fred, _FRED_SERIES["cpi"])
+        cpi_index_series = _fetch_fred_series(fred, _FRED_SERIES["cpi"])
+        cpi_yoy_series = _cpi_yoy_percent(cpi_index_series)
         tnx_series = _fetch_yf_series(_YF_SYMBOLS["us10y_yield"])
         dxy_series = _fetch_yf_series(_YF_SYMBOLS["dxy"])
         vix_series = _fetch_yf_series(_YF_SYMBOLS["vix"])
-        if tnx_series.empty or dxy_series.empty or vix_series.empty:
+        if tnx_series.empty or dxy_series.empty or vix_series.empty or cpi_yoy_series.empty:
             return {}
 
         result = {
             "as_of": str(
                 max(
                     fed_funds_series.index[-1],
-                    cpi_series.index[-1],
+                    cpi_index_series.index[-1],
                     tnx_series.index[-1],
                     dxy_series.index[-1],
                     vix_series.index[-1],
@@ -192,11 +206,15 @@ def get_macro_data() -> dict[str, Any]:
                 "series_id": _FRED_SERIES["fed_funds_rate"],
                 "value": round(_to_float(fed_funds_series.iloc[-1]) or 0.0, 2),
                 "trend": _compute_trend(fed_funds_series),
+                "unit": "percent",
             },
             "inflation_cpi": {
                 "series_id": _FRED_SERIES["cpi"],
-                "value": round(_to_float(cpi_series.iloc[-1]) or 0.0, 2),
-                "trend": _compute_trend(cpi_series),
+                # อัตราเงินเฟ้อ YoY (%) ไม่ใช่ระดับดัชนี — AUDIT.md H7
+                "value": round(_to_float(cpi_yoy_series.iloc[-1]) or 0.0, 2),
+                "trend": _compute_trend(cpi_yoy_series),
+                "unit": "percent_yoy",
+                "index_level": round(_to_float(cpi_index_series.iloc[-1]) or 0.0, 2),
             },
             "us10y_treasury_yield": {
                 "symbol": _YF_SYMBOLS["us10y_yield"],

@@ -16,6 +16,16 @@ _MAX_MONTHS = 600  # 50-year safety cap
 
 def _simulate(debts_input: list[Debt], monthly_budget: float, method: str) -> DebtResult:
     n = len(debts_input)
+
+    # AUDIT.md M10: ถ้างบต่อเดือนน้อยกว่าผลรวมยอดขั้นต่ำ ระบบเดิมจะ "จ่าย" เกินงบเงียบ ๆ
+    # แล้วรายงานว่าหนี้หมดได้ ทั้งที่ในความจริงผู้ใช้จ่ายไม่ไหว
+    total_min = sum(d.min_payment for d in debts_input)
+    if monthly_budget < total_min:
+        raise ValueError(
+            f"งบชำระต่อเดือน ({monthly_budget:,.0f}) น้อยกว่ายอดขั้นต่ำรวมของหนี้ทั้งหมด "
+            f"({total_min:,.0f}) — แผนนี้เป็นไปไม่ได้จริง กรุณาเพิ่มงบหรือเจรจาลดยอดขั้นต่ำ"
+        )
+
     balances = [d.balance for d in debts_input]
     monthly_rates = [d.interest_rate / 100 / 12 for d in debts_input]
     schedules: list[list[PaymentEntry]] = [[] for _ in range(n)]
@@ -80,6 +90,15 @@ def _simulate(debts_input: list[Debt], monthly_budget: float, method: str) -> De
                     remaining_balance=round(new_balance, 2),
                 )
             )
+
+    if any(b > 0.005 for b in balances):
+        # ชนเพดาน 50 ปีแล้วยังมีหนี้เหลือ — ต้องบอกตรง ๆ ไม่ใช่รายงานว่าจ่ายหมดใน 600 เดือน
+        remaining = sum(b for b in balances if b > 0.005)
+        raise ValueError(
+            f"ด้วยงบ {monthly_budget:,.0f} บาท/เดือน หนี้จะไม่มีวันหมด "
+            f"(เหลือ {remaining:,.0f} บาท หลังผ่านไป {_MAX_MONTHS // 12} ปี) — "
+            "ดอกเบี้ยเดินเร็วกว่าเงินต้นที่จ่ายได้ กรุณาเพิ่มงบหรือรีไฟแนนซ์"
+        )
 
     debt_schedules = [
         DebtSchedule(

@@ -8,6 +8,10 @@ import pandas as pd
 
 from utils.cache import cache_data_1h
 
+# อัตราปลอดความเสี่ยงมาตรฐานของทั้งระบบ — ใช้ค่าเดียวกันทุกที่ที่คำนวณ Sharpe
+# (AUDIT.md M4: เดิม backtest ใช้ 0% ส่วนหน้า Risk ใช้ 2% → เทียบกันไม่ได้)
+DEFAULT_RISK_FREE_RATE = 0.02
+
 
 def calculate_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     """คำนวณผลตอบแทนรายวันจากราคา Adjusted Close."""
@@ -31,7 +35,7 @@ def calculate_volatility(price_df: pd.DataFrame, annualization: int = 252) -> pd
 
 def calculate_sharpe_ratio(
     price_df: pd.DataFrame,
-    risk_free_rate: float = 0.02,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
     annualization: int = 252,
 ) -> pd.Series:
     """คำนวณ Sharpe Ratio แบบ annualized."""
@@ -59,7 +63,9 @@ def calculate_max_drawdown(price_df: pd.DataFrame) -> pd.Series:
 
 
 @cache_data_1h
-def calculate_risk_metrics(price_df: pd.DataFrame, risk_free_rate: float = 0.02) -> pd.DataFrame:
+def calculate_risk_metrics(
+    price_df: pd.DataFrame, risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+) -> pd.DataFrame:
     """รวมผลลัพธ์ตัวชี้วัดความเสี่ยงเป็นตารางเดียว."""
     try:
         metrics = pd.DataFrame(

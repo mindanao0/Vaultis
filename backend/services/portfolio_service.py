@@ -1,84 +1,100 @@
+"""Portfolio service — บาง ๆ ครอบ ledger เดียวของระบบ (portfolio/tracker.py, CSV).
+
+AUDIT.md H2/H8: เดิมมี ledger 2 ชุดที่ไม่ sync กัน — CSV (dashboard + AI advisor ใช้)
+กับตาราง SQLite ``transactions`` (API ใช้) — และฝั่ง SQLite **พังมาตลอด**:
+``Transaction(**payload.model_dump(), ticker=...)`` โยน TypeError ทุกครั้ง
+ทำให้ ``POST /api/portfolio/add`` ไม่เคยบันทึกอะไรได้เลย (ตาราง 0 แถว)
+
+ตอนนี้ทุกช่องทางอ่าน/เขียน ledger เดียวกัน และคืน dict ที่ serialize เป็น JSON ได้
+"""
+
 from __future__ import annotations
 
-from collections import defaultdict
+from typing import Any
 
-from sqlalchemy.orm import Session
+import pandas as pd
 
-from alerts.price_alert import get_current_prices
+from portfolio import tracker
 
-from ..models import Transaction
 from ..schemas import TransactionCreate
 
 
-def add_transaction(db: Session, payload: TransactionCreate) -> Transaction:
-    row = Transaction(**payload.model_dump(), ticker=payload.ticker.upper())
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+def _clean(value: Any) -> Any:
+    """NaN → None เพื่อให้ JSONResponse serialize ได้ และไม่หลอกว่าเป็น 0."""
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    if isinstance(value, (pd.Timestamp,)):
+        return value.strftime("%Y-%m-%d")
+    return value
 
 
-def delete_transaction(db: Session, tx_id: int) -> bool:
-    row = db.query(Transaction).filter(Transaction.id == tx_id).first()
-    if not row:
-        return False
-    db.delete(row)
-    db.commit()
-    return True
+def add_transaction(payload: TransactionCreate) -> dict[str, Any]:
+    row = tracker.add_transaction(
+        date=str(payload.date),
+        ticker=payload.ticker.upper(),
+        shares=float(payload.shares),
+        price_usd=float(payload.price_usd),
+        fx_rate_thb=float(payload.fx_rate),
+        amount_thb=float(payload.amount_thb),
+        note=str(payload.note or ""),
+    )
+    return {k: _clean(v) for k, v in row.items()}
 
 
-def get_history(db: Session) -> list[Transaction]:
-    return db.query(Transaction).order_by(Transaction.date.desc(), Transaction.id.desc()).all()
+def delete_transaction(tx_id: str) -> bool:
+    return tracker.delete_transaction(tx_id)
 
 
-def get_holdings(db: Session) -> list[dict]:
-    rows = db.query(Transaction).all()
-    if not rows:
+def get_history() -> list[dict[str, Any]]:
+    df = tracker.get_transactions()
+    if df.empty:
         return []
+    records = df.to_dict(orient="records")
+    return [{k: _clean(v) for k, v in row.items()} for row in records]
 
-    agg = defaultdict(lambda: {"shares": 0.0, "invested_usd": 0.0, "invested_thb": 0.0, "fee": 0.0})
-    for tx in rows:
-        invested_usd = tx.shares * tx.price_usd
-        ticker = tx.ticker.upper()
-        agg[ticker]["shares"] += tx.shares
-        agg[ticker]["invested_usd"] += invested_usd
-        agg[ticker]["invested_thb"] += tx.amount_thb
-        agg[ticker]["fee"] += tx.fee
 
-    tickers = sorted(agg.keys())
-    prices = get_current_prices(tickers)
-    result: list[dict] = []
-    for ticker in tickers:
-        item = agg[ticker]
-        shares = item["shares"]
-        current_price = float(prices.get(ticker, 0.0))
-        current_value_usd = shares * current_price
-        pnl_usd = current_value_usd - item["invested_usd"]
-        return_pct = (pnl_usd / item["invested_usd"] * 100) if item["invested_usd"] else 0.0
+def get_holdings() -> list[dict[str, Any]]:
+    """สรุปรายสินทรัพย์ — ``price_ok=False`` แปลว่าราคาปัจจุบันดึงไม่ได้ (ค่าเป็น None)."""
+    df = tracker.get_portfolio_summary()
+    if df.empty:
+        return []
+    result: list[dict[str, Any]] = []
+    for row in df.to_dict(orient="records"):
         result.append(
             {
-                "ticker": ticker,
-                "shares": shares,
-                "avg_cost_usd": item["invested_usd"] / shares if shares else 0.0,
-                "invested_usd": item["invested_usd"],
-                "invested_thb": item["invested_thb"],
-                "current_price_usd": current_price,
-                "current_value_usd": current_value_usd,
-                "pnl_usd": pnl_usd,
-                "return_pct": return_pct,
-                "fee": item["fee"],
+                "ticker": row["Ticker"],
+                "shares": _clean(row["Shares"]),
+                "avg_cost_usd": _clean(row["Avg Cost (USD)"]),
+                "invested_usd": _clean(row["Invested (USD)"]),
+                "invested_thb": _clean(row["Invested (THB)"]),
+                "current_price_usd": _clean(row["Current Price (USD)"]),
+                "current_value_usd": _clean(row["Current Value (USD)"]),
+                "current_value_thb": _clean(row["Current Value (THB)"]),
+                "pnl_usd": _clean(row["P&L (USD)"]),
+                "pnl_thb": _clean(row["P&L (THB)"]),
+                "return_pct": _clean(row["Return (%)"]),
+                "fee": _clean(row["Fee (THB)"]),
+                "price_ok": bool(row["Price OK"]),
             }
         )
     return result
 
 
-def get_portfolio_summary(db: Session) -> dict:
-    holdings = get_holdings(db)
+def get_portfolio_summary() -> dict[str, Any]:
+    holdings = get_holdings()
+    totals = tracker.get_total_summary()
     return {
         "holdings_count": len(holdings),
-        "invested_usd": sum(item["invested_usd"] for item in holdings),
-        "invested_thb": sum(item["invested_thb"] for item in holdings),
-        "current_value_usd": sum(item["current_value_usd"] for item in holdings),
-        "pnl_usd": sum(item["pnl_usd"] for item in holdings),
-        "total_fee": sum(item["fee"] for item in holdings),
+        "invested_usd": sum(h["invested_usd"] or 0 for h in holdings),
+        "invested_thb": _clean(totals["total_invested_thb"]),
+        "current_value_usd": sum(h["current_value_usd"] or 0 for h in holdings if h["price_ok"]),
+        "current_value_thb": _clean(totals["current_value_thb"]),
+        "pnl_thb": _clean(totals["total_pnl_thb"]),
+        "pnl_usd": sum(h["pnl_usd"] or 0 for h in holdings if h["price_ok"]),
+        "return_pct": _clean(totals["total_return_pct"]),
+        "total_fee": _clean(totals["total_fee_thb"]),
+        # ราคาที่ดึงไม่ได้ต้องบอกผู้ใช้ — ห้ามซ่อนแล้วให้ตัวเลขดูสมบูรณ์ (AUDIT.md C1)
+        "missing_prices": list(totals.get("missing_prices") or []),
     }

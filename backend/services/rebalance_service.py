@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import yfinance as yf
-
 from alerts.price_alert import get_current_prices
 from analysis.llm import chat_text
+from utils import fx
 
 DIME_FEE_RATE = 0.0015  # 0.15% ต่อ transaction
 
@@ -25,13 +24,8 @@ _RISK_PROFILE_TH = {
 
 
 def _get_usdthb_rate() -> float:
-    try:
-        hist = yf.Ticker("USDTHB=X").history(period="2d")
-        if not hist.empty:
-            return float(hist["Close"].iloc[-1])
-    except Exception:
-        pass
-    return 35.0
+    """ใช้แหล่ง FX กลางเดียวของระบบ — เดิม fallback 35.0 ต่างจากที่อื่น (AUDIT.md M5)."""
+    return fx.get_usdthb_rate()
 
 
 def calculate_drift(

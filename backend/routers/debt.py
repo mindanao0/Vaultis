@@ -40,6 +40,9 @@ def optimize(payload: OptimizeRequest) -> JSONResponse:
             content=result.model_dump(),
             media_type="application/json; charset=utf-8",
         )
+    except ValueError as exc:
+        # แผนเป็นไปไม่ได้จริง (งบต่ำกว่ายอดขั้นต่ำ / หนี้ไม่มีวันหมด) — บอกผู้ใช้ตรง ๆ
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -62,5 +65,8 @@ def sensitivity(payload: SensitivityRequest) -> JSONResponse:
             content=[r.model_dump() for r in results],
             media_type="application/json; charset=utf-8",
         )
+    except ValueError as exc:
+        # แผนเป็นไปไม่ได้จริง (งบต่ำกว่ายอดขั้นต่ำ / หนี้ไม่มีวันหมด) — บอกผู้ใช้ตรง ๆ
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

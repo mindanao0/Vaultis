@@ -11,15 +11,31 @@ from data.fetcher import fetch_adjusted_close_data
 from technical import signal_rules
 from utils.config import get_tickers
 
+from .cache_service import PRICE_HISTORY_TTL, shared_cache
+
+_LATEST_PRICE_TTL = 5 * 60  # 5 นาที — ราคาล่าสุดไม่ต้องสดวินาทีต่อวินาที
+
 
 def _prices_df() -> pd.DataFrame:
+    """ราคา 10 ปีของทุก ticker — cache 1 ชม. (AUDIT.md H3).
+
+    เดิมทุก request ของ /api/etf/* ดึงใหม่หมด → โดน rate limit → ข้อมูลพัง → สัญญาณปลอม
+    """
     tickers = get_tickers()
-    return fetch_adjusted_close_data(tickers=tickers, years=10).ffill()
+    key = "prices_10y:" + ",".join(sorted(tickers))
+    return shared_cache.get_or_compute(
+        key,
+        PRICE_HISTORY_TTL,
+        lambda: fetch_adjusted_close_data(tickers=tickers, years=10).ffill(),
+    )
 
 
 def get_etf_prices() -> dict[str, float]:
     tickers = get_tickers()
-    return get_current_prices(tickers)
+    key = "latest_prices:" + ",".join(sorted(tickers))
+    return shared_cache.get_or_compute(
+        key, _LATEST_PRICE_TTL, lambda: get_current_prices(tickers)
+    )
 
 
 def get_etf_daily_eod_snapshot() -> dict[str, dict[str, float | str]]:

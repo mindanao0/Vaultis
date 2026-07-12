@@ -8,15 +8,29 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
+
+from data.fetcher import normalize_close_series
+from utils import fx
 from utils.config import load_config
 
 logger = logging.getLogger(__name__)
 
-CSV_COLUMNS = ["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb", "fee_thb", "note"]
+CSV_COLUMNS = [
+    "tx_id",
+    "date",
+    "ticker",
+    "shares",
+    "price_usd",
+    "fx_rate_thb",
+    "amount_thb",
+    "fee_thb",
+    "note",
+]
 TRACKER_DIR = Path(__file__).resolve().parent
 DATA_DIR = TRACKER_DIR / "data"
 TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
@@ -25,7 +39,7 @@ FEE_RATE = 0.0015
 
 
 def _ensure_storage() -> None:
-    """สร้างโฟลเดอร์และไฟล์ transactions.csv หากยังไม่มี."""
+    """สร้างไฟล์ transactions.csv และเติมคอลัมน์ที่ขาด (รวม tx_id ให้แถวเก่า)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not TRANSACTIONS_FILE.exists():
         pd.DataFrame(columns=CSV_COLUMNS).to_csv(TRANSACTIONS_FILE, index=False)
@@ -38,13 +52,26 @@ def _ensure_storage() -> None:
             existing_df[col] = 0.0 if col == "fee_thb" else ""
             changed = True
 
+    # แถวเก่าที่ยังไม่มี tx_id → ออกให้ (ใช้อ้างอิงตอนลบผ่าน API)
+    if "tx_id" in existing_df.columns and not existing_df.empty:
+        missing_id = existing_df["tx_id"].isna() | (existing_df["tx_id"].astype(str).str.strip() == "")
+        if missing_id.any():
+            existing_df.loc[missing_id, "tx_id"] = [
+                str(uuid.uuid4()) for _ in range(int(missing_id.sum()))
+            ]
+            changed = True
+
     if changed:
         existing_df = existing_df[CSV_COLUMNS]
         existing_df.to_csv(TRANSACTIONS_FILE, index=False)
 
 
 def _calculate_dime_fee_info(transactions: pd.DataFrame) -> pd.DataFrame:
-    """คำนวณลำดับเทรดรายเดือนและค่าธรรมเนียม Dime ของแต่ละรายการ."""
+    """เติมลำดับเทรดรายเดือน และคำนวณค่าธรรมเนียม Dime *เฉพาะแถวที่ยังไม่มีค่าบันทึกไว้*.
+
+    (AUDIT.md M12: เดิมคำนวณทับทุกครั้งที่โหลด — ถ้ากติกาโบรกเกอร์เปลี่ยน
+    ประวัติค่าธรรมเนียมจริงที่บันทึกไว้จะถูกเขียนทับด้วยสูตรปัจจุบัน)
+    """
     if transactions.empty:
         result = transactions.copy()
         result["trade_number_in_month"] = pd.Series(dtype="int64")
@@ -55,10 +82,36 @@ def _calculate_dime_fee_info(transactions: pd.DataFrame) -> pd.DataFrame:
     result["trade_month"] = result["date"].dt.to_period("M")
     result["trade_number_in_month"] = result.groupby("trade_month").cumcount() + 1
     result["trade_value_usd"] = result["shares"] * result["price_usd"]
-    result["fee_thb"] = (
-        result["trade_value_usd"] * FEE_RATE * result["fx_rate_thb"]
-    ).where(result["trade_number_in_month"] > 1, 0.0)
+
+    estimated_fee = (result["trade_value_usd"] * FEE_RATE * result["fx_rate_thb"]).where(
+        result["trade_number_in_month"] > 1, 0.0
+    )
+    # ใช้ค่าที่บันทึกไว้ก่อน; เติมด้วยค่าประมาณเฉพาะแถวที่ไม่มีค่า
+    result["fee_thb"] = pd.to_numeric(result.get("fee_thb"), errors="coerce").fillna(estimated_fee)
     return result.drop(columns=["trade_month", "trade_value_usd"])
+
+
+def _empty_transactions() -> pd.DataFrame:
+    """DataFrame ว่างที่ dtype ถูกต้อง.
+
+    (เดิมคืน ``pd.DataFrame(columns=CSV_COLUMNS)`` ซึ่งคอลัมน์ date เป็น object →
+    ``transactions["date"].dt`` พัง → **การเพิ่มธุรกรรมแรกสุดลงสมุดที่ว่างจะ crash**)
+    """
+    empty = pd.DataFrame(
+        {
+            "tx_id": pd.Series(dtype="object"),
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "ticker": pd.Series(dtype="object"),
+            "shares": pd.Series(dtype="float64"),
+            "price_usd": pd.Series(dtype="float64"),
+            "fx_rate_thb": pd.Series(dtype="float64"),
+            "amount_thb": pd.Series(dtype="float64"),
+            "fee_thb": pd.Series(dtype="float64"),
+            "note": pd.Series(dtype="object"),
+        }
+    )
+    empty["trade_number_in_month"] = pd.Series(dtype="int64")
+    return empty
 
 
 def _load_transactions() -> pd.DataFrame:
@@ -66,13 +119,14 @@ def _load_transactions() -> pd.DataFrame:
     _ensure_storage()
     df = pd.read_csv(TRANSACTIONS_FILE)
     if df.empty:
-        return pd.DataFrame(columns=CSV_COLUMNS)
+        return _empty_transactions()
 
     for col in CSV_COLUMNS:
         if col not in df.columns:
             df[col] = ""
 
     df = df[CSV_COLUMNS].copy()
+    df["tx_id"] = df["tx_id"].astype(str).str.strip()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
     df["shares"] = pd.to_numeric(df["shares"], errors="coerce")
@@ -82,6 +136,8 @@ def _load_transactions() -> pd.DataFrame:
     df["fee_thb"] = pd.to_numeric(df["fee_thb"], errors="coerce")
     df["note"] = df["note"].fillna("").astype(str)
     df = df.dropna(subset=["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb"])
+    if df.empty:
+        return _empty_transactions()
     return _calculate_dime_fee_info(df)
 
 
@@ -113,58 +169,20 @@ def _get_latest_prices(tickers: list[str]) -> dict[str, float]:
         for ticker in tickers:
             if ticker not in available:
                 continue
-            close_series = _close_series_from(downloaded[ticker])
+            close_series = normalize_close_series(downloaded[ticker])
             if not close_series.empty:
                 prices[ticker] = float(close_series.iloc[-1])
         return prices
 
-    close_series = _close_series_from(downloaded)
+    close_series = normalize_close_series(downloaded)
     if len(tickers) == 1 and not close_series.empty:
         prices[tickers[0]] = float(close_series.iloc[-1])
     return prices
 
 
-def _close_series_from(df: pd.DataFrame) -> pd.Series:
-    """ดึงคอลัมน์ Close เป็น Series เดียว รองรับทั้ง MultiIndex และคอลัมน์ธรรมดา.
-
-    yfinance รุ่นใหม่คืน MultiIndex (Price, Ticker) แม้ดึง ticker เดียว →
-    ``df.get("Close")`` จะได้ DataFrame ทำให้ pd.to_numeric พัง
-    (บั๊กเดิมทำให้ FX rate ตกไปใช้ค่า default 33.5 ตลอดโดยไม่มีใครรู้)
-    """
-    if df.empty:
-        return pd.Series(dtype=float)
-    if isinstance(df.columns, pd.MultiIndex):
-        if "Close" not in df.columns.get_level_values(0):
-            return pd.Series(dtype=float)
-        close = df.xs("Close", axis=1, level=0)
-    else:
-        if "Close" not in df.columns:
-            return pd.Series(dtype=float)
-        close = df["Close"]
-    if isinstance(close, pd.DataFrame):
-        if close.empty or close.shape[1] == 0:
-            return pd.Series(dtype=float)
-        close = close.iloc[:, 0]
-    return pd.to_numeric(close, errors="coerce").dropna()
-
-
 def _get_usdthb_rate() -> float:
-    """ดึงอัตราแลกเปลี่ยน THB/USD ล่าสุด; ล้มเหลวให้ใช้ค่า default."""
-    try:
-        fx_df = yf.download("THB=X", period="5d", progress=False, auto_adjust=True)
-        close_series = _close_series_from(fx_df)
-        if close_series.empty:
-            logger.warning("ดึงอัตราแลกเปลี่ยน THB=X ไม่ได้ — ใช้ค่า default %.2f", DEFAULT_USDTHB)
-            return DEFAULT_USDTHB
-        rate = float(close_series.iloc[-1])
-        # sanity check: THB/USD ที่สมเหตุสมผลอยู่ราว 25-45 — นอกช่วงนี้แปลว่าข้อมูลผิด
-        if not 20.0 <= rate <= 50.0:
-            logger.warning("อัตราแลกเปลี่ยนผิดปกติ (%.4f) — ใช้ค่า default %.2f", rate, DEFAULT_USDTHB)
-            return DEFAULT_USDTHB
-        return rate
-    except Exception as exc:
-        logger.warning("ดึงอัตราแลกเปลี่ยนไม่สำเร็จ (%s) — ใช้ค่า default %.2f", exc, DEFAULT_USDTHB)
-        return DEFAULT_USDTHB
+    """อัตราแลกเปลี่ยน THB/USD จากแหล่งกลางเดียวของระบบ (utils/fx.py)."""
+    return fx.get_usdthb_rate()
 
 
 def get_today_fx_rate_thb() -> float:
@@ -198,8 +216,8 @@ def add_transaction(
     fx_rate_thb: float,
     amount_thb: float,
     note: str = "",
-) -> None:
-    """บันทึกรายการซื้อใหม่ลง CSV."""
+) -> dict[str, object]:
+    """บันทึกรายการซื้อใหม่ลง CSV; คืนรายการที่บันทึก (มี ``tx_id`` สำหรับอ้างอิง/ลบ)."""
     if not ticker or shares <= 0 or price_usd <= 0 or fx_rate_thb <= 0 or amount_thb <= 0:
         raise ValueError("ticker, shares, price_usd, fx_rate_thb และ amount_thb ต้องมีค่ามากกว่า 0")
 
@@ -212,6 +230,7 @@ def add_transaction(
     )
 
     row = {
+        "tx_id": str(uuid.uuid4()),
         "date": pd.to_datetime(date).strftime("%Y-%m-%d"),
         "ticker": ticker.strip().upper(),
         "shares": float(shares),
@@ -227,6 +246,26 @@ def add_transaction(
         header=False,
         index=False,
     )
+    return row
+
+
+def delete_transaction(tx_id: str) -> bool:
+    """ลบธุรกรรมตาม ``tx_id``; คืน True ถ้าลบสำเร็จ."""
+    target = str(tx_id).strip()
+    if not target:
+        return False
+
+    _ensure_storage()
+    df = pd.read_csv(TRANSACTIONS_FILE)
+    if df.empty or "tx_id" not in df.columns:
+        return False
+
+    keep = df["tx_id"].astype(str).str.strip() != target
+    if bool(keep.all()):
+        return False
+
+    df[keep].to_csv(TRANSACTIONS_FILE, index=False)
+    return True
 
 
 def get_portfolio_summary() -> pd.DataFrame:

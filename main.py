@@ -5,10 +5,20 @@ from __future__ import annotations
 
 import argparse
 import time
+from calendar import monthrange
 from datetime import datetime, timedelta
 from typing import Dict
+from zoneinfo import ZoneInfo
 
 import schedule
+
+# เวลาทั้งหมดอ้างอิงเวลาไทย — เดิมใช้เวลาท้องถิ่นของเครื่อง ทำให้เมื่อรันบนเซิร์ฟเวอร์ UTC
+# งานที่ตั้งไว้ 08:00 จะยิงตอน 15:00 เวลาไทย (AUDIT.md M7)
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+
+
+def _now_bangkok() -> datetime:
+    return datetime.now(BANGKOK_TZ)
 
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
 from alerts.price_alert import check_alerts
@@ -134,13 +144,11 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
 
 
 def run_monthly_ai_advisor_if_first_day() -> None:
-    """รัน AI Advisor เฉพาะวันที่ 1 ของเดือน."""
-    from datetime import datetime
-
-    if datetime.now().day == 1:
+    """รัน AI Advisor เฉพาะวันที่ 1 ของเดือน (เวลาไทย)."""
+    if _now_bangkok().day == 1:
         generate_monthly_ai_advisor_and_notify()
     else:
-        print("Not day 1 - skipping AI Advisor")
+        print("Not day 1 (Asia/Bangkok) - skipping AI Advisor")
 
 
 def _extract_ai_allocation_summary(advice_text: str) -> str:
@@ -172,14 +180,23 @@ def _extract_ai_allocation_summary(advice_text: str) -> str:
     return cleaned[:900]
 
 
+def _effective_dca_day(dca_day: int, year: int, month: int) -> int:
+    """วัน DCA จริงของเดือนนั้น — ถ้าเดือนไม่มีวันที่ตั้งไว้ ให้ใช้วันสุดท้ายของเดือน.
+
+    (AUDIT.md M7: ตั้ง DCA วันที่ 31 → เดือน ก.พ./เม.ย./มิ.ย./ก.ย./พ.ย. ไม่เคยเตือนเลย)
+    """
+    last_day = monthrange(year, month)[1]
+    return min(int(dca_day), last_day)
+
+
 def check_and_send_dca_reminder(webhook_url: str) -> None:
     """ทุกวัน 08:00 เช็คว่าพรุ่งนี้เป็นวัน DCA หรือไม่ และส่งเตือนล่วงหน้า."""
     try:
         config = load_config()
         dca_day = int(config["dca"]["day_of_month"])
         dca_budget_thb = float(config["dca"]["monthly_budget_thb"])
-        tomorrow = datetime.now() + timedelta(days=1)
-        if tomorrow.day != dca_day:
+        tomorrow = _now_bangkok() + timedelta(days=1)
+        if tomorrow.day != _effective_dca_day(dca_day, tomorrow.year, tomorrow.month):
             return
 
         fx_rate = float(get_today_fx_rate_thb())
@@ -260,10 +277,11 @@ if __name__ == "__main__":
             raise ValueError("กรุณาตั้งค่า Discord Webhook URL ใน Settings")
         generate_weekly_report_and_notify(webhook_url=webhook_url)
     elif args.job == "monthly_advice":
-        if datetime.now().day == 1:
-            get_monthly_advice(budget_thb=5000)
+        if _now_bangkok().day == 1:
+            config = load_config()
+            get_monthly_advice(budget_thb=float(config["dca"]["monthly_budget_thb"]))
         else:
-            print("Not day 1 - skipping")
+            print("Not day 1 (Asia/Bangkok) - skipping")
     elif args.job == "price_alert":
         # เดิม job นี้เรียก daily_check (สรุปราคา) ไม่ใช่ตัวเช็ค alert จริง — AUDIT.md C6
         result = check_alerts()

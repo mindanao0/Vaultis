@@ -98,9 +98,18 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 
 ## Data Storage
 
-- **SQLite (`vaultis.db`)** — Transactions, price alerts, app config key-value store
-- **PostgreSQL (`DATABASE_URL`)** — Optional; stores `sentiment_results` from news analysis
-- **CSV (`portfolio/data/transactions.csv`)** — Authoritative transaction ledger; SQLite is the API layer on top
+**One store per kind of data — do not add a second one.** (The old duplicates were silently broken: `POST /api/portfolio/add` raised a `TypeError` on every call, so the SQLite `transactions` table was always empty, and alerts created via the API were never checked by cron.)
+
+| Data | Single source of truth | Used by |
+|---|---|---|
+| Transactions | **CSV** `portfolio/data/transactions.csv` via `portfolio/tracker.py` (rows keyed by `tx_id`) | dashboard, backend (`portfolio_service` delegates here), AI advisor, PDF |
+| Price alerts | **JSON** `alerts/data/price_alerts.json` via `alerts/price_alert.py` | dashboard, backend (`alert_service` delegates), Discord cron |
+| Goals / net worth / reports / config | **SQLite** `vaultis.db` | backend only |
+| Sentiment + screener history | **PostgreSQL** (`DATABASE_URL`, optional) | scheduled jobs |
+
+**The repo is public — the ledger and `vaultis.db` are gitignored and must stay that way.** A consequence: GitHub Actions cannot see the portfolio, so the monthly AI advisor runs without holdings context (it says so explicitly rather than pretending).
+
+**FX rate:** one source only — `utils/fx.py` `get_usdthb()`. It fetches live, sanity-checks the 20–50 band, caches for an hour, and reports `is_live=False` when it falls back to the config value. Never read `default_fx_rate` directly.
 
 ## Environment Variables
 

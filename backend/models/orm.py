@@ -18,29 +18,12 @@ class NetWorthSnapshot(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
-class Transaction(Base):
-    __tablename__ = "transactions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    date = Column(String, nullable=False, index=True)
-    ticker = Column(String, nullable=False, index=True)
-    shares = Column(Float, nullable=False)
-    price_usd = Column(Float, nullable=False)
-    amount_thb = Column(Float, nullable=False)
-    fx_rate = Column(Float, nullable=False)
-    fee = Column(Float, default=0.0)
-    note = Column(Text, default="")
-
-
-class PriceAlert(Base):
-    __tablename__ = "price_alerts"
-
-    id = Column(Integer, primary_key=True, index=True)
-    ticker = Column(String, nullable=False, index=True)
-    alert_type = Column(String, nullable=False)
-    target_price = Column(Float, nullable=False)
-    is_triggered = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+# หมายเหตุ (AUDIT.md H2): ORM ``Transaction`` และ ``PriceAlert`` ถูกถอดออก —
+# เป็น ledger/alert ชุดที่ 2 ที่ไม่ sync กับของจริง และพังมาตลอด
+#   - POST /api/portfolio/add โยน TypeError ทุกครั้ง (ตาราง transactions มี 0 แถวเสมอ)
+#   - alert ที่ตั้งผ่าน API ไม่มี job ไหนตรวจ เพราะ cron อ่านจากไฟล์ JSON
+# ตอนนี้ ledger เดียว = portfolio/data/transactions.csv (portfolio/tracker.py)
+#        alert store เดียว = alerts/data/price_alerts.json (alerts/price_alert.py)
 
 
 class Config(Base):
