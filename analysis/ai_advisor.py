@@ -37,6 +37,8 @@ You are Vaultis AI, a long-term ETF investment advisor for Thai retail investors
 **📊 ภาพรวมสัญญาณวันนี้** — 2-3 ประโยคจากข้อมูล macro ที่ให้
 **🎯 ETF แนะนำ (เรียงตาม Score)** — แต่ละ ETF: อธิบายว่าคะแนน/สัญญาณที่คำนวณมาสะท้อนอะไร
 **💰 แผน DCA เดือนนี้** — อธิบายแผนจัดสรรใน "แผนจัดสรรที่คำนวณแล้ว" (ยกตัวเลขตามนั้นเป๊ะ ๆ)
+  อธิบายด้วยว่าทำไมบางตัวได้มากกว่า/น้อยกว่าสัดส่วนเป้าหมาย (ดูคอลัมน์ตัวคูณ)
+  และย้ำว่าทุกตัวยังได้ซื้อทุกเดือนเพื่อรักษาการกระจายความเสี่ยง
 **⚠️ ความเสี่ยงที่ควรระวัง** — 1-2 ข้อ
 
 Rules:
@@ -94,15 +96,22 @@ def _build_user_message(
 
     lines.append("")
     lines.append("=== แผนจัดสรรที่คำนวณแล้ว (คำนวณโดยโมเดล — ใช้ตัวเลขนี้เป๊ะ ๆ) ===")
+    lines.append(
+        "วิธีคิด: ฐาน = สัดส่วนเป้าหมายของพอร์ต แล้วปรับน้ำหนักด้วยคะแนน (0.6–1.4 เท่า) "
+        "→ ซื้อทุกตัวทุกเดือนเพื่อรักษาการกระจายความเสี่ยง แต่เอียงเข้าหาตัวที่สัญญาณดีกว่า"
+    )
     if allocation:
+        lines.append("ticker\tเงิน(บาท)\tจัดสรรจริง\tเป้าหมาย\tตัวคูณ\tsignal")
         for ticker, item in allocation.items():
+            tilt = item.get("tilt")
             lines.append(
-                f"{ticker}\t{item.get('amount_thb', 0):,.0f} บาท\t{item.get('percent', 0)}%\t{item.get('group', '')}"
+                f"{ticker}\t{item.get('amount_thb', 0):,.0f}\t{item.get('percent', 0)}%\t"
+                f"{item.get('target_percent', 0)}%\t{tilt if tilt is not None else 'N/A'}×\t{item.get('group', '')}"
             )
         if unallocated_thb and unallocated_thb > 0:
-            lines.append(f"(ยังไม่จัดสรร: {unallocated_thb:,.0f} บาท — เศษจากการปัดหลักร้อย/ไม่มีสัญญาณรองรับ)")
+            lines.append(f"(ยังไม่จัดสรร: {unallocated_thb:,.0f} บาท — เศษจากการปัดหลักร้อย)")
     else:
-        lines.append("(เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์จัดสรร — อธิบายให้ผู้ใช้ทราบว่าโมเดลแนะนำถือเงินสดรอ)")
+        lines.append("(ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร — อธิบายให้ผู้ใช้ทราบว่าดึงข้อมูลไม่ได้)")
 
     lines.append("")
     lines.append("=== Macro ===")
@@ -262,13 +271,15 @@ def _allocation_summary_lines(
     lines = [f"📋 แผนจัดสรรจากโมเดล (งบ {budget_thb:,.0f} บาท):"]
     if allocation:
         for ticker, item in allocation.items():
+            tilt = item.get("tilt")
+            tilt_txt = f" [{tilt:.2f}× ของเป้า {item.get('target_percent', 0)}%]" if tilt else ""
             lines.append(
-                f"• {ticker}: {item.get('amount_thb', 0):,.0f} บาท ({item.get('percent', 0)}%) — {item.get('group', '')}"
+                f"• {ticker}: {item.get('amount_thb', 0):,.0f} บาท ({item.get('percent', 0)}%){tilt_txt}"
             )
         if unallocated_thb > 0:
             lines.append(f"• ยังไม่จัดสรร: {unallocated_thb:,.0f} บาท")
     else:
-        lines.append("• เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์ — โมเดลแนะนำถือเงินสดรอ")
+        lines.append("• ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร (ดึงข้อมูลไม่ได้)")
     if no_data_tickers:
         lines.append(f"⚠️ ข้อมูลไม่พร้อม (ไม่ถูกนำมาคิด): {', '.join(no_data_tickers)}")
     return lines

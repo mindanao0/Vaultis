@@ -139,48 +139,74 @@ class BacktestEngine:
             "outperformed": total_return > bh_return,
         }
 
-    def optimize(self, symbol: str, start: str, end: str) -> dict:
+    def _sharpe_for(self, df, rsi_period: int, rsi_oversold: float) -> float:
+        try:
+            entries, exits, _ = self.rsi_macd_strategy(
+                df, rsi_period=rsi_period, rsi_oversold=rsi_oversold
+            )
+            portfolio = vbt.Portfolio.from_signals(
+                df["Close"], entries, exits, init_cash=10_000, fees=0.001, freq="D"
+            )
+            if int(portfolio.trades.count()) == 0:
+                return 0.0
+            sharpe = float(portfolio.sharpe_ratio())
+            return 0.0 if np.isnan(sharpe) else sharpe
+        except Exception:
+            return 0.0
+
+    def optimize(self, symbol: str, start: str, end: str, train_ratio: float = 0.7) -> dict:
+        """หาพารามิเตอร์ที่ดีที่สุดบนช่วง train แล้ว **รายงานผลจากช่วง test ที่ไม่เคยเห็น**.
+
+        AUDIT.md M2: เดิม optimize บนข้อมูลทั้งชุดแล้วรายงาน Sharpe จากชุดเดียวกัน
+        (in-sample) ซึ่งเป็นการ overfit — ตัวเลขที่ได้สวยเสมอและไม่บอกอะไรเกี่ยวกับอนาคต
+        """
         df = self.fetch_data(symbol, start, end)
-        close = df["Close"]
+        split = int(len(df) * train_ratio)
+        if split < 60 or len(df) - split < 30:
+            raise ValueError("ข้อมูลไม่พอแบ่งช่วง train/test สำหรับการ optimize")
+
+        train_df, test_df = df.iloc[:split], df.iloc[split:]
 
         rsi_periods = [7, 10, 14, 21]
         rsi_oversolds = [25, 30, 35]
 
-        best_sharpe = float("-inf")
+        best_sharpe_train = float("-inf")
         best_params: dict = {}
         all_results: list[dict] = []
 
         for period in rsi_periods:
             for oversold in rsi_oversolds:
-                params = {"rsi_period": period, "rsi_oversold": oversold}
-                try:
-                    entries, exits, _ = self.rsi_macd_strategy(df, rsi_period=period, rsi_oversold=oversold)
-                    portfolio = vbt.Portfolio.from_signals(
-                        close, entries, exits, init_cash=10_000, fees=0.001, freq="D"
-                    )
-                    num_trades = int(portfolio.trades.count())
-                    if num_trades > 0:
-                        sharpe = float(portfolio.sharpe_ratio())
-                        sharpe = 0.0 if np.isnan(sharpe) else sharpe
-                    else:
-                        sharpe = 0.0
-                except Exception:
-                    sharpe = 0.0
+                sharpe = self._sharpe_for(train_df, period, oversold)
+                all_results.append(
+                    {"rsi_period": period, "rsi_oversold": oversold, "train_sharpe": round(sharpe, 4)}
+                )
+                if sharpe > best_sharpe_train:
+                    best_sharpe_train = sharpe
+                    best_params = {"rsi_period": period, "rsi_oversold": oversold}
 
-                all_results.append({**params, "sharpe_ratio": round(sharpe, 4)})
+        if not best_params:
+            return {
+                "best_params": {},
+                "train_sharpe": 0.0,
+                "test_sharpe": 0.0,
+                "all_results": all_results,
+                "note": "ไม่พบพารามิเตอร์ที่ให้สัญญาณเลยในช่วง train",
+            }
 
-                if sharpe > best_sharpe:
-                    best_sharpe = sharpe
-                    best_params = params
-
-        if best_sharpe == float("-inf"):
-            # ทุก combination ล้มเหลว — round(-inf) จะ crash ตอน serialize (AUDIT.md M2)
-            best_sharpe = 0.0
-            best_params = {}
+        test_sharpe = self._sharpe_for(test_df, **best_params)
 
         return {
             "best_params": best_params,
-            "best_sharpe": round(best_sharpe, 4),
+            "train_period": f"{train_df.index[0]:%Y-%m-%d} – {train_df.index[-1]:%Y-%m-%d}",
+            "test_period": f"{test_df.index[0]:%Y-%m-%d} – {test_df.index[-1]:%Y-%m-%d}",
+            "train_sharpe": round(max(best_sharpe_train, 0.0), 4),
+            # ตัวเลขที่ควรเชื่อ: ผลบนช่วงที่พารามิเตอร์ไม่เคยเห็น
+            "test_sharpe": round(test_sharpe, 4),
             "all_results": all_results,
-            "note": "ผล optimize เป็น in-sample ทั้งช่วงข้อมูล — อย่าใช้เป็นหลักฐานว่าจะได้ผลจริงในอนาคต",
+            "note": (
+                "train_sharpe คือผลบนข้อมูลที่ใช้จูน (มองโลกในแง่ดีเสมอ) — "
+                "ให้ดู test_sharpe ซึ่งเป็นผลบนช่วงที่พารามิเตอร์ไม่เคยเห็น "
+                "ถ้า test ต่ำกว่า train มาก แปลว่ากลยุทธ์ overfit "
+                "และผลย้อนหลังไม่รับประกันผลในอนาคต"
+            ),
         }

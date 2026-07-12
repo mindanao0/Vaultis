@@ -28,6 +28,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "etf": {
         "tickers": DEFAULT_TICKERS,
     },
+    # สัดส่วนพอร์ตเป้าหมาย — ฐานของทั้งการจัดสรร DCA และการ rebalance
+    # (ดู portfolio/targets.py; target_weights ว่าง = ใช้ preset ตาม risk_profile)
+    "portfolio": {
+        "risk_profile": "moderate",
+        "target_weights": {},
+    },
     "notifications": {
         "discord_webhook_url": "",
         "weekly_summary": True,
@@ -71,6 +77,22 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     merged["notifications"]["dca_reminder"] = bool(merged["notifications"].get("dca_reminder", True))
     merged["notifications"]["rsi_alert"] = bool(merged["notifications"].get("rsi_alert", True))
 
+    profile = str(merged["portfolio"].get("risk_profile", "moderate")).strip().lower()
+    merged["portfolio"]["risk_profile"] = (
+        profile if profile in {"conservative", "moderate", "aggressive"} else "moderate"
+    )
+    raw_targets = merged["portfolio"].get("target_weights") or {}
+    normalized_targets: dict[str, float] = {}
+    if isinstance(raw_targets, dict):
+        for key, value in raw_targets.items():
+            try:
+                weight = float(value)
+            except (TypeError, ValueError):
+                continue
+            if weight > 0:
+                normalized_targets[str(key).strip().upper()] = weight
+    merged["portfolio"]["target_weights"] = normalized_targets
+
     default_page = str(merged["display"].get("default_page", "Overview")).strip() or "Overview"
     merged["display"]["default_page"] = default_page
     currency = str(merged["display"].get("currency", "THB")).upper()
@@ -80,16 +102,32 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+_cache: tuple[float, dict[str, Any]] | None = None
+
+
 def load_config() -> dict[str, Any]:
-    """Load configuration from config.json and fill missing defaults."""
+    """Load configuration from config.json and fill missing defaults.
+
+    Cached by the file's mtime — this is called on nearly every request path
+    (`get_tickers`, FX fallback, webhook lookup), and re-reading + re-parsing
+    JSON each time was pure overhead.
+    """
+    global _cache
+
     if not CONFIG_PATH.exists():
         return deepcopy(DEFAULT_CONFIG)
 
     try:
+        mtime = CONFIG_PATH.stat().st_mtime
+        if _cache is not None and _cache[0] == mtime:
+            return deepcopy(_cache[1])
+
         payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return deepcopy(DEFAULT_CONFIG)
-        return _normalize_config(payload)
+        normalized = _normalize_config(payload)
+        _cache = (mtime, normalized)
+        return deepcopy(normalized)
     except Exception:
         return deepcopy(DEFAULT_CONFIG)
 
@@ -100,10 +138,13 @@ def save_config(config: dict[str, Any]) -> dict[str, Any]:
     webhook ไม่ถูกเขียนลงไฟล์เด็ดขาด (ไฟล์นี้อยู่ใน git — เคยหลุดมาแล้ว, AUDIT.md H1)
     ค่า runtime ยังใช้ได้ปกติผ่าน env overlay ใน load_config()
     """
+    global _cache
+
     normalized = _normalize_config(config if isinstance(config, dict) else {})
     on_disk = deepcopy(normalized)
     on_disk["notifications"]["discord_webhook_url"] = ""
     CONFIG_PATH.write_text(json.dumps(on_disk, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _cache = None  # บังคับให้อ่านใหม่รอบหน้า
     return normalized
 
 

@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pandas as pd
 import yfinance
@@ -99,7 +99,7 @@ class ScreenerEngine:
                             price=price,
                             signal_strength=strength,
                             preset_name=preset.name,
-                            timestamp=datetime.utcnow().isoformat(),
+                            timestamp=datetime.now(UTC).isoformat(),
                         )
                     )
                 else:

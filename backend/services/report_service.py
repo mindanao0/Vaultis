@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import requests
@@ -72,7 +72,7 @@ async def get_screener_summary() -> dict[str, Any]:
     svc = ScreenerHistoryService()
     records = await svc.get_history(limit=500)
 
-    cutoff = datetime.utcnow() - timedelta(days=30)
+    cutoff = datetime.now(UTC) - timedelta(days=30)
     monthly: list[dict] = []
     for r in records:
         ts = r.get("created_at")
@@ -199,7 +199,7 @@ async def generate_and_save_report() -> dict[str, Any]:
         month = date.today().strftime("%Y-%m")
         all_data = await _aggregate_data(db)
         content = await asyncio.to_thread(generate_narrative, all_data, month)
-        sent_at = datetime.utcnow()
+        sent_at = datetime.now(UTC)
 
         existing = db.query(MonthlyReport).filter(MonthlyReport.month == month).first()
         if existing:

@@ -79,68 +79,112 @@ class TestUnifiedScore:
 
 
 class TestCalculateAllocation:
+    """นโยบาย: สัดส่วนเป้าหมายเป็นฐาน + คะแนนเป็นตัวปรับน้ำหนัก (0.6–1.4 เท่า).
+
+    หลักที่ต้องคุ้มครอง: (1) ไม่เกินงบ (2) ไม่ตัดสินทรัพย์ใดออกจากพอร์ต
+    (3) คะแนนสูงกว่า → ได้มากกว่าเป้าของตัวเอง (4) ข้อมูลพัง → ไม่ได้เงิน
+    """
+
+    TARGETS = {"VOO": 0.35, "SCHD": 0.25, "QQQM": 0.20, "XLV": 0.10, "GLDM": 0.10}
+
     def test_allocation_never_exceeds_budget(self):
-        scores = {
-            "VOO": _score("VOO", 75.0),
-            "SCHD": _score("SCHD", 65.0),
-            "QQQM": _score("QQQM", 45.0),
-        }
-        allocation = calculate_allocation(scores, 5000.0)
-        total = sum(item["amount_thb"] for item in allocation.values())
-        assert total <= 5000.0
+        scores = {t: _score(t, 60.0) for t in self.TARGETS}
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
+        assert sum(i["amount_thb"] for i in allocation.values()) <= 5000.0
 
-    def test_money_follows_score_monotonically(self):
-        """คะแนนสูงกว่า = ได้เงินมากกว่า เสมอ.
+    def test_uses_full_budget_when_divisible(self):
+        """เศษจากการปัดหลักร้อยต้องถูกแจกคืน ไม่หายเงียบ."""
+        scores = {t: _score(t, 60.0) for t in self.TARGETS}
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
+        assert sum(i["amount_thb"] for i in allocation.values()) == 5000.0
 
-        บั๊กเดิม: แบ่งงบเป็นก้อนต่อกลุ่ม (60%/30%) ทำให้ตัวคะแนนต่ำสุดที่อยู่คนเดียว
-        ในกลุ่ม Buy ได้เงินมากกว่าตัวคะแนนสูงสุดที่ต้องหารกันในกลุ่ม Strong Buy
-        (ของจริง: GLDM 42.9 ได้ 1,500 บาท ขณะที่ VOO 100 ได้ 800 บาท)
+    def test_weak_asset_still_gets_money(self):
+        """หัวใจของนโยบาย (ข): สินทรัพย์ที่สัญญาณอ่อนยังต้องได้ซื้อ — ไม่ตัดออกจากพอร์ต.
+
+        (แบบคะแนนล้วนเดิม GLDM คะแนน 20 จะไม่ได้เงินเลย = market timing)
         """
         scores = {
-            "VOO": _score("VOO", 100.0),
-            "SCHD": _score("SCHD", 85.7),
-            "QQQM": _score("QQQM", 100.0),
-            "XLV": _score("XLV", 78.6),
-            "GLDM": _score("GLDM", 42.9),
+            "VOO": _score("VOO", 72.0),
+            "SCHD": _score("SCHD", 75.0),
+            "QQQM": _score("QQQM", 80.0),
+            "XLV": _score("XLV", 72.0),
+            "GLDM": _score("GLDM", 20.0),
         }
-        allocation = calculate_allocation(scores, 5000.0)
-        ranked = sorted(scores, key=lambda t: scores[t]["total_pct"], reverse=True)
-        amounts = [allocation[t]["amount_thb"] for t in ranked if t in allocation]
-        assert amounts == sorted(amounts, reverse=True), "เงินต้องไหลตามคะแนน"
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
+        assert "GLDM" in allocation
+        assert allocation["GLDM"]["amount_thb"] > 0
+        # แต่ต้องได้ "น้อยกว่าเป้าหมาย" เพราะคะแนนต่ำ
+        assert allocation["GLDM"]["tilt"] < 1.0
+
+    def test_strong_asset_gets_more_than_its_target(self):
+        scores = {
+            "VOO": _score("VOO", 40.0),
+            "SCHD": _score("SCHD", 95.0),
+            "QQQM": _score("QQQM", 50.0),
+            "XLV": _score("XLV", 50.0),
+            "GLDM": _score("GLDM", 50.0),
+        }
+        allocation = calculate_allocation(scores, 10000.0, target_weights=self.TARGETS)
+        assert allocation["SCHD"]["tilt"] > 1.0, "คะแนนสูงต้องได้มากกว่าเป้า"
+        assert allocation["VOO"]["tilt"] < 1.0, "คะแนนต่ำต้องได้น้อยกว่าเป้า"
+
+    def test_big_target_still_beats_small_target_at_similar_score(self):
+        """VOO เป้า 35% ต้องยังได้เงินมากกว่า GLDM เป้า 10% เมื่อคะแนนใกล้กัน."""
+        scores = {t: _score(t, 60.0) for t in self.TARGETS}
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
         assert allocation["VOO"]["amount_thb"] > allocation["GLDM"]["amount_thb"]
 
-    def test_higher_score_gets_more_money(self):
-        scores = {"VOO": _score("VOO", 80.0), "SCHD": _score("SCHD", 62.0)}
-        allocation = calculate_allocation(scores, 10000.0)
-        assert allocation["VOO"]["amount_thb"] > allocation["SCHD"]["amount_thb"]
+    def test_higher_score_gets_more_when_targets_equal(self):
+        targets = {"A": 0.5, "B": 0.5}
+        scores = {"A": _score("A", 90.0), "B": _score("B", 30.0)}
+        allocation = calculate_allocation(scores, 10000.0, target_weights=targets)
+        assert allocation["A"]["amount_thb"] > allocation["B"]["amount_thb"]
+
+    def test_tilt_is_bounded(self):
+        """ตัวคูณต้องอยู่ในกรอบ 0.6–1.4 เสมอ — ไม่มีตัวไหนโดนตัดหรือกินรวบ."""
+        targets = {"A": 0.5, "B": 0.5}
+        for score_a, score_b in [(100.0, 0.0), (0.0, 100.0), (50.0, 50.0)]:
+            allocation = calculate_allocation(
+                {"A": _score("A", score_a), "B": _score("B", score_b)},
+                10000.0,
+                target_weights=targets,
+            )
+            for item in allocation.values():
+                assert 0.55 <= item["tilt"] <= 1.45
 
     def test_no_data_ticker_never_gets_money(self):
-        """ข้อมูลพังต้องไม่ได้รับเงิน — เดิมกลายเป็นคะแนน 0 แล้วยังหลุดเข้าโครงสร้าง (C1)."""
-        scores = {
-            "VOO": _score("VOO", 70.0),
-            "GLDM": _score("GLDM", 0.0, data_ok=False),
-        }
-        allocation = calculate_allocation(scores, 5000.0)
+        """ข้อมูลพังต้องไม่ได้รับเงิน และน้ำหนักของมันกระจายให้ตัวอื่น (C1)."""
+        scores = {t: _score(t, 60.0) for t in self.TARGETS}
+        scores["GLDM"] = _score("GLDM", 0.0, data_ok=False)
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
         assert "GLDM" not in allocation
-        assert "VOO" in allocation
+        assert sum(i["amount_thb"] for i in allocation.values()) == 5000.0
 
     def test_ticker_without_score_is_skipped(self):
         scores = {"VOO": _score("VOO", 70.0), "XLV": {"ticker": "XLV", "total_pct": None}}
-        allocation = calculate_allocation(scores, 5000.0)
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
         assert "XLV" not in allocation
 
-    def test_all_low_scores_allocate_nothing(self):
-        """คะแนนต่ำกว่า 25 (Caution/Avoid) = ถือเงินสด ไม่จัดสรร."""
-        scores = {"VOO": _score("VOO", 10.0), "SCHD": _score("SCHD", 5.0)}
-        assert calculate_allocation(scores, 5000.0) == {}
+    def test_low_scores_still_allocate_but_reduced(self):
+        """คะแนนต่ำทั้งพอร์ต = ยังซื้อ (DCA ไม่หยุด) และสัดส่วนยังตรงตามเป้าหมาย.
 
-    def test_strong_buy_tier_beats_buy_tier_at_similar_score(self):
-        """ตัวคูณตามกลุ่มยังทำงาน: Strong Buy ได้เปรียบ Buy ที่คะแนนใกล้กัน."""
-        scores = {"A": _score("A", 70.0), "B": _score("B", 69.0)}
-        allocation = calculate_allocation(scores, 10000.0)
-        assert allocation["A"]["group"] == "Strong Buy"
-        assert allocation["B"]["group"] == "Buy"
-        assert allocation["A"]["amount_thb"] > allocation["B"]["amount_thb"] * 1.3
+        เมื่อทุกตัวโดนลดน้ำหนักเท่ากัน การ normalize ทำให้สัดส่วนกลับไปเท่าเป้าหมายเดิม
+        — นั่นคือพฤติกรรมที่ถูก: ตลาดแย่ทั้งกระดาน ≠ เปลี่ยนโครงสร้างพอร์ต
+        """
+        scores = {t: _score(t, 10.0) for t in self.TARGETS}
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
+        assert len(allocation) == 5
+        assert sum(i["amount_thb"] for i in allocation.values()) == 5000.0
+        for ticker, item in allocation.items():
+            # สัดส่วนจริงต้องใกล้เป้าหมาย (คลาดได้จากการปัดหลักร้อย = 2% ของงบต่อก้อน)
+            assert item["percent"] == pytest.approx(item["target_percent"], abs=2.0)
+
+    def test_tilt_reports_score_effect_only_not_rounding_noise(self):
+        """`tilt` ต้องสะท้อนผลจากคะแนนล้วน ๆ ไม่ปนเศษการปัดเงิน (ไม่งั้นผู้ใช้เข้าใจผิด)."""
+        scores = {t: _score(t, 50.0) for t in self.TARGETS}
+        allocation = calculate_allocation(scores, 5000.0, target_weights=self.TARGETS)
+        for item in allocation.values():
+            assert item["tilt"] == 1.0, "คะแนน 50 = กลาง ๆ → ตัวคูณต้องเป็น 1.00 พอดี"
 
 
 class TestSuggestAlertLevels:

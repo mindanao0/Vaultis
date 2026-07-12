@@ -351,22 +351,44 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
     return result
 
 
-ALLOCATION_MIN_SCORE = 25.0  # ต่ำกว่านี้ (Caution/Avoid) ไม่จัดสรรเงินให้
-_TIER_MULTIPLIER = {"Strong Buy": 2.0, "Buy": 1.4, "Neutral": 1.0}
+# --- การจัดสรรงบ DCA: สัดส่วนเป้าหมายเป็นฐาน + คะแนนเป็นตัวปรับน้ำหนัก ---
+#
+# ปรัชญา (ผู้ใช้เลือกแบบนี้): เป็น DCA ระยะยาว → **ซื้อทุกสินทรัพย์ในพอร์ตทุกเดือน**
+# รักษาการกระจายความเสี่ยงไว้ แล้วใช้คะแนนเพียง "เอียงน้ำหนัก" เข้าหาตัวที่สัญญาณดีกว่า
+#
+# ไม่ใช้คะแนนล้วนแบบเดิม เพราะจะตัดสินทรัพย์ที่อยู่ในขาลงออกจากพอร์ตทั้งตัว
+# (เช่น GLDM ต่ำกว่า MA200 → ไม่ได้เงินเลย) ซึ่งเป็นการ market timing ที่ขัดกับหลัก DCA
+#
+# ตัวคูณ: คะแนน 0 → 0.6 เท่าของเป้าหมาย | คะแนน 50 → 1.0 เท่า | คะแนน 100 → 1.4 เท่า
+TILT_MIN, TILT_MAX = 0.6, 1.4
+ALLOCATION_UNIT_THB = 100  # ปัดจำนวนเงินเป็นหลักร้อย
 
 
-def calculate_allocation(scores: dict[str, Any], budget_thb: float) -> dict[str, dict[str, Any]]:
-    """จัดสรรงบ DCA จากคะแนน `total_pct` — คำนวณในโค้ดเท่านั้น ห้ามให้ AI คิด (AUDIT.md C3).
+def _score_tilt(total_pct: float) -> float:
+    """แปลงคะแนน 0-100 เป็นตัวคูณน้ำหนัก (bounded — ไม่มีวันเป็น 0 หรือพุ่งเกินคุม)."""
+    clamped = max(0.0, min(100.0, total_pct))
+    return TILT_MIN + (TILT_MAX - TILT_MIN) * (clamped / 100.0)
 
-    น้ำหนัก = total_pct × ตัวคูณตามกลุ่ม (Strong Buy 2.0 / Buy 1.4 / Neutral 1.0)
-    แล้วแบ่งงบตามสัดส่วนน้ำหนัก — รับประกันว่า **คะแนนสูงกว่าได้เงินมากกว่าเสมอ**
 
-    (บั๊กเดิม: แบ่งงบเป็นก้อนต่อกลุ่ม 60%/30% ทำให้เมื่อมี Strong Buy 4 ตัวและ Buy 1 ตัว
-    ตัว Buy ที่คะแนนต่ำสุดได้เงินก้อนใหญ่สุดคนเดียว ขณะที่ Strong Buy หาร 4)
+def calculate_allocation(
+    scores: dict[str, Any],
+    budget_thb: float,
+    target_weights: dict[str, float] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """จัดสรรงบ DCA — คำนวณในโค้ดเท่านั้น ห้ามให้ AI คิด (AUDIT.md C3).
 
-    ticker ที่ data_ok=False, ไม่มีคะแนน, หรือคะแนน < 25 จะไม่ได้รับเงินเลย (AUDIT.md C1)
-    จำนวนเงินปัดลงหลักร้อยบาท เศษที่เหลือผู้เรียกรายงานเป็น unallocated
+    น้ำหนัก = สัดส่วนเป้าหมาย × ตัวคูณจากคะแนน (0.6–1.4) แล้ว normalize
+    → ทุก ETF ที่มีข้อมูลได้เงินเสมอ (กระจายความเสี่ยง) แต่ตัวที่สัญญาณดีกว่าได้มากกว่าเป้า
+
+    ticker ที่ ``data_ok=False`` หรือไม่มีคะแนน จะถูกข้าม และน้ำหนักเป้าหมายของมัน
+    ถูกกระจายให้ตัวที่เหลือโดยอัตโนมัติ (ห้ามเดาราคา/คะแนนแทน — AUDIT.md C1)
+
+    เศษเงินจากการปัดหลักร้อยถูกแจกด้วยวิธี largest-remainder เพื่อให้ใช้งบครบ
     """
+    from portfolio.targets import get_target_weights
+
+    if budget_thb <= 0:
+        return {}
 
     def _pct(v: dict[str, Any]) -> float:
         return _safe_float(v.get("total_pct"), -1.0)
@@ -374,33 +396,51 @@ def calculate_allocation(scores: dict[str, Any], budget_thb: float) -> dict[str,
     usable = {
         k: v
         for k, v in scores.items()
-        if isinstance(v, dict) and v.get("data_ok", True) and _pct(v) >= ALLOCATION_MIN_SCORE
+        if isinstance(v, dict) and v.get("data_ok", True) and _pct(v) >= 0
     }
-    if not usable or budget_thb <= 0:
+    if not usable:
         return {}
 
+    targets = target_weights or get_target_weights(list(usable.keys()))
+
     weights: dict[str, float] = {}
-    groups: dict[str, str] = {}
     for ticker, data in usable.items():
-        pct = _pct(data)
-        label = _signal_label(pct)
-        groups[ticker] = label
-        weights[ticker] = pct * _TIER_MULTIPLIER.get(label, 1.0)
+        base = _safe_float(targets.get(ticker), 0.0)
+        if base <= 0:
+            continue  # ไม่มีสัดส่วนเป้าหมาย → ไม่อยู่ในแผน DCA
+        weights[ticker] = base * _score_tilt(_pct(data))
 
     total_weight = sum(weights.values())
     if total_weight <= 0:
         return {}
 
+    # แบ่งเป็นก้อนละ 100 บาท แล้วแจกเศษให้ตัวที่เศษมากสุด (ใช้งบครบ ไม่หายเงียบ)
+    total_units = int(budget_thb // ALLOCATION_UNIT_THB)
+    exact = {t: (w / total_weight) * total_units for t, w in weights.items()}
+    units = {t: int(v) for t, v in exact.items()}
+    leftover = total_units - sum(units.values())
+    if leftover > 0:
+        by_remainder = sorted(
+            exact, key=lambda t: (exact[t] - units[t], _pct(usable[t])), reverse=True
+        )
+        for ticker in by_remainder[:leftover]:
+            units[ticker] += 1
+
     allocation: dict[str, dict[str, Any]] = {}
-    for ticker in sorted(usable, key=lambda t: weights[t], reverse=True):
-        share = weights[ticker] / total_weight
-        amount = int(budget_thb * share / 100) * 100  # ปัดลงหลักร้อย
+    for ticker in sorted(weights, key=lambda t: units[t], reverse=True):
+        amount = units[ticker] * ALLOCATION_UNIT_THB
         if amount <= 0:
             continue
+        target_pct = _safe_float(targets.get(ticker), 0.0) * 100.0
+        actual_pct = amount / budget_thb * 100.0
         allocation[ticker] = {
             "amount_thb": amount,
-            "percent": round(amount / budget_thb * 100),
-            "group": groups[ticker],
+            "percent": round(actual_pct, 1),
+            "target_percent": round(target_pct, 1),
+            # ผลจาก "คะแนน" ล้วน ๆ — ไม่ปนเอฟเฟกต์การปัดหลักร้อย ไม่งั้นผู้ใช้จะเข้าใจผิด
+            # ว่าคะแนนดันน้ำหนักขึ้น ทั้งที่จริงเป็นแค่เศษการปัด
+            "tilt": round(_score_tilt(_pct(usable[ticker])), 2),
+            "group": _signal_label(_pct(usable[ticker])),
             "score": _pct(usable[ticker]),
         }
 

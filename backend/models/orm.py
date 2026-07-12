@@ -1,8 +1,13 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text
 
 from ..database import Base
+
+
+def _utcnow() -> datetime:
+    """เวลาปัจจุบันแบบ timezone-aware (``datetime.utcnow`` ถูก deprecate แล้ว)."""
+    return datetime.now(UTC)
 
 
 class NetWorthSnapshot(Base):
@@ -15,7 +20,7 @@ class NetWorthSnapshot(Base):
     net_worth_thb = Column(Float, nullable=False)
     assets_json = Column(Text, nullable=False)        # JSON [{name, type, value_thb}]
     liabilities_json = Column(Text, nullable=False, default="[]")  # JSON [{name, value_thb}]
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
 
 # หมายเหตุ (AUDIT.md H2): ORM ``Transaction`` และ ``PriceAlert`` ถูกถอดออก —
@@ -43,7 +48,7 @@ class InvestmentGoal(Base):
     monthly_contribution_thb = Column(Float, nullable=False)
     target_date = Column(String, nullable=False)  # YYYY-MM-DD
     risk_profile = Column(String, nullable=False, default="moderate")
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
 
 
 class MonthlyReport(Base):

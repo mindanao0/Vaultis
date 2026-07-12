@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
-from analysis.financial_model import run_full_analysis
+from analysis.financial_model import TILT_MAX, TILT_MIN, run_full_analysis
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics
@@ -43,6 +43,7 @@ from alerts.price_alert import (
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
+from portfolio.targets import RISK_PROFILES, get_risk_profile, get_target_weights
 from portfolio.tracker import (
     add_transaction,
     estimate_dime_fee_thb,
@@ -624,7 +625,43 @@ def render_settings_page() -> None:
                 st.error(f"เพิ่ม ETF ไม่สำเร็จ: {exc}")
 
     st.divider()
-    st.subheader("3) Notification Settings")
+    st.subheader("3) สัดส่วนพอร์ตเป้าหมาย")
+    st.caption(
+        "ฐานของทั้งแผน DCA และการ rebalance — คะแนนรายเดือนจะปรับน้ำหนักรอบเป้าหมายนี้ "
+        f"({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) ไม่ตัดสินทรัพย์ใดออกจากพอร์ต"
+    )
+    profile_options = list(RISK_PROFILES.keys())
+    profile_labels = {"conservative": "อนุรักษ์นิยม", "moderate": "สมดุล", "aggressive": "เชิงรุก"}
+    current_profile = get_risk_profile()
+    selected_profile = st.selectbox(
+        "โปรไฟล์ความเสี่ยง",
+        profile_options,
+        index=profile_options.index(current_profile),
+        format_func=lambda p: f"{profile_labels.get(p, p)} ({p})",
+    )
+    preset = RISK_PROFILES[selected_profile]
+    effective_targets = get_target_weights(current_tickers)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "ETF": t,
+                    "เป้าหมายตาม preset": f"{preset.get(t, 0) * 100:.0f}%",
+                    "เป้าหมายที่ใช้จริง": f"{effective_targets.get(t, 0) * 100:.1f}%",
+                }
+                for t in current_tickers
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        'ถ้าต้องการกำหนดเอง ให้แก้ `portfolio.target_weights` ใน config.json '
+        '(เช่น {"VOO": 0.4, "GLDM": 0.05}) — เว้นว่างไว้จะใช้ preset ด้านบน'
+    )
+
+    st.divider()
+    st.subheader("4) Notification Settings")
     try:
         webhook_url = st.secrets["DISCORD_WEBHOOK_URL"]
     except Exception:
@@ -658,7 +695,7 @@ def render_settings_page() -> None:
                 st.error(f"ส่งไม่สำเร็จ: {test_result.get('error', 'unknown error')}")
 
     st.divider()
-    st.subheader("4) Display Settings")
+    st.subheader("5) Display Settings")
     current_default_page = str(config["display"]["default_page"])
     default_page = st.selectbox(
         "หน้าเริ่มต้นเมื่อเปิดแอป",
@@ -687,6 +724,11 @@ def render_settings_page() -> None:
                 "day_of_month": int(dca_day),
             },
             "etf": {"tickers": get_tickers()},
+            "portfolio": {
+                "risk_profile": selected_profile,
+                # เก็บค่าที่ผู้ใช้ตั้งเองไว้ (ถ้ามี) — ไม่เขียนทับด้วย preset
+                "target_weights": dict(config["portfolio"].get("target_weights") or {}),
+            },
             "notifications": {
                 "discord_webhook_url": str(config["notifications"].get("discord_webhook_url", "")),
                 "weekly_summary": bool(weekly_summary_enabled),
@@ -1489,20 +1531,33 @@ def show_result(result: dict) -> None:
     allocation = result.get("allocation") or {}
     if allocation:
         st.markdown("### การจัดสรร DCA (คำนวณโดยโมเดล ไม่ใช่ AI)")
+        st.caption(
+            "ฐาน = สัดส่วนเป้าหมายของพอร์ต → ปรับน้ำหนักด้วยคะแนน "
+            f"({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) | ตัวคูณ > 1 = ซื้อมากกว่าเป้า, < 1 = ซื้อน้อยกว่าเป้า "
+            "แต่ทุกตัวยังได้ซื้อทุกเดือนเพื่อรักษาการกระจายความเสี่ยง"
+        )
         allocation_rows = [
             {
                 "Ticker": ticker,
                 "Amount (THB)": item.get("amount_thb", 0),
-                "Percent": item.get("percent", 0),
-                "Group": item.get("group", ""),
+                "จัดสรรจริง": item.get("percent", 0),
+                "เป้าหมาย": item.get("target_percent", 0),
+                "ตัวคูณ": item.get("tilt"),
                 "Score %": item.get("score"),
+                "Signal": item.get("group", ""),
             }
             for ticker, item in allocation.items()
         ]
         allocation_df = pd.DataFrame(allocation_rows)
         st.dataframe(
             allocation_df.style.format(
-                {"Amount (THB)": "{:,.0f}", "Percent": "{:.0f}%", "Score %": "{:.1f}"},
+                {
+                    "Amount (THB)": "{:,.0f}",
+                    "จัดสรรจริง": "{:.0f}%",
+                    "เป้าหมาย": "{:.0f}%",
+                    "ตัวคูณ": "{:.2f}×",
+                    "Score %": "{:.1f}",
+                },
                 na_rep="N/A",
             ),
             use_container_width=True,
@@ -1960,10 +2015,8 @@ def render_dashboard() -> None:
             st.info("ลองกด Refresh Data อีกครั้งในอีกสักครู่ (yfinance อาจจำกัดการเรียกชั่วคราว)")
             return
 
-        base_weights = {"VOO": 0.35, "SCHD": 0.20, "QQQM": 0.20, "XLV": 0.15, "GLDM": 0.10}
-        default_weights = {ticker: base_weights.get(ticker, 1.0) for ticker in tickers}
-        total = sum(default_weights.values())
-        default_weights = {ticker: value / total for ticker, value in default_weights.items()}
+        # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
+        default_weights = get_target_weights(tickers)
         config = load_config()
 
         default_page = str(config["display"]["default_page"])

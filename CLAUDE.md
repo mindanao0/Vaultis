@@ -111,6 +111,16 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 
 **FX rate:** one source only — `utils/fx.py` `get_usdthb()`. It fetches live, sanity-checks the 20–50 band, caches for an hour, and reports `is_live=False` when it falls back to the config value. Never read `default_fx_rate` directly.
 
+**Target portfolio weights:** one source only — `portfolio/targets.py` `get_target_weights()`, driven by `config.json` (`portfolio.risk_profile` + optional `portfolio.target_weights`). The DCA plan, the rebalance plan, and the dashboard sliders all read from it. (There used to be two disagreeing sets, so the DCA plan and the rebalance plan pulled the portfolio in different directions.)
+
+**DCA allocation policy:** target weight is the base; the monthly score only *tilts* it (0.6×–1.4×, `financial_model.TILT_MIN/TILT_MAX`). Every ETF with data is bought every month — a weak signal reduces its share but never drops it. Do not re-introduce score-only allocation: that silently turns a DCA plan into market timing.
+
+## Backend Auth
+
+`backend/security.py`. Read-only routes (`/api/etf/*`, `/ws/prices`, `/health`) are open. Everything that mutates state, touches personal data, or costs money (LLM, slip OCR) requires `X-API-Key` matching `VAULTIS_API_KEY`.
+
+If `VAULTIS_API_KEY` is unset, protected routes accept **localhost only** — so a public deploy that forgets the key fails closed instead of exposing the ledger. CORS is restricted to `VAULTIS_ALLOWED_ORIGINS` (default: local Streamlit).
+
 ## Environment Variables
 
 Required for full functionality:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -118,7 +118,7 @@ def save_snapshot(db: Session, payload: SnapshotRequest) -> NetWorthResponse:
         net_worth_thb=round(net_worth, 2),
         assets_json=json.dumps([a.model_dump() for a in payload.assets], ensure_ascii=False),
         liabilities_json=json.dumps([l.model_dump() for l in payload.liabilities], ensure_ascii=False),
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     db.add(row)
     db.commit()

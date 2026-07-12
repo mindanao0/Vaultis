@@ -10,17 +10,16 @@ from sqlalchemy.orm import Session
 from ..models import InvestmentGoal
 from ..schemas import GoalCreate
 
+from portfolio.targets import RISK_PROFILES
+
 EXPECTED_RETURNS: dict[str, float] = {
     "conservative": 0.07,
     "moderate": 0.09,
     "aggressive": 0.12,
 }
 
-ALLOCATION_MAP: dict[str, dict[str, float]] = {
-    "conservative": {"VOO": 0.30, "SCHD": 0.30, "QQQM": 0.10, "XLV": 0.20, "GLDM": 0.10},
-    "moderate":     {"VOO": 0.35, "SCHD": 0.25, "QQQM": 0.20, "XLV": 0.10, "GLDM": 0.10},
-    "aggressive":   {"VOO": 0.25, "SCHD": 0.10, "QQQM": 0.45, "XLV": 0.10, "GLDM": 0.10},
-}
+# ใช้ชุดเดียวกับ DCA/rebalance (portfolio/targets.py)
+ALLOCATION_MAP = RISK_PROFILES
 
 
 def calculate_pmt(target: float, current: float, rate: float, months: int) -> float:

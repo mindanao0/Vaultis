@@ -1,83 +1,62 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from analysis.financial_model import dcf_valuation, run_full_analysis
-from analysis.macro import get_macro_data
-from data.fetcher import fetch_adjusted_close_data
-from portfolio.backtest import run_portfolio_backtest
-from portfolio.dca import simulate_monthly_dca
-from utils.config import get_tickers
+from data.fetcher import PriceDataUnavailableError
 
 from ..schemas import BacktestRequest, DcaSimRequest
+from ..services import market_analysis_service as service
 
 router = APIRouter(prefix="/api", tags=["Analysis"])
+
+
+def _json(data) -> JSONResponse:
+    return JSONResponse(content={"data": data}, media_type="application/json; charset=utf-8")
 
 
 @router.post("/backtest")
 def run_backtest(payload: BacktestRequest):
     try:
-        prices = fetch_adjusted_close_data(get_tickers(), years=10)
-        result = run_portfolio_backtest(
-            prices=prices,
-            weights=payload.weights,
-            initial_capital=payload.initial_capital,
-        )
-        return JSONResponse(
-            content={"data": result.reset_index().to_dict(orient="records")},
-            media_type="application/json; charset=utf-8",
-        )
-    except Exception as exc:
+        return _json(service.run_backtest(payload.weights, payload.initial_capital))
+    except PriceDataUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/dca/simulate")
 def run_dca_simulation(payload: DcaSimRequest):
     try:
-        prices = fetch_adjusted_close_data(get_tickers(), years=10)
-        result = simulate_monthly_dca(
-            prices=prices,
-            weights=payload.weights,
-            monthly_investment=payload.monthly_investment,
-        )
-        return JSONResponse(
-            content={"data": result.reset_index().to_dict(orient="records")},
-            media_type="application/json; charset=utf-8",
-        )
-    except Exception as exc:
+        return _json(service.simulate_dca(payload.weights, payload.monthly_investment))
+    except PriceDataUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/macro")
 def get_macro():
-    try:
-        return JSONResponse(
-            content={"data": get_macro_data()},
-            media_type="application/json; charset=utf-8",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    data = service.macro_snapshot()
+    if not data:
+        raise HTTPException(status_code=503, detail="ดึงข้อมูล macro ไม่สำเร็จ (ตรวจสอบ FRED_API_KEY)")
+    return _json(data)
 
 
 @router.get("/analysis/dcf/{ticker}")
 def get_dcf_for_ticker(ticker: str):
     try:
-        symbol = str(ticker).strip().upper()
-        if not symbol:
-            raise ValueError("ticker is required")
-        return JSONResponse(
-            content={"data": dcf_valuation(symbol)},
-            media_type="application/json; charset=utf-8",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _json(service.dcf_for_ticker(ticker))
+    except ValueError as exc:
+        # เช่น GLDM: สินทรัพย์ที่ไม่มีกำไร ทำ DCF ไม่ได้ — บอกตรง ๆ ไม่เดาตัวเลข
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PriceDataUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/analysis/full")
 def get_full_financial_analysis(budget_thb: float = Query(5000, ge=1)):
     try:
-        return JSONResponse(
-            content={"data": run_full_analysis(budget_thb=budget_thb)},
-            media_type="application/json; charset=utf-8",
-        )
+        return _json(service.full_analysis(budget_thb))
+    except PriceDataUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

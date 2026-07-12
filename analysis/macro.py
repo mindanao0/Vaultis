@@ -3,18 +3,19 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+import yfinance as yf
 from dotenv import load_dotenv
 from fredapi import Fred
-import pandas as pd
-import streamlit as st
 
 from utils.cache import cache_data_1h
-import yfinance as yf
 
+logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
@@ -144,7 +145,9 @@ def _fetch_fred_series(fred: Fred, series_id: str) -> pd.Series:
 
 
 def _fetch_yf_series(symbol: str, period: str = "6mo", interval: str = "1d") -> pd.Series:
-    """ดึงราคาปิดล่าสุดจาก yfinance."""
+    """ดึงราคาปิดล่าสุดจาก yfinance; ล้มเหลวคืน series ว่าง (ผู้เรียกตรวจเอง)."""
+    from data.fetcher import normalize_close_series
+
     try:
         df = yf.download(
             tickers=symbol,
@@ -153,24 +156,14 @@ def _fetch_yf_series(symbol: str, period: str = "6mo", interval: str = "1d") -> 
             progress=False,
             auto_adjust=False,
         )
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return pd.Series(dtype=float)
-    if df.empty or "Close" not in df.columns:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+    except Exception as exc:
+        logger.warning("ดึง %s จาก yfinance ไม่สำเร็จ: %s", symbol, exc)
         return pd.Series(dtype=float)
 
-    close_data = df["Close"]
-    # yfinance may return a DataFrame (multi-ticker shaped columns) even for one symbol.
-    if isinstance(close_data, pd.DataFrame):
-        if close_data.empty:
-            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-            return pd.Series(dtype=float)
-        close_series = close_data.iloc[:, 0]
-    else:
-        close_series = close_data
-
-    return close_series.dropna().sort_index()
+    series = normalize_close_series(df)
+    if series.empty:
+        logger.warning("ไม่พบข้อมูล Close ของ %s", symbol)
+    return series.sort_index()
 
 
 @cache_data_1h
@@ -233,8 +226,8 @@ def get_macro_data() -> dict[str, Any]:
             },
         }
         return result
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
+    except Exception as exc:
+        logger.warning("get_macro_data ล้มเหลว: %s", exc)
         return {}
 
 

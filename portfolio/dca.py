@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 import pandas as pd
 import plotly.graph_objects as go
-import streamlit as st
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_weights(weights: dict[str, float]) -> pd.Series:
@@ -27,7 +29,9 @@ def _normalize_weights(weights: dict[str, float]) -> pd.Series:
 
 
 def _download_adj_close(tickers: list[str], start_date: str) -> pd.DataFrame:
-    """ดึงราคา Adj Close สำหรับ tickers ตั้งแต่ start_date ถึงปัจจุบัน."""
+    """ดึงราคา Adj Close สำหรับ tickers ตั้งแต่ start_date; ล้มเหลว → raise (AUDIT.md C1)."""
+    from data.fetcher import PriceDataUnavailableError
+
     try:
         downloaded = yf.download(
             tickers=tickers,
@@ -36,25 +40,22 @@ def _download_adj_close(tickers: list[str], start_date: str) -> pd.DataFrame:
             auto_adjust=False,
             group_by="ticker",
         )
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return pd.DataFrame()
+    except Exception as exc:
+        raise PriceDataUnavailableError(f"ดึงราคา {tickers} ไม่สำเร็จ: {exc}") from exc
+
     if downloaded.empty:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return pd.DataFrame()
+        raise PriceDataUnavailableError(f"ดึงราคา {tickers} ได้ผลว่างเปล่า")
 
     if isinstance(downloaded.columns, pd.MultiIndex):
         prices = downloaded.xs("Adj Close", axis=1, level=1)
     else:
         if "Adj Close" not in downloaded.columns:
-            st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-            return pd.DataFrame()
+            raise PriceDataUnavailableError("ไม่พบคอลัมน์ Adj Close ในข้อมูลที่ดึงมา")
         prices = downloaded[["Adj Close"]].rename(columns={"Adj Close": tickers[0]})
 
     cleaned = prices.sort_index().ffill().dropna(how="all")
     if cleaned.empty:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return pd.DataFrame()
+        raise PriceDataUnavailableError("ข้อมูลราคาหลังทำความสะอาดว่างเปล่า")
     return cleaned
 
 
@@ -80,15 +81,6 @@ def simulate_dca(monthly_amount: float, weights: dict, start_date: str) -> dict[
         tickers = list(normalized_weights.index)
 
         prices = _download_adj_close(tickers=tickers, start_date=start_date)
-        if prices.empty:
-            return {
-                "total_invested": 0.0,
-                "current_value": 0.0,
-                "profit_loss": 0.0,
-                "profit_loss_pct": 0.0,
-                "history": pd.DataFrame(),
-                "figure": go.Figure(),
-            }
         prices = prices[tickers].dropna(how="all")
 
         # ใช้ราคาวันเทรดแรกของแต่ละเดือน เทียบเท่าการซื้อวันที่ 1

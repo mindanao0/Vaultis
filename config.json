@@ -12,6 +12,10 @@
       "GLDM"
     ]
   },
+  "portfolio": {
+    "risk_profile": "moderate",
+    "target_weights": {}
+  },
   "notifications": {
     "discord_webhook_url": "",
     "weekly_summary": true,

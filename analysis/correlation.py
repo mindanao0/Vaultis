@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
-import streamlit as st
+import yfinance as yf
 
 from utils.cache import cache_data_1h
 from utils.config import get_tickers
-import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 def _extract_adj_close(raw_data: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
     """แปลงข้อมูลดิบจาก yfinance ให้เหลือราคาปิดแบบปรับแล้วของแต่ละ ETF."""
@@ -30,25 +33,24 @@ def _extract_adj_close(raw_data: pd.DataFrame, tickers: list[str]) -> pd.DataFra
 
 
 def calculate_correlation(period: str = "10y") -> pd.DataFrame:
-    """ดึงข้อมูล ETF 5 ตัวและคำนวณ Correlation Matrix จากผลตอบแทนรายวัน."""
-    try:
-        tickers = get_tickers()
-        raw_data = yf.download(
-            tickers=tickers,
-            period=period,
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            group_by="ticker",
-        )
-        prices = _extract_adj_close(raw_data, tickers)
-        daily_returns = prices.pct_change().dropna(how="all")
-        if daily_returns.empty:
-            raise ValueError("ผลตอบแทนรายวันว่าง ไม่สามารถคำนวณ Correlation ได้")
-        return daily_returns.corr()
-    except Exception:
-        st.warning("ไม่สามารถดึงข้อมูลได้ กรุณารอสักครู่")
-        return pd.DataFrame()
+    """ดึงข้อมูล ETF และคำนวณ Correlation Matrix จากผลตอบแทนรายวัน.
+
+    ล้มเหลว → raise (ห้ามคืน DataFrame ว่างเงียบ ๆ — AUDIT.md C1)
+    """
+    tickers = get_tickers()
+    raw_data = yf.download(
+        tickers=tickers,
+        period=period,
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+        group_by="ticker",
+    )
+    prices = _extract_adj_close(raw_data, tickers)
+    daily_returns = prices.pct_change().dropna(how="all")
+    if daily_returns.empty:
+        raise ValueError("ผลตอบแทนรายวันว่าง ไม่สามารถคำนวณ Correlation ได้")
+    return daily_returns.corr()
 
 
 def get_correlation_insight(corr_matrix: pd.DataFrame) -> str:

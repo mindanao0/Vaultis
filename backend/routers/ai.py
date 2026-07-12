@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from collections import OrderedDict
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,7 +20,16 @@ from ..schemas import AiAdviceRequest
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 AI_HISTORY_KEY = "ai_history"
 
-_cache: dict[str, Any] = {}
+# cache คำแนะนำรายชั่วโมง — จำกัดขนาดไม่ให้โตไม่จำกัดในโปรเซสที่รันยาว
+_CACHE_MAX_ENTRIES = 24
+_cache: OrderedDict[str, Any] = OrderedDict()
+
+
+def _cache_put(key: str, value: Any) -> None:
+    _cache[key] = value
+    _cache.move_to_end(key)
+    while len(_cache) > _CACHE_MAX_ENTRIES:
+        _cache.popitem(last=False)
 
 
 def _get_history(db: Session) -> list[dict]:
@@ -46,23 +56,22 @@ def _save_history(db: Session, history: list[dict]) -> None:
 @router.post("/advice")
 def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
     try:
-        cache_key = f"{datetime.now().strftime('%Y%m%d%H')}_{payload.budget_thb}"
+        cache_key = f"{datetime.now(UTC).strftime('%Y%m%d%H')}_{payload.budget_thb}"
         if cache_key in _cache:
-            print("Backend cache hit")
+            _cache.move_to_end(cache_key)
             return JSONResponse(
                 content={"data": _cache[cache_key]},
                 media_type="application/json; charset=utf-8",
             )
 
-        print("Backend calling Groq...")
         result = get_monthly_advice(budget_thb=payload.budget_thb)
-        _cache[cache_key] = result
+        _cache_put(cache_key, result)
 
         history = _get_history(db)
         history.insert(
             0,
             {
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "budget_thb": payload.budget_thb,
                 "advice_text": result.get("advice_text", ""),
             },

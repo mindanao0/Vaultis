@@ -31,13 +31,11 @@ from technical.indicators import calculate_rsi
 from utils.config import load_config
 
 
-DEFAULT_WEIGHTS: Dict[str, float] = {
-    "VOO": 0.35,
-    "SCHD": 0.20,
-    "QQQM": 0.20,
-    "XLV": 0.15,
-    "GLDM": 0.10,
-}
+def get_default_weights() -> Dict[str, float]:
+    """สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — เดิม hardcode คนละชุดกับ rebalance."""
+    from portfolio.targets import get_target_weights
+
+    return get_target_weights()
 
 def generate_weekly_report_and_notify(webhook_url: str) -> None:
     """สร้าง Weekly Summary (RSI + Return) และส่งแจ้งเตือนไป Discord."""

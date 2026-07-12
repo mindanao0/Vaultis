@@ -4,17 +4,16 @@ from typing import Any
 
 from alerts.price_alert import get_current_prices
 from analysis.llm import chat_text
+from portfolio.targets import RISK_PROFILES
 from utils import fx
 
 DIME_FEE_RATE = 0.0015  # 0.15% ต่อ transaction
 
 DRIFT_THRESHOLD = 0.05  # 5%
 
-TARGET_WEIGHTS: dict[str, dict[str, float]] = {
-    "conservative": {"VOO": 0.30, "SCHD": 0.30, "QQQM": 0.10, "XLV": 0.20, "GLDM": 0.10},
-    "moderate":     {"VOO": 0.35, "SCHD": 0.25, "QQQM": 0.20, "XLV": 0.10, "GLDM": 0.10},
-    "aggressive":   {"VOO": 0.25, "SCHD": 0.10, "QQQM": 0.45, "XLV": 0.10, "GLDM": 0.10},
-}
+# สัดส่วนเป้าหมายมาจากแหล่งเดียว (portfolio/targets.py) — เดิมมี 2 ชุดที่ไม่ตรงกัน
+# ทำให้แผน DCA กับแผน rebalance ดึงพอร์ตไปคนละทาง
+TARGET_WEIGHTS = RISK_PROFILES
 
 _RISK_PROFILE_TH = {
     "conservative": "อนุรักษ์นิยม",
