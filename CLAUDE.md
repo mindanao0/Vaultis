@@ -80,7 +80,15 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 
 **AI explains, code computes.** All numbers — scores, DCA allocation, price-alert levels — are computed in Python. The LLM receives finished figures and only writes the explanation. Never parse numbers back out of model output.
 
-**LLM calls go through `analysis/llm.py`.** `chat_text()` prefers Claude Haiku 4.5 (`ANTHROPIC_API_KEY`) and falls back to Groq llama-3.3-70b (`GROQ_API_KEY`). It handles truncation (retries at 2× budget). Do not instantiate `Groq()` or `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
+**LLM calls go through `analysis/llm.py`.** `chat_text()` prefers Claude Haiku 4.5 (`ANTHROPIC_API_KEY`) and falls back to Groq llama-3.3-70b (`GROQ_API_KEY`). It handles truncation (retries at 2× budget) and logs token usage + estimated cost. Do not instantiate `Groq()` or `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
+
+**LLM is OFF unless the user explicitly asks for it.** `chat_text(..., user_initiated=True)` is required; without it the call raises `LLMDisabledError`. This is a cost guard, not an error path:
+
+- **Automatic jobs never pay.** Cron, GitHub Actions, the 07:00 screener, and the monthly report all run with `user_initiated=False` and degrade to the model's own numbers (scores, allocation, signals) — which is the information that actually drives decisions. They must catch `LLMDisabledError` and fall back, never crash.
+- **Only a click pays.** The dashboard's "ให้ AI อธิบายด้วย" button, `POST /api/ai/advice`, and API routes called with `?include_ai=true`.
+- `VAULTIS_LLM_AUTO=1` lifts the gate for automatic jobs (opt-in; the user pays every run).
+
+When adding a new LLM call, thread `user_initiated` from the entry point. Never default it to `True`.
 
 **Indicators go through `analysis/ta_compat.py`.** `pandas-ta` was removed (dead upstream, breaks on numpy≥2). Warm-up periods stay `NaN` — never fill them with 0 or 100.
 

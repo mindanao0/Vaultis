@@ -64,7 +64,8 @@ def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
                 media_type="application/json; charset=utf-8",
             )
 
-        result = get_monthly_advice(budget_thb=payload.budget_thb)
+        # endpoint นี้คือการ "ขอ AI โดยตรง" (auth ด้วย X-API-Key) → ถือเป็นการกดเอง
+        result = get_monthly_advice(budget_thb=payload.budget_thb, user_initiated=True)
         _cache_put(cache_key, result)
 
         history = _get_history(db)

@@ -18,7 +18,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from alerts.notifier import send_discord_webhook
-from analysis.llm import chat_text
+from analysis.llm import LLMDisabledError, chat_text
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
 from utils.config import get_tickers, load_config
@@ -140,8 +140,12 @@ def get_ai_advice(
     portfolio: dict[str, Any] | None = None,
     allocation: dict[str, dict[str, Any]] | None = None,
     unallocated_thb: float | None = None,
+    user_initiated: bool = False,
 ) -> str:
-    """ให้ LLM อธิบายคะแนน/แผนจัดสรรที่คำนวณแล้ว; คืนข้อความคำอธิบาย."""
+    """ให้ LLM อธิบายคะแนน/แผนจัดสรรที่คำนวณแล้ว; คืนข้อความคำอธิบาย.
+
+    ``user_initiated=True`` เฉพาะเมื่อผู้ใช้กดปุ่มเอง — ไม่งั้นจะ raise LLMDisabledError
+    """
     load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
     user_content = _build_user_message(etf_scores, macro, portfolio, allocation, unallocated_thb)
     text = chat_text(
@@ -149,6 +153,7 @@ def get_ai_advice(
         user_content,
         max_tokens=1500,
         temperature=0.2,
+        user_initiated=user_initiated,
     )
     if not text:
         raise RuntimeError("LLM ไม่ได้ส่งข้อความวิเคราะห์กลับมา")
@@ -285,10 +290,18 @@ def _allocation_summary_lines(
     return lines
 
 
-def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> dict[str, Any]:
-    """คำนวณคะแนน + แผนจัดสรรในโค้ด แล้วให้ LLM อธิบาย; ส่งสรุปเข้า Discord.
+def get_monthly_advice(
+    budget_thb: float = 5000,
+    send_discord: bool = True,
+    user_initiated: bool = False,
+) -> dict[str, Any]:
+    """คำนวณคะแนน + แผนจัดสรรในโค้ด (ฟรี) แล้วให้ LLM อธิบาย (มีค่าใช้จ่าย).
 
     ตัวเลขใน Discord มาจากโมเดลโดยตรง (ไม่ตัดจากข้อความ AI) — AUDIT.md C3
+
+    ถ้า ``user_initiated=False`` และไม่ได้ตั้ง ``VAULTIS_LLM_AUTO=1``:
+    **ยังคำนวณและส่งตัวเลขทุกอย่างตามปกติ** เพียงแต่ ``advice_text`` จะเป็นข้อความ
+    แจ้งว่า AI ปิดอยู่ — ไม่มีค่าใช้จ่ายเกิดขึ้น
     """
     from analysis.financial_model import build_etf_scores, calculate_allocation
     from analysis.macro import get_macro_snapshot
@@ -325,17 +338,25 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
             if missing:
                 portfolio["price_unavailable"] = missing
 
-        advice_text = get_ai_advice(
-            etf_scores,
-            macro,
-            portfolio,
-            allocation=allocation,
-            unallocated_thb=unallocated_thb,
-        )
+        # ตัวเลขทั้งหมดข้างบนคำนวณเสร็จแล้วโดยไม่มีค่าใช้จ่าย
+        # ส่วนคำอธิบายจาก AI เป็นส่วนที่เสียเงิน → เรียกเฉพาะเมื่อผู้ใช้กดปุ่มเอง
+        ai_used = False
+        try:
+            advice_text = get_ai_advice(
+                etf_scores,
+                macro,
+                portfolio,
+                allocation=allocation,
+                unallocated_thb=unallocated_thb,
+                user_initiated=user_initiated,
+            )
+            ai_used = True
+        except LLMDisabledError as exc:
+            advice_text = str(exc)
 
-        print("\n========== AI Advisor (Monthly DCA) ==========")
+        print("\n========== Vaultis Advisor (Monthly DCA) ==========")
         print(advice_text)
-        print("=============================================\n")
+        print("==================================================\n")
 
         webhook_url = str(load_config()["notifications"]["discord_webhook_url"]).strip()
         discord_result: dict[str, Any] = {"success": False, "skipped": True}
@@ -360,7 +381,8 @@ def get_monthly_advice(budget_thb: float = 5000, send_discord: bool = True) -> d
             "no_data_tickers": no_data_tickers,
             "macro": macro,
             "advice_text": advice_text,
+            "ai_used": ai_used,  # False = ไม่มีค่าใช้จ่าย LLM ในรอบนี้
             "discord_result": discord_result,
         }
     except Exception as exc:
-        raise RuntimeError(f"เกิดข้อผิดพลาดในการวิเคราะห์ AI Advisor: {exc}") from exc
+        raise RuntimeError(f"เกิดข้อผิดพลาดในการวิเคราะห์ Advisor: {exc}") from exc

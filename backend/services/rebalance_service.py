@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from alerts.price_alert import get_current_prices
-from analysis.llm import chat_text
+from analysis.llm import LLMDisabledError, chat_text
 from portfolio.targets import RISK_PROFILES
 from utils import fx
 
@@ -111,6 +111,7 @@ def _generate_ai_comment(
     target: dict[str, float],
     prices: dict[str, float],
     holdings: list[dict[str, Any]],
+    user_initiated: bool = False,
 ) -> str:
     values: dict[str, float] = {}
     for h in holdings:
@@ -153,7 +154,11 @@ def _generate_ai_comment(
         "อธิบายเป็นภาษาไทย กระชับ ชัดเจน ไม่เกิน 3 ประโยค"
     )
     try:
-        return chat_text(system_prompt, user_msg, max_tokens=600, temperature=0.3)
+        return chat_text(
+            system_prompt, user_msg, max_tokens=600, temperature=0.3, user_initiated=user_initiated
+        )
+    except LLMDisabledError:
+        return ""  # แผน rebalance (ตัวเลข) ยังครบ — แค่ไม่มีคำอธิบายจาก AI
     except Exception as exc:
         return f"ไม่สามารถสร้างคำแนะนำได้: {exc}"
 
@@ -162,6 +167,7 @@ def compute_rebalance(
     holdings: list[dict[str, Any]],
     risk_profile: str,
     available_budget_thb: float,
+    user_initiated: bool = False,
 ) -> dict[str, Any]:
     target = TARGET_WEIGHTS[risk_profile]
     all_symbols = list({str(h["symbol"]).upper() for h in holdings} | set(target.keys()))
@@ -183,7 +189,9 @@ def compute_rebalance(
 
     actions = _build_actions(holdings, target, prices, budget_usd, fx_rate)
     total_fee_thb = round(sum(a["fee_thb"] for a in actions), 2)
-    ai_comment = _generate_ai_comment(risk_profile, max_drift, actions, target, prices, holdings)
+    ai_comment = _generate_ai_comment(
+        risk_profile, max_drift, actions, target, prices, holdings, user_initiated=user_initiated
+    )
 
     return {
         "needs_rebalance": True,

@@ -82,20 +82,26 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
 
 
 def generate_monthly_ai_advisor_and_notify() -> None:
-    """ส่ง AI Advisor เดือนละครั้งตอนต้นเดือน (เรียก get_monthly_advice ครั้งเดียว)."""
+    """ส่งแผน DCA รายเดือนตอนต้นเดือน.
+
+    งานอัตโนมัติ → ``user_initiated=False`` → **ไม่เรียก AI** (ไม่มีค่าใช้จ่าย)
+    แต่ยังส่งคะแนนและแผนจัดสรรจากโมเดลเข้า Discord ตามปกติ
+    """
     try:
         config = load_config()
         budget_thb = float(config["dca"]["monthly_budget_thb"])
         result = get_monthly_advice(budget_thb=budget_thb)
+        if not result.get("ai_used"):
+            print("(ไม่ได้เรียก AI — ส่งเฉพาะตัวเลขจากโมเดล ไม่มีค่าใช้จ่าย)")
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
-            print("ส่ง AI Advisor รายเดือนไป Discord สำเร็จ")
+            print("ส่งแผน DCA รายเดือนไป Discord สำเร็จ")
         elif discord_result.get("skipped"):
-            print("ข้ามการส่ง AI Advisor: ไม่ได้ตั้งค่า webhook")
+            print("ข้ามการส่ง: ไม่ได้ตั้งค่า webhook")
         else:
-            print(f"ส่ง AI Advisor ไม่สำเร็จ: {discord_result.get('error')}")
+            print(f"ส่งไม่สำเร็จ: {discord_result.get('error')}")
     except Exception as exc:
-        print(f"เกิดข้อผิดพลาดใน AI Advisor รายเดือน: {exc}")
+        print(f"เกิดข้อผิดพลาดใน Advisor รายเดือน: {exc}")
 
 
 def generate_daily_technical_alerts(webhook_url: str) -> None:
@@ -149,33 +155,30 @@ def run_monthly_ai_advisor_if_first_day() -> None:
         print("Not day 1 (Asia/Bangkok) - skipping AI Advisor")
 
 
-def _extract_ai_allocation_summary(advice_text: str) -> str:
-    """ดึงเฉพาะส่วนสรุปการแบ่งเงินจาก AI เพื่อใช้ในข้อความเตือน DCA."""
-    cleaned = (advice_text or "").strip()
-    if not cleaned:
-        return "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
+def _format_allocation_plan(advice_result: dict) -> str:
+    """สร้างข้อความแผนจัดสรรจาก **ตัวเลขของโมเดล** (ไม่ใช่จากข้อความ AI).
 
-    start_candidates = (
-        "💰 แนะนำแบ่งเงิน",
-        "💰 แผน DCA",
-        "**💰 แผน DCA",
-    )
-    end_candidates = (
-        "⚠️ ความเสี่ยงเดือนนี้",
-        "**⚠️ ความเสี่ยงที่ควรระวัง",
-        "⚠️ ความเสี่ยงที่ควรระวัง",
-    )
-    for start_key in start_candidates:
-        if start_key not in cleaned:
-            continue
-        start_idx = cleaned.index(start_key)
-        section = cleaned[start_idx:]
-        for end_key in end_candidates:
-            if end_key in section:
-                section = section.split(end_key, maxsplit=1)[0].strip()
-                break
-        return section[:900]
-    return cleaned[:900]
+    เดิมใช้ regex แกะตัวเลขออกจากคำตอบของ AI ซึ่งเปราะและเสียเงินโดยไม่จำเป็น
+    """
+    allocation = advice_result.get("allocation") or {}
+    if not allocation:
+        return "- ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร (ดึงข้อมูลไม่ได้)"
+
+    lines: list[str] = []
+    for ticker, item in allocation.items():
+        tilt = item.get("tilt")
+        tilt_txt = f" [{tilt:.2f}× ของเป้า {item.get('target_percent', 0)}%]" if tilt else ""
+        lines.append(f"- {ticker}: {item.get('amount_thb', 0):,.0f} บาท{tilt_txt}")
+
+    unallocated = float(advice_result.get("unallocated_thb") or 0)
+    if unallocated > 0:
+        lines.append(f"- ยังไม่จัดสรร: {unallocated:,.0f} บาท")
+
+    no_data = advice_result.get("no_data_tickers") or []
+    if no_data:
+        lines.append(f"⚠️ ดึงข้อมูลไม่ได้: {', '.join(map(str, no_data))}")
+
+    return "\n".join(lines)[:900]
 
 
 def _effective_dca_day(dca_day: int, year: int, month: int) -> int:
@@ -198,19 +201,21 @@ def check_and_send_dca_reminder(webhook_url: str) -> None:
             return
 
         fx_rate = float(get_today_fx_rate_thb())
-        ai_advice = "- ยังไม่มีคำแนะนำ AI สำหรับเดือนนี้"
+
+        # แผนจัดสรรมาจากโมเดลโดยตรง — ไม่เรียก AI (ไม่มีค่าใช้จ่าย) และไม่แกะตัวเลข
+        # จากข้อความ AI อีกต่อไป (รอยเดิมของ AUDIT.md C3)
         try:
             advice_result = get_monthly_advice(budget_thb=dca_budget_thb, send_discord=False)
-            ai_advice = _extract_ai_allocation_summary(advice_result.get("advice_text", ""))
-        except Exception as advice_exc:
-            ai_advice = f"- ดึงคำแนะนำ AI ไม่สำเร็จ ({advice_exc})"
+            plan = _format_allocation_plan(advice_result)
+        except Exception as exc:
+            plan = f"- คำนวณแผนจัดสรรไม่สำเร็จ ({exc})"
 
         result = send_dca_reminder(
             webhook_url=webhook_url,
             dca_date_text=tomorrow.strftime("%d/%m/%Y"),
             dca_budget_thb=dca_budget_thb,
             fx_rate_thb=fx_rate,
-            ai_advice=ai_advice,
+            ai_advice=plan,
         )
         if result.get("success"):
             print(f"ส่ง DCA reminder สำเร็จ สำหรับวันที่ {tomorrow.strftime('%d/%m/%Y')}")

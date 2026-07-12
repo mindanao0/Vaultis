@@ -15,7 +15,7 @@ _STRATEGY_TH = {
 }
 
 
-def generate_summary(result: dict, symbol: str) -> str:
+def generate_summary(result: dict, symbol: str, user_initiated: bool = False) -> str:
     strategy_used = str(result.get("strategy_used", "unknown"))
     strategy_th = _STRATEGY_TH.get(strategy_used, strategy_used)
 
@@ -38,4 +38,6 @@ def generate_summary(result: dict, symbol: str) -> str:
 
 เตือนด้วยว่าผลย้อนหลังไม่รับประกันผลในอนาคต และปิดท้ายด้วย disclaimer เสมอ"""
 
-    return chat_text(SYSTEM_PROMPT, user_msg, max_tokens=1000, temperature=0.2)
+    return chat_text(
+        SYSTEM_PROMPT, user_msg, max_tokens=1000, temperature=0.2, user_initiated=user_initiated
+    )

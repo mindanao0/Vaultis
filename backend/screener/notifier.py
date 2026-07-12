@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from analysis.llm import chat_text
+from analysis.llm import LLMDisabledError, chat_text
 from backend.screener.models import ScreenerResult
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -22,10 +22,29 @@ End with: "ข้อมูลนี้เพื่อการศึกษาเ
 """.strip()
 
 
+DISCLAIMER = "ข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
+
+
 class ScreenerNotifier:
-    async def build_ai_summary(self, results: list[ScreenerResult], preset_name: str) -> str:
+    def _plain_summary(self, results: list[ScreenerResult], preset_name: str) -> str:
+        """สรุปแบบไม่ใช้ AI — ข้อมูลเดียวกัน ไม่มีค่าใช้จ่าย."""
+        lines = [f"พบ {len(results)} สัญญาณจาก preset: {preset_name}", ""]
+        for row in sorted(results, key=lambda r: r.signal_strength, reverse=True):
+            rules = ", ".join(row.matched_rules) or "-"
+            lines.append(f"• {row.symbol} ${row.price:,.2f} | ความแรง {row.signal_strength:.1f}/10 | {rules}")
+        lines.append("")
+        lines.append(DISCLAIMER)
+        return "\n".join(lines)
+
+    async def build_ai_summary(
+        self,
+        results: list[ScreenerResult],
+        preset_name: str,
+        user_initiated: bool = False,
+    ) -> str:
+        """คำอธิบายจาก AI (มีค่าใช้จ่าย) — งานอัตโนมัติจะได้สรุปแบบไม่ใช้ AI แทน."""
         if not results:
-            return "ไม่พบสัญญาณที่เข้าเงื่อนไขในวันนี้\n\nข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
+            return f"ไม่พบสัญญาณที่เข้าเงื่อนไขในวันนี้\n\n{DISCLAIMER}"
 
         lines = [f"วันนี้พบ {len(results)} สัญญาณจาก preset: {preset_name}", ""]
         for row in results:
@@ -38,16 +57,25 @@ class ScreenerNotifier:
         user_message = "\n".join(lines)
 
         def _call_llm() -> str:
-            return chat_text(SYSTEM_PROMPT, user_message, max_tokens=1000, temperature=0.2)
+            return chat_text(
+                SYSTEM_PROMPT,
+                user_message,
+                max_tokens=1000,
+                temperature=0.2,
+                user_initiated=user_initiated,
+            )
 
         try:
             text = await asyncio.to_thread(_call_llm)
             if not text:
                 raise RuntimeError("empty AI summary")
             return text
+        except LLMDisabledError:
+            # ปกติของงานอัตโนมัติ — ส่งสรุปจากตัวเลขแทน ไม่ใช่ error
+            return self._plain_summary(results, preset_name)
         except Exception as e:
             print(f"[screener_notifier] build_ai_summary error: {e}")
-            return "ไม่สามารถสร้าง AI summary ได้ในขณะนี้\n\nข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน"
+            return self._plain_summary(results, preset_name)
 
     async def send_telegram(self, results: list[ScreenerResult], ai_summary: str) -> bool:
         """ส่งสัญญาณเข้า Telegram; ถ้าไม่ได้ตั้งค่า/ล้มเหลว จะ fallback ไป Discord.

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
+
+from analysis.llm import AI_DISABLED_MESSAGE
 
 from ..models.etf_models import ETFAnalysis, ETFCompareResponse, ETFInfo, TechnicalIndicators
 from ..services.analysis_service import AnalysisService
@@ -114,7 +116,10 @@ async def _build_core_analysis(sym: str) -> ETFAnalysis:
 
 
 @router.get("/etf/compare", response_model=ETFCompareResponse)
-async def compare_etfs(symbols: str | None = None) -> ETFCompareResponse:
+async def compare_etfs(
+    symbols: str | None = None,
+    include_ai: bool = Query(False, description="เรียก AI อธิบายผล (มีค่าใช้จ่าย)"),
+) -> ETFCompareResponse:
     if symbols is None:
         raise HTTPException(
             status_code=400,
@@ -126,11 +131,16 @@ async def compare_etfs(symbols: str | None = None) -> ETFCompareResponse:
         for sym in parsed:
             analyses.append(await _build_core_analysis(sym))
 
+        # ตัวเลข/สัญญาณข้างบนฟรี — คำอธิบาย AI ต้องขอมาโดยตรง (?include_ai=true)
+        if not include_ai:
+            return ETFCompareResponse(analyses=analyses, ai_summary=AI_DISABLED_MESSAGE)
+
         additional = analyses[1:] if len(analyses) > 1 else None
         combined = await _analysis_service.get_ai_summary(
             analyses[0],
             compare_mode=True,
             additional_analyses=additional,
+            user_initiated=True,
         )
         return ETFCompareResponse(analyses=analyses, ai_summary=combined)
     except HTTPException:
@@ -143,11 +153,20 @@ async def compare_etfs(symbols: str | None = None) -> ETFCompareResponse:
 
 
 @router.get("/etf/{symbol}", response_model=ETFAnalysis)
-async def get_etf_analysis(symbol: str) -> ETFAnalysis:
+async def get_etf_analysis(
+    symbol: str,
+    include_ai: bool = Query(False, description="เรียก AI อธิบายผล (มีค่าใช้จ่าย)"),
+) -> ETFAnalysis:
     try:
         sym = _normalize_allowed_symbol(symbol)
         core = await _build_core_analysis(sym)
-        ai_summary = await _analysis_service.get_ai_summary(core, compare_mode=False)
+        # เดิม endpoint นี้เรียก AI **ทุกครั้งที่ถูกเรียก** → เสียเงินโดยไม่ตั้งใจ
+        if not include_ai:
+            return core.model_copy(update={"ai_summary": AI_DISABLED_MESSAGE})
+
+        ai_summary = await _analysis_service.get_ai_summary(
+            core, compare_mode=False, user_initiated=True
+        )
         return core.model_copy(update={"ai_summary": ai_summary})
     except HTTPException:
         raise

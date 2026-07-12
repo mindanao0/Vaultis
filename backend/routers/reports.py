@@ -1,6 +1,6 @@
 import traceback
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -12,9 +12,11 @@ router = APIRouter(prefix="/api/reports", tags=["Reports"])
 
 
 @router.post("/generate")
-async def generate_report():
+async def generate_report(
+    include_ai: bool = Query(False, description="ให้ AI เขียนบทสรุป (มีค่าใช้จ่าย)"),
+):
     try:
-        result = await report_service.generate_and_save_report()
+        result = await report_service.generate_and_save_report(user_initiated=include_ai)
         return JSONResponse(
             content={"data": result},
             media_type="application/json; charset=utf-8",

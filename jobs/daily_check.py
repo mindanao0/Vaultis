@@ -143,29 +143,37 @@ def _ensure_repo_root_on_path() -> None:
         sys.path.insert(0, root_s)
 
 
-def _build_ai_advisor_discord_embed() -> dict:
-    """สร้าง embed หนึ่งรายการพร้อม field ``🤖 AI Advisor`` (ข้อความยาวตัดที่ 1024 ตามขีดจำกัด Discord)."""
+def _build_signals_discord_embed() -> dict:
+    """สรุปสัญญาณรายวันจาก **โมเดลในระบบ** (ไม่มีค่าใช้จ่าย).
+
+    เดิม job นี้เรียก AI ทุกวันทำการ (~22 ครั้ง/เดือน) โดยผู้ใช้ไม่ได้สั่ง
+    → ตอนนี้ส่งเฉพาะตัวเลข/สัญญาณที่คำนวณในโค้ด ซึ่งเป็นข้อมูลที่ใช้ตัดสินใจจริงอยู่แล้ว
+    บทวิเคราะห์ AI ให้กดที่หน้าเว็บเอง (หรือตั้ง VAULTIS_LLM_AUTO=1)
+    """
     _ensure_repo_root_on_path()
     try:
-        from analysis.ai_advisor import get_ai_advice
         from analysis.financial_model import build_etf_scores
-        from analysis.macro import get_macro_snapshot
 
-        etf_scores = build_etf_scores(["VOO", "SCHD", "QQQM", "XLV", "GLDM"])
-        macro = get_macro_snapshot()
-        advice = get_ai_advice(etf_scores, macro)
+        scores = build_etf_scores(TICKERS)
+        lines = []
+        for row in sorted(scores, key=lambda r: r.get("total_pct") or -1, reverse=True):
+            if not row.get("data_ok", True):
+                lines.append(f"{row['ticker']:<5} ⚠️ ดึงข้อมูลไม่ได้")
+                continue
+            lines.append(
+                f"{row['ticker']:<5} คะแนน {row['total_pct']:>5.1f}%  RSI {row['rsi']:>5.1f}  "
+                f"{row['signal']} — {row.get('technical_signal_th', '')}"
+            )
+        value = "\n".join(lines) or "(ไม่มีข้อมูล)"
     except Exception as exc:
-        advice = f"(ไม่สามารถสร้างคำแนะนำ AI ได้: {exc})"
+        value = f"(คำนวณสัญญาณไม่สำเร็จ: {exc})"
 
-    max_field = 1024
-    if len(advice) > max_field:
-        advice = advice[: max_field - 3] + "..."
-    if not advice.strip():
-        advice = "(ไม่มีข้อความจาก AI)"
+    if len(value) > 1024:
+        value = value[:1021] + "..."
 
     return {
         "color": 0x5865F2,
-        "fields": [{"name": "🤖 AI Advisor", "value": advice}],
+        "fields": [{"name": "📊 สัญญาณจากโมเดล (ไม่ใช้ AI — ไม่มีค่าใช้จ่าย)", "value": value}],
     }
 
 
@@ -192,7 +200,7 @@ def run():
 
     if DISCORD_WEBHOOK_URL:
         payload = {"content": f"```\n{message}\n```"}
-        payload["embeds"] = [_build_ai_advisor_discord_embed()]
+        payload["embeds"] = [_build_signals_discord_embed()]
         try:
             r = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=30)
             print(f"Discord: {r.status_code}")

@@ -108,7 +108,20 @@ def _parse_published_at(value: Any) -> datetime | None:
 
 
 def run_sentiment_job(symbols: list[str] | None = None) -> None:
-    """ดึงข่าว วิเคราะห์เป็นชุด สรุป และบันทึกลง PostgreSQL ต่อสัญลักษณ์."""
+    """ดึงข่าว วิเคราะห์เป็นชุด สรุป และบันทึกลง PostgreSQL ต่อสัญลักษณ์.
+
+    เป็นงานอัตโนมัติที่เรียก LLM หลายครั้งต่อรอบ (ข่าวละชุด × 5 สัญลักษณ์)
+    → ปิดโดยดีฟอลต์เพื่อคุมค่าใช้จ่าย เปิดด้วย ``VAULTIS_LLM_AUTO=1``
+    """
+    from analysis.llm import auto_enabled
+
+    if not auto_enabled():
+        print(
+            "[sentiment job] ข้ามการวิเคราะห์ sentiment — LLM ปิดอยู่เพื่อคุมค่าใช้จ่าย "
+            "(ตั้ง VAULTIS_LLM_AUTO=1 ถ้าต้องการเปิด)"
+        )
+        return
+
     sym_list = list(DEFAULT_SENTIMENT_SYMBOLS) if symbols is None else list(symbols)
     if SessionLocal is None:
         print("[sentiment job] DATABASE_URL not set; aborting.")

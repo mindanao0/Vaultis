@@ -8,7 +8,7 @@ from typing import Any
 import requests
 from sqlalchemy.orm import Session
 
-from analysis.llm import chat_text
+from analysis.llm import AI_DISABLED_MESSAGE, LLMDisabledError, chat_text
 
 from ..database import SessionLocal
 from ..models.orm import MonthlyReport
@@ -119,7 +119,38 @@ async def _aggregate_data(db: Session) -> dict[str, Any]:
 
 # ── narrative ─────────────────────────────────────────────────────────────────
 
-def generate_narrative(all_data: dict[str, Any], month: str) -> str:
+def _plain_narrative(all_data: dict[str, Any], month: str) -> str:
+    """รายงานแบบไม่ใช้ AI — ตัวเลขเดียวกัน ไม่มีค่าใช้จ่าย."""
+    pf = all_data["portfolio"]
+    nw = all_data["networth"]
+    sc = all_data["screener"]
+    go = all_data["goals"]
+
+    lines = [f"📊 สรุปการเงินเดือน {month} (จากโมเดล — ไม่ใช้ AI)", ""]
+    lines.append(
+        f"พอร์ต: {pf['holdings_count']} ETF | มูลค่า {pf['current_value_usd']:,.2f} USD | "
+        f"กำไร/ขาดทุน {pf['pnl_usd']:+,.2f} USD"
+    )
+    if pf.get("missing_prices"):
+        lines.append(f"⚠️ ดึงราคาไม่ได้: {', '.join(map(str, pf['missing_prices']))}")
+    if nw["available"]:
+        lines.append(
+            f"Net Worth: {nw['current_net_worth_thb']:,.0f} บาท "
+            f"({nw['change_thb']:+,.0f} / {nw['change_pct']:+.1f}%)"
+        )
+    lines.append(f"สัญญาณ screener 30 วัน: {sc['total_signals']} รายการ")
+    if go["off_track"]:
+        lines.append(f"เป้าหมายที่ยังไม่เข้าเป้า: {', '.join(go['off_track'])}")
+    lines.append("")
+    lines.append(AI_DISABLED_MESSAGE)
+    lines.append("")
+    lines.append("ข้อมูลนี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน")
+    return "\n".join(lines)
+
+
+def generate_narrative(
+    all_data: dict[str, Any], month: str, user_initiated: bool = False
+) -> str:
     pf = all_data["portfolio"]
     nw = all_data["networth"]
     sc = all_data["screener"]
@@ -162,7 +193,16 @@ def generate_narrative(all_data: dict[str, Any], month: str) -> str:
     )
 
     try:
-        return chat_text(_SYSTEM_PROMPT, user_msg, max_tokens=1600, temperature=0.3)
+        return chat_text(
+            _SYSTEM_PROMPT,
+            user_msg,
+            max_tokens=1600,
+            temperature=0.3,
+            user_initiated=user_initiated,
+        )
+    except LLMDisabledError:
+        # งานอัตโนมัติ (cron วันที่ 1) — ส่งรายงานจากตัวเลขแทน ไม่มีค่าใช้จ่าย
+        return _plain_narrative(all_data, month)
     except Exception as exc:
         return f"ไม่สามารถสร้าง narrative ได้: {exc}"
 
@@ -192,13 +232,16 @@ async def _send_telegram(content: str, month: str) -> None:
 
 # ── orchestrator ──────────────────────────────────────────────────────────────
 
-async def generate_and_save_report() -> dict[str, Any]:
-    """Aggregate data, call Groq, persist to SQLite, send Telegram."""
+async def generate_and_save_report(user_initiated: bool = False) -> dict[str, Any]:
+    """รวบรวมข้อมูล → สร้างรายงาน → บันทึก SQLite → ส่ง Telegram.
+
+    เรียกจาก cron (วันที่ 1) จะไม่ใช้ AI (ไม่มีค่าใช้จ่าย) — ได้รายงานจากตัวเลขแทน
+    """
     db = SessionLocal()
     try:
         month = date.today().strftime("%Y-%m")
         all_data = await _aggregate_data(db)
-        content = await asyncio.to_thread(generate_narrative, all_data, month)
+        content = await asyncio.to_thread(generate_narrative, all_data, month, user_initiated)
         sent_at = datetime.now(UTC)
 
         existing = db.query(MonthlyReport).filter(MonthlyReport.month == month).first()

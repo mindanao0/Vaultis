@@ -516,13 +516,21 @@ def _render_pdf_export_panel(section_key: str, prepare_label: str, download_labe
         key=f"{section_key}_pdf_budget",
     )
 
+    include_ai = st.checkbox(
+        "ใส่บทวิเคราะห์ AI ในรายงาน (มีค่าใช้จ่าย ~0.10–0.30 บาท)",
+        value=False,
+        key=f"{section_key}_pdf_ai",
+    )
+
     cache_key = f"{section_key}_pdf_bytes"
     file_key = f"{section_key}_pdf_filename"
     if st.button(prepare_label, key=f"{section_key}_prepare_pdf"):
         with st.spinner("กำลังสร้าง PDF..."):
-            st.session_state[cache_key] = generate_monthly_report(month=month_text, budget_thb=float(budget_thb))
+            st.session_state[cache_key] = generate_monthly_report(
+                month=month_text, budget_thb=float(budget_thb), include_ai=include_ai
+            )
             st.session_state[file_key] = f"vaultis_monthly_report_{datetime.today():%Y_%m}.pdf"
-        st.success("PDF prepared successfully.")
+        st.success("สร้าง PDF เรียบร้อย")
 
     if cache_key in st.session_state:
         st.download_button(
@@ -1576,9 +1584,12 @@ def show_result(result: dict) -> None:
     else:
         st.warning("เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์จัดสรร — โมเดลแนะนำถือเงินสดรอ")
 
-    st.markdown("### คำอธิบายจาก AI")
     advice_text = str(result.get("advice_text") or result.get("advice") or "")
-    st.markdown(advice_text)
+    if result.get("ai_used"):
+        st.markdown("### คำอธิบายจาก AI (Claude Haiku 4.5)")
+        st.markdown(advice_text)
+    else:
+        st.info(advice_text)
 
     discord_result = result.get("discord_result", {})
     if discord_result.get("success"):
@@ -1590,7 +1601,7 @@ def show_result(result: dict) -> None:
 def render_ai_advisor_page() -> None:
     """หน้า AI Advisor: คะแนนและแผน DCA คำนวณในระบบ — AI อธิบายเหตุผล."""
     st.header("AI Advisor")
-    st.caption("คะแนนและ DCF คำนวณในระบบ — Groq ใช้เพื่ออธิบายเหตุผลเท่านั้น")
+    st.caption("คะแนนและแผน DCA คำนวณในระบบทั้งหมด — AI ใช้เพื่ออธิบายเหตุผลเท่านั้น")
     config = load_config()
 
     if "ai_result" not in st.session_state:
@@ -1606,20 +1617,35 @@ def render_ai_advisor_page() -> None:
         format="%.0f",
     )
 
-    if st.button("Analyze This Month", type="primary"):
-        if not st.session_state["ai_running"]:
-            st.session_state["ai_running"] = True
-            try:
-                with st.spinner("Analyzing..."):
-                    result = get_monthly_advice(float(budget_thb))
-                    st.session_state["ai_result"] = result
-            finally:
-                st.session_state["ai_running"] = False
+    col_free, col_ai = st.columns(2)
+    with col_free:
+        run_free = st.button("คำนวณคะแนน + แผน DCA (ฟรี)", type="primary", use_container_width=True)
+    with col_ai:
+        run_ai = st.button("ให้ AI อธิบายด้วย (มีค่าใช้จ่าย)", use_container_width=True)
+
+    st.caption(
+        "ปุ่มซ้าย: คำนวณทุกอย่างในระบบ ไม่เรียก AI ไม่มีค่าใช้จ่าย | "
+        "ปุ่มขวา: เรียก Claude Haiku 4.5 มาอธิบายเพิ่ม (ประมาณ 0.10–0.30 บาทต่อครั้ง)"
+    )
+
+    if (run_free or run_ai) and not st.session_state["ai_running"]:
+        st.session_state["ai_running"] = True
+        try:
+            with st.spinner("กำลังวิเคราะห์..."):
+                st.session_state["ai_result"] = get_monthly_advice(
+                    float(budget_thb),
+                    send_discord=False,
+                    user_initiated=run_ai,  # เรียก AI เฉพาะเมื่อกดปุ่มขวา
+                )
+        except Exception as exc:
+            st.error(f"วิเคราะห์ไม่สำเร็จ: {exc}")
+        finally:
+            st.session_state["ai_running"] = False
 
     if st.session_state["ai_result"]:
         show_result(st.session_state["ai_result"])
     else:
-        st.info("กดปุ่ม 'Analyze This Month' เพื่อวิเคราะห์")
+        st.info("กดปุ่มด้านบนเพื่อเริ่มวิเคราะห์")
 
 
 @st.cache_data(ttl=3600, show_spinner=False)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from ..schemas import RebalanceRequest
@@ -8,7 +8,10 @@ router = APIRouter(prefix="/api/portfolio", tags=["Portfolio"])
 
 
 @router.post("/rebalance")
-def rebalance_portfolio(payload: RebalanceRequest):
+def rebalance_portfolio(
+    payload: RebalanceRequest,
+    include_ai: bool = Query(False, description="เรียก AI อธิบายแผน (มีค่าใช้จ่าย)"),
+):
     if payload.risk_profile not in rebalance_service.TARGET_WEIGHTS:
         raise HTTPException(status_code=400, detail="risk_profile ไม่ถูกต้อง")
     try:
@@ -17,6 +20,7 @@ def rebalance_portfolio(payload: RebalanceRequest):
             holdings=holdings,
             risk_profile=payload.risk_profile,
             available_budget_thb=payload.available_budget_thb,
+            user_initiated=include_ai,
         )
         return JSONResponse(
             content={"data": result},

@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from analysis.llm import chat_text
+from analysis.llm import LLMDisabledError, chat_text
 from technical import signal_rules
 
 from ..models.etf_models import ETFAnalysis, TechnicalIndicators
@@ -120,8 +120,14 @@ class AnalysisService:
         lines.extend(self._response_outline_lines(compare_mode))
         return "\n".join(lines)
 
-    def _call_llm(self, user_content: str) -> str:
-        return chat_text(_SYSTEM_PROMPT, user_content, max_tokens=1200, temperature=0.2)
+    def _call_llm(self, user_content: str, user_initiated: bool) -> str:
+        return chat_text(
+            _SYSTEM_PROMPT,
+            user_content,
+            max_tokens=1200,
+            temperature=0.2,
+            user_initiated=user_initiated,
+        )
 
     async def get_ai_summary(
         self,
@@ -129,14 +135,18 @@ class AnalysisService:
         compare_mode: bool = False,
         *,
         additional_analyses: list[ETFAnalysis] | None = None,
+        user_initiated: bool = False,
     ) -> str:
+        """คำอธิบายจาก AI (มีค่าใช้จ่าย) — ต้องขอมาโดยตรงเท่านั้น."""
         user_content = self._build_user_message(
             analysis,
             compare_mode=compare_mode,
             additional_analyses=additional_analyses,
         )
         try:
-            text = await asyncio.to_thread(self._call_llm, user_content)
+            text = await asyncio.to_thread(self._call_llm, user_content, user_initiated)
+        except LLMDisabledError as exc:
+            return str(exc)
         except Exception as exc:
             text = (
                 "ไม่สามารถเรียกบริการวิเคราะห์ AI ได้ในขณะนี้ "

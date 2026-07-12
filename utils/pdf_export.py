@@ -47,8 +47,11 @@ def _build_table(table_data: list[list[object]], col_widths: list[float] | None 
     return table
 
 
-def generate_monthly_report(month: str, budget_thb: float) -> bytes:
-    """Generate monthly portfolio PDF report and return file bytes."""
+def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = False) -> bytes:
+    """สร้างรายงาน PDF รายเดือน.
+
+    ``include_ai=False`` (ดีฟอลต์): ใส่เฉพาะตัวเลขจากโมเดล — ไม่เรียก AI ไม่มีค่าใช้จ่าย
+    """
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -163,7 +166,9 @@ def generate_monthly_report(month: str, budget_thb: float) -> bytes:
 
     advice: dict = {}
     try:
-        advice = get_monthly_advice(budget_thb=budget_thb, send_discord=False)
+        advice = get_monthly_advice(
+            budget_thb=budget_thb, send_discord=False, user_initiated=include_ai
+        )
         advice_text = str(advice.get("advice_text", "")).strip()
     except Exception as exc:
         advice_text = f"AI analysis unavailable: {exc}"

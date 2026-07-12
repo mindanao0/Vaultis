@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from analysis.backtest_engine import BacktestEngine
 from analysis.backtest_summary import generate_summary
+from analysis.llm import AI_DISABLED_MESSAGE
 from backend.models.backtest_models import BacktestRequest, BacktestResponse
 
 router = APIRouter(prefix="/api", tags=["backtest"])
@@ -14,7 +15,10 @@ _engine = BacktestEngine()
 
 
 @router.post("/backtest", response_model=BacktestResponse)
-def run_backtest(payload: BacktestRequest):
+def run_backtest(
+    payload: BacktestRequest,
+    include_ai: bool = Query(False, description="เรียก AI อธิบายผล (มีค่าใช้จ่าย)"),
+):
     strategy_params = {
         "rsi_period": payload.rsi_period,
         "rsi_oversold": payload.rsi_oversold,
@@ -44,10 +48,15 @@ def run_backtest(payload: BacktestRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}")
 
-    try:
-        ai_summary = generate_summary(result, payload.symbol)
-    except Exception:
-        ai_summary = "ไม่สามารถสร้างสรุป AI ได้ในขณะนี้"
+    # คำอธิบายจาก AI = ค่าใช้จ่าย → ต้องขอมาโดยตรงเท่านั้น (?include_ai=true)
+    ai_summary = ""
+    if include_ai:
+        try:
+            ai_summary = generate_summary(result, payload.symbol, user_initiated=True)
+        except Exception as exc:
+            ai_summary = f"ไม่สามารถสร้างสรุป AI ได้: {exc}"
+    else:
+        ai_summary = AI_DISABLED_MESSAGE
 
     return BacktestResponse(
         **result,
