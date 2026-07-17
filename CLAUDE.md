@@ -140,6 +140,7 @@ Required for full functionality:
 | `FRED_API_KEY` | Macro data endpoint |
 | `DISCORD_WEBHOOK_URL` | Scheduled job notifications (**env only — never in config.json**) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Screener alerts + monthly report |
+| `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TARGET_ID` | แจ้งเตือน LINE (เสริม — weekly summary; ไม่ตั้ง = ข้ามเงียบ ๆ) |
 | `BACKEND_URL` | Streamlit dashboard → API (defaults to Render backend) |
 | `DATABASE_URL` | PostgreSQL for sentiment + screener history (optional) |
 | `NEWSAPI_KEY` | News sentiment analysis |

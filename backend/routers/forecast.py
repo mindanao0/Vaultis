@@ -60,6 +60,11 @@ async def get_forecast(symbol: str, days: int = 30):
         },
         "chart_base64": chart_b64,
         "disclaimer": forecast_result["disclaimer"],
+        # Roadmap ข้อ 17: Prophet เป็นภาพประกอบระยะสั้น — ตัวพยากรณ์ทางการคือ Monte Carlo
+        "official_forecast_note": (
+            "ตัวพยากรณ์เชิงตัวเลขทางการของระบบ = Monte Carlo (goals, ผูก μ/σ พอร์ตจริง) "
+            "— Prophet ใช้เป็นกรวยความไม่แน่นอนระยะสั้นประกอบเท่านั้น"
+        ),
     }
 
     await _cache.set(cache_key, result, FORECAST_TTL)

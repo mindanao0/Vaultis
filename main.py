@@ -20,6 +20,7 @@ BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 def _now_bangkok() -> datetime:
     return datetime.now(BANGKOK_TZ)
 
+from alerts.line_notifier import send_line_message
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
 from alerts.price_alert import check_alerts
 from analysis.ai_advisor import get_monthly_advice
@@ -77,6 +78,13 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
             print(f"ส่ง Discord ไม่สำเร็จ: {result.get('error')}")
         else:
             print("ส่งรายงานรายสัปดาห์ไป Discord สำเร็จ")
+
+        # ช่องทางเสริม LINE (Roadmap ข้อ 16) — ไม่ได้ตั้งค่า = ข้ามเงียบ ๆ งานหลักไม่พัง
+        line_result = send_line_message(f"{title}\n{description}")
+        if line_result.get("success"):
+            print("ส่งรายงานรายสัปดาห์เข้า LINE สำเร็จ")
+        elif not line_result.get("skipped"):
+            print(f"ส่ง LINE ไม่สำเร็จ: {line_result.get('error')}")
     except Exception as exc:
         print(f"เกิดข้อผิดพลาดในการสร้างรายงานรายสัปดาห์: {exc}")
 

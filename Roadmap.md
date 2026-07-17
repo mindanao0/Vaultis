@@ -107,9 +107,9 @@
 14. ✅ **เทียบ benchmark ต่อเนื่อง (E)** (เสร็จ 2026-07-17 — `portfolio/benchmark.py`: `shadow_benchmark` "เงินก้อนเดียวกัน วันเดียวกัน ซื้อ VOO ล้วน" + `xirr` %/ปี money-weighted รวมปันผลที่บันทึก; หน้า Portfolio โชว์เทียบ + real return หลังเงินเฟ้อไทยเมื่อรู้ CPI; พอร์ตอายุ < 90 วัน = ไม่ตีเป็น %/ปี)
 15. ✅ **Monte Carlo ผูกพอร์ตจริง (C) — ⭐** (เสร็จ 2026-07-17 — `analysis/risk.portfolio_mu_sigma` จากน้ำหนักมูลค่าจริง + `goal_service.real_portfolio_assumptions` (cache 10 นาที) ป้อน μ/σ เข้า `calculate_probability`; ไม่มีพอร์ต = fallback preset พร้อมระบุที่มาใน `assumptions_source`/`assumptions_note` เสมอ)
 
-## Phase 5 — reach & AI ขั้นสูง (เสี่ยง/แพงสุด — ท้ายสุด)
-16. **แจ้งเตือน LINE (A)** — เพิ่มช่องทาง LINE Messaging API ข้าง Discord/Telegram (localization)
-17. **Edge 4: AI นักวิเคราะห์** — narrative จากเลขที่คำนวณแล้ว (gated `user_initiated=True`)
+## Phase 5 — reach & AI ขั้นสูง (เสี่ยง/แพงสุด — ท้ายสุด) — **✅ เสร็จ 2026-07-17**
+16. ✅ **แจ้งเตือน LINE (A)** (เสร็จ 2026-07-17 — `alerts/line_notifier.py` (env `LINE_CHANNEL_ACCESS_TOKEN`/`LINE_TARGET_ID`, ไม่ตั้ง = skipped เงียบ ๆ งานหลักไม่พัง) + mirror weekly summary ใน main.py; ช่องทางพร้อมให้ jobs อื่นเรียกเพิ่มทีละจุด)
+17. ✅ **Edge 4: AI นักวิเคราะห์** (ส่วน narrative gated `user_initiated` ทำครบตั้งแต่ commit 3847eb2; ส่วนลดน้ำหนัก Prophet เสร็จ 2026-07-17 — disclaimer ใหม่บังคับอ่านเป็นกรวย yhat_lower–upper + field `official_forecast_note` ใน `/api/forecast` ชี้ Monte Carlo (ข้อ 15) เป็นตัวพยากรณ์ทางการ; กราฟวาด cone อยู่แล้ว)
     - **ลดน้ำหนัก Prophet:** พยากรณ์ราคาหุ้นระยะสั้นเป็นจุด ๆ ห่วยและหลอกมือใหม่ →
       ถ้าใช้ Prophet ให้โชว์เป็น **"กรวยความไม่แน่นอน" เท่านั้น ห้ามเป็นราคาเป้า** และไม่ใช่ตัวเน้น
     - การพยากรณ์เชิงตัวเลขที่เป็นทางการของระบบ = Monte Carlo (ข้อ 15) ไม่ใช่ Prophet

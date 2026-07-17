@@ -88,5 +88,9 @@ class PriceForecaster:
             "predictions": predictions,
             "trend": trend,
             "trend_pct": trend_pct,
-            "disclaimer": "การพยากรณ์นี้เพื่อการศึกษาเท่านั้น ไม่ใช่คำแนะนำการลงทุน",
+            "disclaimer": (
+                "พยากรณ์ระยะสั้นอ่านเป็น 'กรวยความไม่แน่นอน' (yhat_lower–yhat_upper) เท่านั้น "
+                "ห้ามใช้ yhat เป็นราคาเป้าจุดเดียว — การพยากรณ์เชิงตัวเลขทางการของระบบคือ "
+                "Monte Carlo ที่ระบบ Goals (horizon ระยะยาวของ DCA) · เพื่อการศึกษา ไม่ใช่คำแนะนำการลงทุน"
+            ),
         }
