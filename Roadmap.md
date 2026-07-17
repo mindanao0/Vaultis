@@ -94,11 +94,11 @@
 5. ✅ **ติดตามเงินปันผลจริง + DRIP** (เสร็จ 2026-07-17 — ledger เพิ่มคอลัมน์ `tx_type` (buy|dividend, แถวเก่า/ค่าว่าง = buy เสมอ), `add_dividend` บันทึกยอด**สุทธิ**ที่รับจริง, ปันผลไม่เข้า cost basis/ไม่นับเป็นเทรด (มีเทสต์คุม), ฟอร์ม+สรุปรายรับในหน้า Portfolio, `portfolio/drip.py` จำลอง DRIP จากราคาจริง ณ วันรับ)
 6. ✅ **ผลตอบแทนจริงหลังภาษี+FX+เงินเฟ้อ (B)** (เสร็จ 2026-07-17 — `analysis/macro.get_thai_inflation` จาก World Bank API (ฟรี ไม่ใช้ key, fail-soft → "ไม่ทราบเงินเฟ้อ", cache 24 ชม.) + บรรทัด "เป้าที่ต้องชนะต่อปี" ในหน้า Portfolio; **จงใจไม่โชว์ real return จากผลตอบแทนสะสม** เพราะเทียบสะสมกับเงินเฟ้อรายปีตรง ๆ เป็นเลขหลอก — real return เต็มรูปผูกกับ XIRR ในข้อ 14 benchmark)
 
-## Phase 3 — personalization & ความโปร่งใส
-7. **Edge 3: drift personalization** (advisory) — `portfolio/tracker.get_portfolio_summary()` + `get_target_weights()`
-8. **ข่าว/Sentiment เป็น context** — `get_latest_sentiment_summaries()` ใหม่ใน `db/sentiment_models.py`
-9. **Audit trail "ทำไมได้เท่านี้" (D)** — แตกคะแนน trend/timing/momentum + regime ทุกชั้น (มี field อยู่ใน `score_from_prices` แล้ว แค่ surface)
-10. **เตือน overlap + factor/sector exposure (F)** — VOO∩QQQM big tech, XLV=healthcare, GLDM=ทอง (มี `analysis/correlation.py` เสริม)
+## Phase 3 — personalization & ความโปร่งใส — **✅ เสร็จ 2026-07-17**
+7. ✅ **Edge 3: drift personalization** (เสร็จ 2026-07-17 — `_render_drift_advisory` ในหน้า Scorecard: เทียบพอร์ตจริง (ledger) กับ `get_target_weights` ด้วยเกณฑ์ drift 5% เดียวกับ rebalance_service; advisory เท่านั้น ไม่แตะเลขจัดสรร; ไม่มีพอร์ต = เงียบ)
+8. ✅ **ข่าว/Sentiment เป็น context** (เสร็จ 2026-07-17 — `get_latest_sentiment_summaries()` ใน `db/sentiment_models.py` (คืน None เมื่อไม่มี DATABASE_URL/ต่อไม่ได้) + กล่องบริบทในหน้า AI Advisor ระบุชัด "ไม่เข้าเลขคะแนน")
+9. ✅ **Audit trail "ทำไมได้เท่านี้" (D)** (เสร็จ 2026-07-17 — expander ต่อ ETF ในหน้า Scorecard แตก 3 ชั้น: คะแนนดิบ 4 องค์ประกอบ → tilt (สูตร+ค่าจริงจาก calculate_allocation) → THB หลัง normalize/ปัดหลักร้อย — โชว์เลขที่โมเดลคืน ไม่คำนวณใหม่; ชั้น regime จะเพิ่มเมื่อ Phase 1 พ้น gate)
+10. ✅ **เตือน overlap + factor/sector exposure (F)** (เสร็จ 2026-07-17 — section "การกระจายจริง & ความทับซ้อน" ในหน้า Portfolio: heatmap correlation 10 ปี, เตือนคู่ ≥0.85, ชี้ตัวกระจายจริง ≤0.30, หมายเหตุโครงสร้าง VOO∩QQQM/SCHD/XLV/GLDM)
 
 ## Phase 4 — ลงมือได้จริง & วินัย
 11. **"รายการซื้อเดือนนี้" พร้อม execute (G)** — แปลง allocation → จำนวนหุ้น/เงินจริง + fee+FX copy ไปวางในโบรก

@@ -55,6 +55,7 @@ from alerts.price_alert import (
     list_alerts,
 )
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
+from db.sentiment_models import get_latest_sentiment_summaries
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
 from portfolio.targets import RISK_PROFILES, get_risk_profile, get_target_weights
@@ -2030,10 +2031,38 @@ def show_result(result: dict) -> None:
         st.warning(f"ส่ง Discord ไม่สำเร็จ: {discord_result.get('error', 'unknown error')}")
 
 
+def _render_sentiment_context_box() -> None:
+    """ข่าว/sentiment เป็นบริบทข้าง ๆ (Roadmap ข้อ 8) — ห้ามเข้าเลขคะแนน/จัดสรร (invariant)."""
+    summaries = get_latest_sentiment_summaries(get_tickers())
+    if summaries is None:
+        st.caption(
+            "บริบทข่าว/sentiment: ไม่มีข้อมูล (ไม่ได้ตั้ง DATABASE_URL หรือเชื่อมต่อไม่ได้) — ไม่กระทบคะแนนใด ๆ"
+        )
+        return
+    if not summaries:
+        st.caption("บริบทข่าว/sentiment: ยังไม่มีข้อมูลในฐาน — รอ scheduled job รอบถัดไป")
+        return
+    with st.expander("บริบทข่าว/Sentiment ล่าสุด (ไม่เข้าเลขคะแนน)"):
+        for item in summaries:
+            label = str(item.get("overall_sentiment") or "unknown").lower()
+            dot = {"positive": "🟢", "negative": "🔴", "neutral": "⚪"}.get(label, "⚪")
+            score = item.get("score")
+            score_text = f"score {float(score):+.2f}" if score is not None else "score -"
+            st.markdown(
+                f"{dot} **{item['symbol']}** — {label} · {score_text} · "
+                f"{item.get('total_articles') or 0} ข่าว · {item.get('created_at') or '-'}"
+            )
+        st.caption(
+            "sentiment เป็นบริบทประกอบการอ่านสถานการณ์เท่านั้น — "
+            "ไม่มีผลต่อคะแนน/การจัดสรร (invariant ของระบบ)"
+        )
+
+
 def render_ai_advisor_page() -> None:
     """หน้า AI Advisor: คะแนนและแผน DCA คำนวณในระบบ — AI อธิบายเหตุผล."""
     st.header("AI Advisor")
     st.caption("คะแนนและแผน DCA คำนวณในระบบทั้งหมด — AI ใช้เพื่ออธิบายเหตุผลเท่านั้น")
+    _render_sentiment_context_box()
     config = load_config()
 
     if "ai_result" not in st.session_state:
@@ -2269,6 +2298,60 @@ def cached_dividend_yields(tickers: tuple[str, ...]) -> dict[str, float | None]:
     return {ticker: _dividend_yield(ticker) for ticker in tickers}
 
 
+def _render_overlap_section() -> None:
+    """ความทับซ้อน/การกระจายจริง (Roadmap ข้อ 10) — correlation คำนวณจริง + โครงสร้างเชิงบรรยาย."""
+    st.divider()
+    st.subheader("การกระจายจริง & ความทับซ้อน")
+    try:
+        overlap_prices = cached_prices(get_tickers(), years=10)
+        corr = calculate_correlation_matrix(overlap_prices)
+    except Exception as exc:
+        st.error(f"คำนวณ correlation ไม่ได้: {exc} — ไม่แสดงตัวเลขแทน")
+        return
+
+    tickers_in_corr = list(corr.columns)
+    pairs: list[tuple[str, str, float]] = []
+    for i, first in enumerate(tickers_in_corr):
+        for second in tickers_in_corr[i + 1 :]:
+            value = corr.loc[first, second]
+            if pd.notna(value):
+                pairs.append((first, second, float(value)))
+
+    high_pairs = sorted([p for p in pairs if p[2] >= 0.85], key=lambda p: -p[2])
+    if high_pairs:
+        pair_text = ", ".join(f"{a}–{b} ({c:.2f})" for a, b, c in high_pairs)
+        st.warning(
+            f"คู่ที่เคลื่อนไหวแทบเป็นตัวเดียวกัน (correlation ≥ 0.85): {pair_text} — "
+            "การถือทั้งคู่กระจายความเสี่ยงได้น้อยกว่าที่จำนวนตัวบอก"
+        )
+    diversifiers = sorted([p for p in pairs if p[2] <= 0.30], key=lambda p: p[2])
+    if diversifiers:
+        st.caption(
+            "ตัวที่กระจายความเสี่ยงจริง (correlation ≤ 0.30): "
+            + ", ".join(f"{a}–{b} ({c:.2f})" for a, b, c in diversifiers)
+        )
+
+    corr_fig = px.imshow(
+        corr,
+        text_auto=".2f",
+        zmin=-1,
+        zmax=1,
+        color_continuous_scale=[
+            [0.0, THEME["accent"]],
+            [0.5, THEME["main_bg"]],
+            [1.0, THEME["negative"]],
+        ],
+        aspect="auto",
+        title="Correlation ผลตอบแทนรายวัน (10 ปี)",
+    )
+    st.plotly_chart(_apply_plotly_dark_theme(corr_fig), use_container_width=True)
+    st.caption(
+        "โครงสร้างที่ควรรู้: VOO (S&P 500) กับ QQQM (Nasdaq-100) มีหุ้นเทคใหญ่เป็นท็อปโฮลดิ้งร่วมกัน "
+        "· SCHD เน้นปันผล ทับซ้อน VOO บางส่วน · XLV = healthcare ล้วน (ซึ่งอยู่ใน VOO ด้วย) "
+        "· GLDM = ทองคำ ไม่ใช่หุ้น — ตัวเลข correlation ข้างบนคือพฤติกรรมจริงย้อนหลัง ไม่ใช่การพยากรณ์"
+    )
+
+
 def render_portfolio_page() -> None:
     """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ต."""
     st.header("Portfolio")
@@ -2454,6 +2537,8 @@ def render_portfolio_page() -> None:
                 hole=0.35,
             )
             st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
+
+    _render_overlap_section()
 
     st.divider()
     st.subheader("ต้นทุนจริง & ภาษี (โดยประมาณ)")
@@ -2709,6 +2794,66 @@ def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
         st.caption(f"เศษจากการปัดหลักร้อย {unallocated:,.0f} บาท — สมทบเดือนถัดไป")
 
 
+def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
+    """audit trail "ทำไมได้เท่านี้" (Roadmap ข้อ 9) — โชว์เลขที่โมเดลคืนมาทุกชั้น ไม่คำนวณใหม่."""
+    dividend_max_text = str(DIVIDEND_MAX) if row.get("dividend_available") else "ตัดออก (ไม่มีข้อมูลปันผล)"
+    st.markdown(
+        f"**ชั้น 1 — คะแนนดิบ** (จาก `score_from_prices`)  \n"
+        f"Trend {row.get('trend_score')}/{TREND_MAX} · Timing {row.get('timing_score')}/{TIMING_MAX} · "
+        f"Momentum {row.get('momentum_score')}/{MOMENTUM_MAX} · Dividend {row.get('dividend_score')}/{dividend_max_text}  \n"
+        f"รวม {row.get('total_score')}/{row.get('max_score')} = **{float(row.get('total_pct') or 0):.1f}%**"
+    )
+    if alloc_item:
+        st.markdown(
+            f"**ชั้น 2 — ตัวคูณจากคะแนน** (bounded {TILT_MIN:.1f}–{TILT_MAX:.1f})  \n"
+            f"tilt = {TILT_MIN:.1f} + ({TILT_MAX:.1f}−{TILT_MIN:.1f}) × {float(row.get('total_pct') or 0):.1f}/100 "
+            f"= **×{float(alloc_item.get('tilt') or 1):.2f}**  \n"
+            f"**ชั้น 3 — เงินจริง**  \n"
+            f"เป้า {float(alloc_item.get('target_percent') or 0):.1f}% × tilt → normalize รวมกับตัวอื่น "
+            f"= จริง {float(alloc_item.get('percent') or 0):.1f}% = **{float(alloc_item.get('amount_thb') or 0):,.0f} ฿** "
+            "(ปัดหลักร้อย เศษแจกแบบ largest-remainder)"
+        )
+    else:
+        st.markdown("ไม่อยู่ในแผนจัดสรรเดือนนี้ (ไม่มีน้ำหนักเป้าหมาย หรือข้อมูลไม่พร้อม)")
+
+
+def _render_drift_advisory() -> None:
+    """เทียบพอร์ตจริงกับเป้าหมาย (Roadmap ข้อ 7) — advisory เท่านั้น ไม่แก้เลขจัดสรร.
+
+    ใช้เกณฑ์ drift 5% เดียวกับ rebalance_service เพื่อไม่สร้างนิยามใหม่
+    """
+    try:
+        holdings = get_portfolio_summary()
+    except Exception as exc:
+        st.caption(f"อ่านพอร์ตจริงไม่ได้ ({exc}) — ข้ามคำแนะนำ drift")
+        return
+    if holdings.empty:
+        return  # ยังไม่มีพอร์ตจริง — ไม่มีอะไรให้เทียบ
+    priced = holdings[holdings["Price OK"]]
+    total_value = float(priced["Current Value (THB)"].sum()) if not priced.empty else 0.0
+    if total_value <= 0:
+        return
+
+    targets = get_target_weights([str(t) for t in priced["Ticker"]])
+    drifts: list[tuple[str, float]] = []
+    for _, holding in priced.iterrows():
+        ticker = str(holding["Ticker"])
+        actual_pct = float(holding["Current Value (THB)"]) / total_value * 100.0
+        target_pct = float(targets.get(ticker, 0.0)) * 100.0
+        drifts.append((ticker, actual_pct - target_pct))
+
+    DRIFT_THRESHOLD_PCT = 5.0
+    off_target = [(t, d) for t, d in drifts if abs(d) >= DRIFT_THRESHOLD_PCT]
+    if not off_target:
+        st.caption(f"พอร์ตจริงใกล้เป้าหมายทุกตัว (drift < {DRIFT_THRESHOLD_PCT:.0f}%) — DCA ตามแผนได้เลย")
+        return
+    drift_text = ", ".join(f"{t} {d:+.1f}% จากเป้า" for t, d in sorted(off_target, key=lambda x: -abs(x[1])))
+    st.info(
+        f"พอร์ตจริงตอนนี้เอียง: {drift_text} — การซื้อตามแผนเดือนนี้ช่วยดึงตัวที่ต่ำกว่าเป้ากลับ"
+        "โดยไม่ต้องขาย (ข้อมูลจาก ledger ในเครื่อง · คำอธิบายเท่านั้น ไม่เปลี่ยนตัวเลขจัดสรร)"
+    )
+
+
 def render_scorecard_page() -> None:
     """หน้า Scorecard (Roadmap B1): เรียง 5 ETF + การ์ด "คำตัดสินเดือนนี้"."""
     st.header("Scorecard")
@@ -2818,6 +2963,8 @@ def render_scorecard_page() -> None:
     else:
         st.warning("จัดสรรไม่ได้ — ไม่มี ETF ที่ข้อมูลพร้อม หรืองบเป็นศูนย์")
 
+    _render_drift_advisory()
+
     # --- stacked bar: คะแนนรวมแยก 4 องค์ประกอบ ---
     st.subheader("คะแนน 0-100 แยกองค์ประกอบ")
     ranked = sorted(ok_rows, key=lambda r: float(r.get("total_pct") or 0), reverse=True)
@@ -2868,6 +3015,8 @@ def render_scorecard_page() -> None:
                 f"**{float(row.get('total_pct') or 0):.1f}** / 100  \n{row.get('signal', '')}"
             )
             c3.markdown(_score_reason_chips(row), unsafe_allow_html=True)
+            with st.expander("ทำไมได้เท่านี้ (audit trail ทุกชั้น)"):
+                _render_score_audit_trail(row, allocation.get(str(row.get("ticker"))))
     for row in no_data_rows:
         with st.container(border=True):
             st.markdown(
