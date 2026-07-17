@@ -38,15 +38,9 @@ class WalkForwardBacktester:
 
             try:
                 model = forecaster.build_model()
-                model.fit(train_df[["ds", "y", "volume", "rsi"]])
-
-                vol_mean = float(train_df["volume"].tail(20).mean())
-                rsi_last = float(train_df["rsi"].iloc[-1])
+                model.fit(train_df[["ds", "y"]])  # univariate — เหตุผลใน build_model
 
                 future = pd.DataFrame({"ds": test_df["ds"].values})
-                future["volume"] = vol_mean
-                future["rsi"] = rsi_last
-
                 pred_df = model.predict(future)
 
                 actuals = test_df["y"].values

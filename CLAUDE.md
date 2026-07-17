@@ -50,6 +50,7 @@ analysis/         Standalone analysis modules: returns, risk, correlation,
   llm.py            **Single entry point for every LLM call** (Haiku 4.5 → Groq fallback)
   ta_compat.py      **Single indicator layer** (sma/rsi/macd/bbands) — pandas-ta is gone
   financial_model.py `score_from_prices()` = the one scoring function for the whole system
+  trend_channel.py  log-linear trend ±σ (สถิติพรรณนา — ไม่เข้าเลขคะแนน/จัดสรร)
 
 technical/
   signal_rules.py   **Single source of truth for buy/sell signals** — every subsystem imports this
@@ -58,8 +59,15 @@ technical/
 dashboard/app.py  Streamlit single-file app. Multi-page via sidebar.
                   Calls analysis/ modules directly OR BACKEND_URL for live data.
 
-portfolio/        Transaction CSV tracker, DCA simulator, rebalance logic
-alerts/           Discord webhook builder + price alert store (JSON)
+portfolio/        Transaction CSV tracker (buy+dividend), DCA simulator, rebalance logic
+  fees.py           สูตรค่าธรรมเนียมเดียว (Dime 0.15% ทุก transaction)
+  costs.py          ชั้นภาษี/ต้นทุน: withholding ปันผล US 15%, FX spread (config `costs.fx_spread_pct`)
+  drip.py           จำลอง DRIP จากปันผลที่บันทึกจริง
+  benchmark.py      shadow VOO ("เงินเดียวกัน วันเดียวกัน") + XIRR money-weighted ของพอร์ตจริง
+  cashflow_rebalance.py  rebalance ด้วยเงินใหม่ (opt-in ใน Scorecard, ไม่ขาย)
+  ab_backtest.py    A/B harness ด่านกั้น edge (plain vs tilt vs VOO, point-in-time)
+  edge_lab.py       ห้องทดลอง edge candidates ผ่าน harness — ผล 2 รอบ: ไม่มี tilt ไหนมี edge จริง
+alerts/           Discord webhook builder + price alert store (JSON) + LINE notifier (env-only)
 data/             yfinance price fetcher (3 retries, then raises)
 jobs/             daily_check.py → fetch snapshot + AI summary → Discord
 main.py           Python `schedule` loop for background jobs
@@ -110,7 +118,7 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 
 | Data | Single source of truth | Used by |
 |---|---|---|
-| Transactions | **CSV** `portfolio/data/transactions.csv` via `portfolio/tracker.py` (rows keyed by `tx_id`) | dashboard, backend (`portfolio_service` delegates here), AI advisor, PDF |
+| Transactions | **CSV** `portfolio/data/transactions.csv` via `portfolio/tracker.py` (rows keyed by `tx_id`; `tx_type` = buy\|dividend — แถวปันผล**ไม่เข้า** cost basis/ลำดับเทรด, แถวเก่า/ค่าว่าง = buy เสมอ) | dashboard, backend (`portfolio_service` delegates here), AI advisor, PDF |
 | Price alerts | **JSON** `alerts/data/price_alerts.json` via `alerts/price_alert.py` | dashboard, backend (`alert_service` delegates), Discord cron |
 | Goals / net worth / reports / config | **SQLite** `vaultis.db` | backend only |
 | Sentiment + screener history | **PostgreSQL** (`DATABASE_URL`, optional) | scheduled jobs |

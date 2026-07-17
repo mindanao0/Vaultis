@@ -1860,26 +1860,36 @@ def render_dcf_analysis_page() -> None:
     st.caption(f"สัญญาณเทคนิค: {selected_raw.get('technical_signal_th', '-')}")
 
     st.subheader("Score Breakdown (คะแนนเดียวกับที่ AI Advisor ใช้)")
-    breakdown_map: dict[str, float] = {
-        "Trend (max 40)": float(selected_row["Trend"]),
-        "Timing (max 30)": float(selected_row["Timing"]),
-        "Momentum (max 20)": float(selected_row["Momentum"]),
-        "Dividend (max 10)": float(selected_row["Dividend"]),
-    }
-    breakdown_df = pd.DataFrame(
-        {"Metric": list(breakdown_map.keys()), "Score": list(breakdown_map.values())}
-    ).sort_values("Score", ascending=True)
-    bar_fig = px.bar(
-        breakdown_df,
-        x="Score",
-        y="Metric",
-        orientation="h",
-        color="Score",
-        color_continuous_scale=[THEME["negative"], THEME["accent"], THEME["positive"]],
-        title=f"{selected_ticker} Score Breakdown",
+    # waterfall แทน flat bar (Roadmap "ของแถม" ข้อสุดท้าย) — เห็นการสะสมทีละองค์ประกอบจนถึงคะแนนรวม
+    component_labels = [
+        f"Trend (เต็ม {TREND_MAX})",
+        f"Timing (เต็ม {TIMING_MAX})",
+        f"Momentum (เต็ม {MOMENTUM_MAX})",
+        f"Dividend (เต็ม {DIVIDEND_MAX})",
+    ]
+    component_values = [
+        float(selected_row["Trend"]),
+        float(selected_row["Timing"]),
+        float(selected_row["Momentum"]),
+        float(selected_row["Dividend"]),
+    ]
+    waterfall_fig = go.Figure(
+        go.Waterfall(
+            orientation="v",
+            x=component_labels + ["คะแนนรวม"],
+            measure=["relative"] * len(component_values) + ["total"],
+            y=component_values + [0],
+            text=[f"+{v:.0f}" for v in component_values] + [f"{sum(component_values):.0f}"],
+            textposition="outside",
+            connector={"line": {"color": THEME["border"]}},
+            increasing={"marker": {"color": THEME["accent"]}},
+            totals={"marker": {"color": THEME["positive"]}},
+        )
     )
-    bar_fig.update_layout(coloraxis_showscale=False)
-    st.plotly_chart(_apply_plotly_dark_theme(bar_fig), use_container_width=True)
+    waterfall_fig.update_layout(
+        title=f"{selected_ticker} Score Breakdown", showlegend=False, height=360
+    )
+    st.plotly_chart(_apply_plotly_dark_theme(waterfall_fig), use_container_width=True)
 
     st.subheader("DCF Cash Flow Table (10 Years)")
     cash_flows = selected_dcf.get("cash_flows", []) if isinstance(selected_dcf, dict) else []

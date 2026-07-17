@@ -10,6 +10,7 @@
 2. **ค่าธรรมเนียม Dime = 0.15% ทุก transaction** (ยืนยันจากบัญชีจริง — ไม่มีเทรดแรกของเดือนฟรี) → ฝั่ง `tracker.py` คือตัวผิด แก้ให้ตรงกับ `rebalance_service`; สูตรเดียวใน module กลาง
 3. **Backtest A/B รันสองช่วงเสมอ:** (ก) ช่วง proxy — QQQ แทน QQQM, GLD แทน GLDM ตั้งแต่ 2011-10 (จุดเกิด SCHD, ~14 ปี) (ข) ช่วงข้อมูลจริงล้วนตั้งแต่ 2020-11 (~5.7 ปี) — ติด label ชัดว่าช่วงไหนใช้ proxy; ด่านกั้นตัดสินจากภาพรวมทั้งสองช่วง
 4. **B2/B4 ทำตามสเปกเดิม** (B2 ป้อน tilt ได้เลย, B4 แก้ `_timing_score` ได้) — เป็น**ข้อยกเว้นที่อนุมัติแล้ว**ของ invariant "คะแนนแกนไม่แก้" เงื่อนไข: ถึงคิวแล้วต้องรันผ่าน harness Phase 0 ดูผลก่อน merge
+5. **มติ 2026-07-18: ปิด B2/B4/Phase 1 ด้วยหลักฐานการวัดรอบสอง** — ผู้ใช้เลือกทาง "ออกแบบ edge ใหม่แล้ววัดผ่าน harness" → `portfolio/edge_lab.py` ทดสอบ 5 candidates (underwater, inverse-vol, rel-strength = กลไก B2, stretch = กลไก B4, combo) ทุกตัว bounded 0.8–1.2 / point-in-time / ไม่ตัดตัวไหนออก บนสอง window เดิม → **ไม่มีตัวไหนผ่านด่าน** (ห่าง plain < 2% ทุกตัว = ระดับ noise; รายละเอียดใน docstring + รัน `python -m portfolio.edge_lab` ซ้ำได้) — ข้อสรุปเชิงโครงสร้างสองรอบตรงกัน: **tilt บนเงินเติมรายเดือนเป็นคันโยกเล็กเกินไปบนพอร์ต ETF กว้างที่ correlation สูง** · ข้อค้นพบข้างเคียง: inverse-vol/combo ลด max DD ~0.3–0.5pp แลกมูลค่า ~1–1.7% = ทางเลือกรสนิยมความเสี่ยง ไม่ใช่ edge (ไม่ merge)
 
 ## หลักที่ห้ามละเมิด (invariant — ทุกเฟส)
 - **ทุกเลขที่ขยับเงินต้องอธิบายซ้ำได้ 100%** — คะแนนแกน (`score_from_prices`) ไม่แก้; ตัวคูณที่ขยับเงินโชว์แยกทุกชั้น *(ข้อยกเว้นเดียวที่อนุมัติ: B4 — ดูบันทึกการตัดสินใจข้อ 4)*
@@ -45,9 +46,9 @@
 
 ## (B) "วิเคราะห์/เลือกเก่งขึ้น" — analytical depth
 - **B1. ✅ Scorecard 5 ETF + การ์ด "คำตัดสินเดือนนี้"** (เสร็จ 2026-07-17 — หน้าใหม่ "Scorecard" ในเมนู Main: การ์ด THB ต่อ ETF + donut ติดตัวคูณ, stacked bar 4 องค์ประกอบ, reason chips ต่อตัว; เลขทั้งหมดจาก `build_etf_scores`/`calculate_allocation` ห้าม UI คำนวณเอง; NO DATA แสดง "ไม่มีข้อมูล" และ caption ย้ำซื้อทุกตัวทุกเดือน) — สเปกเดิม: เรียง 5 ETF, stacked bar 4 องค์ประกอบ (Trend/Timing/Momentum/Dividend), reason chips, THB ที่จะซื้อ. **เสี่ยง market-timing:** label "น้ำหนัก/tilt เดือนนี้" ห้าม "เลือกตัวเดียว/ข้าม GLDM"; `data_ok=False` = "ไม่มีข้อมูล" ไม่ใช่ 0
-- **B2. Relative-strength ranking → ป้อน tilt** — momentum ปรับความเสี่ยง (3M/6M/12M ÷ vol). RS cross-sectional ยัง ABSENT. *reuse: `analysis/returns.py`, `risk.py`, `TILT_MIN/MAX`. เสี่ยง: ป้อน tilt เท่านั้น ทุกตัวยังซื้อทุกเดือน*
+- **B2. ❌ Relative-strength ranking → ป้อน tilt** — **ตัดสินแล้ว 2026-07-18: ไม่ทำ** — กลไกนี้ (`rel_strength` ใน edge_lab: 6M return ÷ vol, z-score, bounded 0.8–1.2) วัดผ่าน harness แล้ว +0.16%/−0.34% vs plain สองช่วง = ไม่มี edge (มติข้อ 5)
 - **B3. ✅ Multi-timeframe confluence** (เสร็จ 2026-07-17 — `technical/indicators.weekly_dca_signal` (RSI14w + MA10w/MA40w ผ่าน `dca_signal` กลางตัวเดิม) + บรรทัด Weekly และ chip "Daily+Weekly ตรงกัน = มั่นใจสูง" ใน Signal Summary Cards; สัปดาห์ < 41 แท่ง = NO_DATA) — สเปกเดิม: ห้ามใช้ MA50/MA200 บนแท่ง week ตรง ๆ (MA200w = ค่าเฉลี่ย ~4 ปี, QQQM ข้อมูลไม่พอ)
-- **B4. Stretch gauge** (distance-from-MA200 percentile) — เปลี่ยน trend gate จาก on/off เป็น dimmer. *reuse: `ta_compat.sma`, ต่อ `_timing_score`(fm:213). effort S-M*
+- **B4. ❌ Stretch gauge** (distance-from-MA200 percentile) — **ตัดสินแล้ว 2026-07-18: ไม่ทำ** — กลไกนี้ (`stretch` ใน edge_lab: percentile ของ price/MA200 → dimmer 0.8–1.2) วัดผ่าน harness แล้ว −0.23%/−0.03% vs plain = ไม่มี edge; `_timing_score` คงเดิม (มติข้อ 5)
 - **B5. ✅ Seasonality** (เสร็จ 2026-07-17 — `analysis/returns.monthly_seasonality` (median/mean/positive-rate/n ต่อเดือนปฏิทิน, เดือนไม่มีข้อมูลคง NaN) + section กราฟ median รายเดือนในหน้า Technical Signals พร้อมคำเตือน n~10 ปีต่อเดือน ห้ามใช้เลื่อน/ข้ามการซื้อ) — **เชิงบรรยายเท่านั้น ห้าม override score ตามสเปกเดิม**
 - *ของแถมถูก:* score **waterfall** แทน flat bar (app.py:1435) + **donut annotated tilt** (app.py:1576, "SCHD ×1.3 เพราะ RSI ถูก") — effort S ปิดลูป score→tilt→THB
 
@@ -81,7 +82,7 @@
    - **นโยบาย:** fallback ใช้กับ "ราคาล่าสุด/สัญญาณวันนี้" เท่านั้น — **ห้ามผสมเข้า series ประวัติที่ใช้คำนวณ score** (Stooq ไม่ adjust ปันผล ≠ Adj Close → คะแนนเพี้ยนเงียบ ๆ)
    - ลำดับ: yfinance → Stooq (ฟรี ไม่ใช้ key) → Alpha Vantage (optional ผ่าน env, free tier 25 req/วัน); ที่มาแจ้งผ่าน log warning แทน field `source` ต่อค่า — คง contract เดิม `dict[str, float]` ของ `get_current_prices` เพื่อไม่แตะ caller ทุกจุด
 
-## Phase 1 — moat edges (deterministic จากราคา/ค่าเงิน) — *gated ด้วย Phase 0* **⛔ ด่านไม่ผ่าน (2026-07-17) — ทบทวน Edge 1/2 ก่อนลงมือ (ผลอยู่ใน Phase 0 ข้อ 1)**
+## Phase 1 — moat edges (deterministic จากราคา/ค่าเงิน) — **❌ ปิดถาวร 2026-07-18 ด้วยหลักฐานสองรอบ** (รอบแรก score-tilt 2026-07-17 + รอบสอง edge_lab 5 candidates — ดูมติข้อ 5; จะเปิดใหม่ได้ก็ต่อเมื่อมีไอเดียคนละชั้นกับ per-ticker tilt แล้ววัดผ่าน harness ก่อนเสมอ)
 - **Edge 2: regime tilt** (per-ticker, bounded 0.8–1.2) — ไฟล์ใหม่ `analysis/regime.py`, ต่อ `calculate_allocation`
 - **Edge 1: FX timing** (สัญญาณระดับงบ) — ไฟล์ใหม่ `analysis/fx_timing.py`
 - *(สเปกละเอียดทั้งสองอยู่ท้ายเอกสาร)*

@@ -27,31 +27,23 @@ class PriceForecaster:
         return df[["ds", "y", "volume", "rsi", "volume_ma20"]].reset_index(drop=True)
 
     def build_model(self) -> Prophet:
-        model = Prophet(
+        # univariate โดยตั้งใจ: regressor เดิม (volume/rsi) ต้องเดาค่าอนาคตด้วยค่าคงที่
+        # = ไม่ได้ให้ข้อมูลจริง และเส้นทาง extra-regressor ของ prophet 1.1.6 พังกับ pandas 2.2
+        # (Prophet เป็นแค่กรวยประกอบระยะสั้น — ตัวพยากรณ์ทางการคือ Monte Carlo, Roadmap ข้อ 17)
+        return Prophet(
             yearly_seasonality=True,
             weekly_seasonality=True,
             daily_seasonality=False,
             changepoint_prior_scale=0.05,
         )
-        model.add_regressor("volume")
-        model.add_regressor("rsi")
-        return model
 
     def forecast(self, symbol: str, days: int = 30) -> dict:
         df = self.fetch_data(symbol)
 
         model = self.build_model()
-        model.fit(df[["ds", "y", "volume", "rsi"]])
+        model.fit(df[["ds", "y"]])
 
         future = model.make_future_dataframe(periods=days)
-
-        vol_mean = float(df["volume"].tail(20).mean())
-        rsi_last = float(df["rsi"].iloc[-1])
-
-        future = future.merge(df[["ds", "volume", "rsi"]], on="ds", how="left")
-        future["volume"] = future["volume"].fillna(vol_mean)
-        future["rsi"] = future["rsi"].fillna(rsi_last)
-
         raw_forecast = model.predict(future)
 
         # Store for external callers (e.g. chart generator)
