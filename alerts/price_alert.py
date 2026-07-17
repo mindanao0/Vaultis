@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -13,7 +14,11 @@ import pandas as pd
 import yfinance as yf
 
 from alerts.notifier import send_discord_webhook
+from data.fallback import get_latest_prices_with_fallback
+from data.fetcher import PriceDataUnavailableError
 from utils.config import load_config
+
+logger = logging.getLogger(__name__)
 
 ALERTS_PATH = Path(__file__).resolve().parent / "data" / "price_alerts.json"
 ALLOWED_ALERT_TYPES = {"above", "below"}
@@ -42,45 +47,18 @@ def _save_alerts(alerts: list[dict[str, Any]]) -> None:
     ALERTS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _extract_latest_price(raw_data: pd.DataFrame, ticker: str) -> float | None:
-    try:
-        if raw_data.empty:
-            return None
-
-        if isinstance(raw_data.columns, pd.MultiIndex):
-            if ticker not in raw_data.columns.get_level_values(0):
-                return None
-            close_series = pd.to_numeric(raw_data[ticker]["Close"], errors="coerce").dropna()
-        else:
-            close_series = pd.to_numeric(raw_data.get("Close"), errors="coerce").dropna()
-        if close_series.empty:
-            return None
-        return float(close_series.iloc[-1])
-    except Exception:
-        return None
-
-
 def get_current_prices(tickers: list[str]) -> dict[str, float]:
-    """Fetch latest close prices for given tickers."""
-    normalized = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
-    if not normalized:
-        return {}
+    """Fetch latest close prices for given tickers.
+
+    ใช้ ``data/fallback`` (yfinance → Stooq → Alpha Vantage) เพื่อให้ cron/dashboard/
+    rebalance ยังได้ราคาล่าสุดตอน yfinance ล่ม — คง contract เดิมทุกอย่าง:
+    ticker ที่ดึงไม่ได้หายไปจากผล และคืน ``{}`` เมื่อดึงไม่ได้ทั้งหมด
+    (fallback ใช้กับราคาล่าสุดเท่านั้น ห้ามใช้กับ series ประวัติที่คำนวณ score)
+    """
     try:
-        raw = yf.download(
-            tickers=normalized,
-            period="5d",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            group_by="ticker",
-        )
-        prices: dict[str, float] = {}
-        for ticker in normalized:
-            price = _extract_latest_price(raw, ticker)
-            if price is not None:
-                prices[ticker] = price
-        return prices
-    except Exception:
+        return get_latest_prices_with_fallback(tickers)
+    except PriceDataUnavailableError as exc:
+        logger.warning("get_current_prices: %s", exc)
         return {}
 
 

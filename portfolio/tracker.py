@@ -15,6 +15,7 @@ import pandas as pd
 import yfinance as yf
 
 from data.fetcher import normalize_close_series
+from portfolio.fees import dime_fee_thb
 from utils import fx
 from utils.config import load_config
 
@@ -35,7 +36,6 @@ TRACKER_DIR = Path(__file__).resolve().parent
 DATA_DIR = TRACKER_DIR / "data"
 TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
 DEFAULT_USDTHB = float(load_config()["display"]["default_fx_rate"])
-FEE_RATE = 0.0015
 
 
 def _ensure_storage() -> None:
@@ -69,6 +69,9 @@ def _ensure_storage() -> None:
 def _calculate_dime_fee_info(transactions: pd.DataFrame) -> pd.DataFrame:
     """เติมลำดับเทรดรายเดือน และคำนวณค่าธรรมเนียม Dime *เฉพาะแถวที่ยังไม่มีค่าบันทึกไว้*.
 
+    สูตรกลาง 0.15% ทุก transaction จาก ``portfolio/fees.py`` (มติ 2026-07-16 —
+    เดิมคิดเทรดแรกของเดือนฟรี ซึ่งไม่ตรงกับบัญชีจริง)
+
     (AUDIT.md M12: เดิมคำนวณทับทุกครั้งที่โหลด — ถ้ากติกาโบรกเกอร์เปลี่ยน
     ประวัติค่าธรรมเนียมจริงที่บันทึกไว้จะถูกเขียนทับด้วยสูตรปัจจุบัน)
     """
@@ -83,9 +86,7 @@ def _calculate_dime_fee_info(transactions: pd.DataFrame) -> pd.DataFrame:
     result["trade_number_in_month"] = result.groupby("trade_month").cumcount() + 1
     result["trade_value_usd"] = result["shares"] * result["price_usd"]
 
-    estimated_fee = (result["trade_value_usd"] * FEE_RATE * result["fx_rate_thb"]).where(
-        result["trade_number_in_month"] > 1, 0.0
-    )
+    estimated_fee = dime_fee_thb(result["trade_value_usd"], result["fx_rate_thb"])
     # ใช้ค่าที่บันทึกไว้ก่อน; เติมด้วยค่าประมาณเฉพาะแถวที่ไม่มีค่า
     result["fee_thb"] = pd.to_numeric(result.get("fee_thb"), errors="coerce").fillna(estimated_fee)
     return result.drop(columns=["trade_month", "trade_value_usd"])
@@ -196,7 +197,11 @@ def estimate_dime_fee_thb(
     price_usd: float,
     fx_rate_thb: float,
 ) -> tuple[int, float]:
-    """คำนวณลำดับเทรดของเดือนและค่าธรรมเนียม Dime โดยประมาณ."""
+    """คำนวณลำดับเทรดของเดือนและค่าธรรมเนียม Dime โดยประมาณ.
+
+    0.15% ทุก transaction (มติ 2026-07-16) — ลำดับเทรดของเดือนคงไว้เพื่อแสดงผลเท่านั้น
+    ไม่มีผลต่อค่าธรรมเนียมอีกต่อไป
+    """
     transaction_date = pd.to_datetime(trade_date)
     transactions = _load_transactions()
     same_month_count = int(
@@ -204,7 +209,7 @@ def estimate_dime_fee_thb(
     )
     trade_number_in_month = same_month_count + 1
     trade_value_usd = float(shares) * float(price_usd)
-    fee_thb = trade_value_usd * FEE_RATE * float(fx_rate_thb) if trade_number_in_month > 1 else 0.0
+    fee_thb = dime_fee_thb(trade_value_usd, float(fx_rate_thb))
     return trade_number_in_month, fee_thb
 
 

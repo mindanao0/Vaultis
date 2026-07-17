@@ -298,3 +298,76 @@ class TestPortfolioMissingPrice:
         # กำไรคิดจากตัวที่มีราคาเท่านั้น: (520-500) * 1 share * 34 = 680 บาท
         assert summary["total_pnl_thb"] == pytest.approx(680.0)
         assert summary["total_return_pct"] > 0  # ไม่ใช่ค่าติดลบมหาศาลจากราคา 0
+
+
+class TestDimeFee:
+    """สูตรค่าธรรมเนียมเดียวทั้งระบบ: 0.15% ทุก transaction (มติ 2026-07-16).
+
+    เดิม tracker คิดเทรดแรกของเดือนฟรี แต่ rebalance_service คิดทุกครั้ง
+    (Roadmap Phase 0 ข้อ 2) — ตอนนี้ทั้งคู่ต้องใช้ ``portfolio/fees.py``
+    """
+
+    def test_first_trade_of_month_is_charged(self, monkeypatch):
+        import portfolio.tracker as tracker
+
+        monkeypatch.setattr(tracker, "_load_transactions", tracker._empty_transactions)
+        trade_number, fee_thb = tracker.estimate_dime_fee_thb(
+            trade_date="2025-06-02", shares=2.0, price_usd=500.0, fx_rate_thb=34.0
+        )
+        assert trade_number == 1
+        # เทรดแรกของเดือนต้องโดนคิด 0.15% ด้วย — ไม่ฟรีอีกต่อไป
+        assert fee_thb == pytest.approx(2.0 * 500.0 * 0.0015 * 34.0)
+
+    def test_fee_formula_single_source(self):
+        from portfolio.fees import DIME_FEE_RATE, dime_fee_thb
+
+        assert DIME_FEE_RATE == pytest.approx(0.0015)
+        assert dime_fee_thb(1000.0, 34.0) == pytest.approx(1000.0 * 0.0015 * 34.0)
+
+    def test_rebalance_service_uses_shared_formula(self):
+        from backend.services import rebalance_service
+        from portfolio import fees
+
+        # ต้องเป็นฟังก์ชันเดียวกัน ไม่ใช่สูตรที่ประกาศซ้ำ
+        assert rebalance_service.dime_fee_thb is fees.dime_fee_thb
+
+    def test_recorded_fee_is_never_overwritten(self):
+        import portfolio.tracker as tracker
+
+        tx = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2025-01-05", "2025-01-20"]),
+                "ticker": ["VOO", "VOO"],
+                "shares": [1.0, 1.0],
+                "price_usd": [500.0, 500.0],
+                "fx_rate_thb": [34.0, 34.0],
+                "amount_thb": [17000.0, 17000.0],
+                # แถวแรกมีค่าบันทึกจริงจากสลิป, แถวสองยังไม่มีค่า
+                "fee_thb": [123.45, np.nan],
+                "note": ["", ""],
+            }
+        )
+        result = tracker._calculate_dime_fee_info(tx)
+        # AUDIT M12: ค่าที่บันทึกไว้แล้วห้ามถูกเขียนทับด้วยสูตรปัจจุบัน
+        assert result.loc[0, "fee_thb"] == pytest.approx(123.45)
+        assert result.loc[1, "fee_thb"] == pytest.approx(500.0 * 0.0015 * 34.0)
+
+    def test_missing_fee_on_first_trade_of_month_estimated_not_zero(self):
+        import portfolio.tracker as tracker
+
+        tx = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2025-03-03"]),
+                "ticker": ["SCHD"],
+                "shares": [10.0],
+                "price_usd": [80.0],
+                "fx_rate_thb": [33.0],
+                "amount_thb": [26400.0],
+                "fee_thb": [np.nan],
+                "note": [""],
+            }
+        )
+        result = tracker._calculate_dime_fee_info(tx)
+        assert result.loc[0, "trade_number_in_month"] == 1
+        # เดิมสูตรเก่าจะเติม 0.0 (เทรดแรกฟรี) — กติกาใหม่ต้องประมาณ 0.15% จริง
+        assert result.loc[0, "fee_thb"] == pytest.approx(10.0 * 80.0 * 0.0015 * 33.0)

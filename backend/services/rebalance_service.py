@@ -4,10 +4,9 @@ from typing import Any
 
 from alerts.price_alert import get_current_prices
 from analysis.llm import LLMDisabledError, chat_text
+from portfolio.fees import dime_fee_thb
 from portfolio.targets import RISK_PROFILES
 from utils import fx
-
-DIME_FEE_RATE = 0.0015  # 0.15% ต่อ transaction
 
 DRIFT_THRESHOLD = 0.05  # 5%
 
@@ -90,7 +89,7 @@ def _build_actions(
             usd_amount = abs(delta_usd)
             shares_delta = usd_amount / price
 
-        fee_thb = DIME_FEE_RATE * usd_amount * fx_rate if action_type != "hold" else 0.0
+        fee_thb = dime_fee_thb(usd_amount, fx_rate) if action_type != "hold" else 0.0
 
         actions.append({
             "symbol": sym,

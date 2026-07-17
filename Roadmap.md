@@ -5,8 +5,14 @@
 > (3) low-risk high-value ก่อน (4) money-moving/เสี่ยงสูงไว้ท้าย
 > แผน Phase 1 เดิม (regime+FX) ฉบับละเอียดอยู่ท้ายเอกสาร (คงไว้เป็นสเปกอ้างอิง)
 
+## บันทึกการตัดสินใจ (ยืนยันกับผู้ใช้ 2026-07-16)
+1. **ลำดับลงมือจริง: Phase 0 ก่อน** → แกน A/B (B1→A1→A3→ที่เหลือ) → Phase 1 → Phase 2+ (สลับจากลำดับเดิมที่ให้แกนมาก่อน)
+2. **ค่าธรรมเนียม Dime = 0.15% ทุก transaction** (ยืนยันจากบัญชีจริง — ไม่มีเทรดแรกของเดือนฟรี) → ฝั่ง `tracker.py` คือตัวผิด แก้ให้ตรงกับ `rebalance_service`; สูตรเดียวใน module กลาง
+3. **Backtest A/B รันสองช่วงเสมอ:** (ก) ช่วง proxy — QQQ แทน QQQM, GLD แทน GLDM ตั้งแต่ 2011-10 (จุดเกิด SCHD, ~14 ปี) (ข) ช่วงข้อมูลจริงล้วนตั้งแต่ 2020-11 (~5.7 ปี) — ติด label ชัดว่าช่วงไหนใช้ proxy; ด่านกั้นตัดสินจากภาพรวมทั้งสองช่วง
+4. **B2/B4 ทำตามสเปกเดิม** (B2 ป้อน tilt ได้เลย, B4 แก้ `_timing_score` ได้) — เป็น**ข้อยกเว้นที่อนุมัติแล้ว**ของ invariant "คะแนนแกนไม่แก้" เงื่อนไข: ถึงคิวแล้วต้องรันผ่าน harness Phase 0 ดูผลก่อน merge
+
 ## หลักที่ห้ามละเมิด (invariant — ทุกเฟส)
-- **ทุกเลขที่ขยับเงินต้องอธิบายซ้ำได้ 100%** — คะแนนแกน (`score_from_prices`) ไม่แก้; ตัวคูณที่ขยับเงินโชว์แยกทุกชั้น
+- **ทุกเลขที่ขยับเงินต้องอธิบายซ้ำได้ 100%** — คะแนนแกน (`score_from_prices`) ไม่แก้; ตัวคูณที่ขยับเงินโชว์แยกทุกชั้น *(ข้อยกเว้นเดียวที่อนุมัติ: B4 — ดูบันทึกการตัดสินใจข้อ 4)*
 - **ข่าว/sentiment = context ข้าง ๆ ไม่เคยเข้าในเลข**
 - **ข้อมูลหาย = fail-soft เป็น neutral/NO DATA ไม่ใช่เลขปลอม** (ยกเว้นราคา = fail loud ตาม `data/fetcher`)
 - ทุก tilt ใหม่ต้อง **bounded** + โชว์เป็นบรรทัดแยก
@@ -19,7 +25,7 @@
 
 # ⭐⭐ แกนหลัก — มองกราฟออก + วิเคราะห์เก่งขึ้น (ทำก่อน 19 ข้อด้านล่าง)
 
-> **ลำดับที่ยืนยันกับผู้ใช้:** ทำแกนนี้ก่อน → แล้วค่อยทำ "ชั้นเสริม 19 ข้อ"
+> **ลำดับที่ยืนยันกับผู้ใช้ (อัปเดต 2026-07-16):** Phase 0 (ฐาน+พิสูจน์) ก่อน → แล้วแกนนี้ → ค่อย "ชั้นเสริม 19 ข้อ" ที่เหลือ
 > เหตุผล: 19 ข้อเป็น "เปลือก" (แจ้งเตือน/ภาษี/tracking) ไม่ได้ทำให้เข้าใจตลาดหรือเลือกซื้อดีขึ้น
 > แกนที่แท้จริง = "เห็นกราฟแล้วเข้าใจ + รู้ว่าเดือนนี้ซื้ออะไรเพราะอะไร"
 > หลัก: **ไม่มีเลขใหม่ ไม่มี AI** — แค่เอา trend/timing/score/regime ที่คำนวณอยู่แล้วมา "วาด" และ "ประกอบ"
@@ -32,20 +38,20 @@
 - ⏸️ **Volume analysis** — ต้อง plumb OHLCV ใหม่ (ตอนนี้ close-only) + คุณค่าต่ำสำหรับคนถือ 10 ปี → เลื่อน
 
 ## (A) "มองกราฟออก" — chart/visual (ช่องว่างใหญ่สุด)
-- **A1. ⭐ Candlestick วาดเหตุผลลงบนกราฟ** — พื้นหลัง shade เขียวเมื่อ price≥MA200, ★golden/✕death cross บนบาร์จริง, สามเหลี่ยมวันที่เป็น ACCUMULATE, default **weekly**. ย้าย signal ขึ้นมาบนราคา เห็นแวบเดียว. *reuse: `app.py:1080-1148`, `crossover_detector.py`, `fetch_ohlc_data`(app.py:997). เสี่ยง: `fetch_ohlc_data` คืน `{}` ไม่ fail-loud → ต้อง guard; วาดเฉพาะ ACCUMULATE/BULLISH ไม่มีลูกศรขาย. effort M*
+- **A1. ⭐ Candlestick วาดเหตุผลลงบนกราฟ** — พื้นหลัง shade เขียวเมื่อ price≥MA200, ★golden/✕death cross บนบาร์จริง, สามเหลี่ยมวันที่เป็น ACCUMULATE, default **weekly**. ย้าย signal ขึ้นมาบนราคา เห็นแวบเดียว. *reuse: `app.py:1080-1148`, `crossover_detector.py` (backend/screener/), `fetch_ohlc_data`(app.py:997). เสี่ยง: `fetch_ohlc_data` คืน `{}` ไม่ fail-loud → ต้อง guard; `crossover_detector` คืนแค่ bool "เพิ่ง cross ใน 3 วัน" → ต้องเขียน helper สกัดวันที่ cross ทั้งหมดย้อนหลังจาก MA series; วาดเฉพาะ ACCUMULATE/BULLISH ไม่มีลูกศรขาย. effort M*
 - **A2. Trend channel** (linear regression log ±2σ) — เส้นเทรนด์หลายปี + แถบ σ + badge "+1.8σ = เติมพิเศษน้อยลง". ตอบ "ซื้อใกล้ยอดหรือก้น" เชิงสถิติ. *reuse: `numpy.polyfit` (ไม่มี dep ใหม่). effort M เสี่ยงต่ำ*
-- **A3. ⭐ Underwater/drawdown chart** — % ต่ำกว่า ATH ตามเวลา + การฟื้นรอบก่อน. กัน panic-selling ตรง ๆ. *reuse: ต่อ cumulative-max ใน `analysis/risk.py:52`. effort S-M, close-only = fail-loud ฟรี*
+- **A3. ⭐ Underwater/drawdown chart** — % ต่ำกว่า ATH ตามเวลา + การฟื้นรอบก่อน. กัน panic-selling ตรง ๆ. *reuse: ต่อ cumulative-max ใน `analysis/risk.py:52` (`calculate_max_drawdown` ปัจจุบันคืน scalar ต่อ ticker — ต้อง expose ซีรีส์ underwater ที่เป็นค่ากลางในฟังก์ชันอยู่แล้ว). effort S-M, close-only = fail-loud ฟรี*
 - **A4. จุดซื้อของคุณ + เส้น cost-basis** บนกราฟ — เห็นการเฉลี่ยต้นทุนจริง. *reuse: `portfolio/tracker.py`, `utils/fx.py`. เสี่ยง: โชว์ `is_live=False` ตรง ๆ; dashboard-only (ledger gitignored). effort M*
 
 ## (B) "วิเคราะห์/เลือกเก่งขึ้น" — analytical depth
 - **B1. ⭐ Scorecard 5 ETF + การ์ด "คำตัดสินเดือนนี้"** — เรียง 5 ETF, stacked bar 4 องค์ประกอบ (Trend/Timing/Momentum/Dividend), reason chips ("เหนือ MA200 ✓", "RSI 34 ถูก"), THB ที่จะซื้อ. รวมคำตอบจาก 4 หน้าเป็นหน้าเดียว. *reuse: `build_etf_scores`(fm:536), `calculate_allocation`, score bar app.py:1435. effort M. **เสี่ยง market-timing:** label "น้ำหนัก/tilt เดือนนี้" ห้าม "เลือกตัวเดียว/ข้าม GLDM"; `data_ok=False` = "ไม่มีข้อมูล" ไม่ใช่ 0*
 - **B2. Relative-strength ranking → ป้อน tilt** — momentum ปรับความเสี่ยง (3M/6M/12M ÷ vol). RS cross-sectional ยัง ABSENT. *reuse: `analysis/returns.py`, `risk.py`, `TILT_MIN/MAX`. เสี่ยง: ป้อน tilt เท่านั้น ทุกตัวยังซื้อทุกเดือน*
-- **B3. Multi-timeframe confluence** (Daily+Weekly ตรงกัน = มั่นใจสูง) — รัน `dca_signal` เดิมบน `resample('W')` ไม่มี threshold ใหม่. effort M เสี่ยงต่ำ
+- **B3. Multi-timeframe confluence** (Daily+Weekly ตรงกัน = มั่นใจสูง) — รัน `dca_signal` เดิมบนแท่ง weekly ด้วย RSI14 weekly + **MA10w/MA40w** (เทียบเท่า MA50d/MA200d — ห้ามใช้ MA50/MA200 บนแท่ง week ตรง ๆ เพราะ MA200w = ค่าเฉลี่ย ~4 ปี, QQQM ข้อมูลไม่พอ). effort M เสี่ยงต่ำ
 - **B4. Stretch gauge** (distance-from-MA200 percentile) — เปลี่ยน trend gate จาก on/off เป็น dimmer. *reuse: `ta_compat.sma`, ต่อ `_timing_score`(fm:213). effort S-M*
 - **B5. Seasonality** (เดือนไหนเคยอ่อน) — **เชิงบรรยายเท่านั้น ห้าม override score**. *reuse: `analysis/returns.py`. เสี่ยง: noisy บน 10y*
 - *ของแถมถูก:* score **waterfall** แทน flat bar (app.py:1435) + **donut annotated tilt** (app.py:1576, "SCHD ×1.3 เพราะ RSI ถูก") — effort S ปิดลูป score→tilt→THB
 
-## เริ่มจาก 3 อันนี้
+## เริ่มจาก 3 อันนี้ (หลังจบ Phase 0 — ตามมติ 2026-07-16)
 1. **B1 Scorecard 5 ETF** — ประกอบเลขที่มีอยู่ล้วน ๆ, leverage การตัดสินใจสูงสุด
 2. **A1 Candlestick วาดเหตุผล** — ปิดช่องว่าง chart-form ที่ใหญ่สุด
 3. **A3 Underwater chart** — ถูกสุด, กัน panic-selling, fail-loud ฟรี
@@ -61,10 +67,14 @@
 ## Phase 0 — ฐาน + พิสูจน์ (ทำก่อนสุด, de-risk ทั้ง roadmap)
 1. **Backtest A/B พิสูจน์ edge** — harness เทียบ DCA เป้าหมายปกติ vs DCA ที่ tilt (regime/FX) ย้อนหลัง
    - ใช้ซ้ำ: `portfolio/dca.py` `simulate_dca(weights,...)` + `portfolio/backtest.py` (Sharpe/max DD/เทียบ VOO)
-   - หมายเหตุ: ทั้งคู่ใช้ fixed weights → ต้องย้ายการคำนวณ weight เข้าไปใน loop รายเดือนเพื่อรองรับ tilt ที่แปรตามเวลา
+   - หมายเหตุ: ทั้งคู่ใช้ fixed weights → ต้องย้ายการคำนวณ weight เข้าไปใน loop รายเดือนเพื่อรองรับ tilt ที่แปรตามเวลา (point-in-time เท่านั้น — ห้าม look-ahead)
+   - **สองช่วงทดสอบ (มติข้อ 3):** ช่วง proxy (VOO/SCHD/QQQ/XLV/GLD) ตั้งแต่ 2011-10 + ช่วงข้อมูลจริงล้วนตั้งแต่ 2020-11; inception จริง: XLV 1998-12, VOO 2010-09, SCHD 2011-10, GLDM 2018-06, QQQM 2020-10
+   - ค่าธรรมเนียมไม่กระทบผล A/B (0.15% ของงบเดือนเท่ากันทั้งสองแขน) → v1 ไม่คิด fee ทั้งคู่ และระบุไว้ใน docstring
    - **เป็นด่านกั้น:** ถ้า tilt ไม่ชนะ plain DCA → ทบทวน Edge 1/2 ก่อนลงมือ
-2. **แก้บั๊กค่าธรรมเนียมไม่ตรงกัน** — `portfolio/tracker.py:207` (เดือนแรกฟรี) vs `backend/services/rebalance_service.py:93` (คิดทุกครั้ง) → รวมสูตรเดียว
+2. **แก้บั๊กค่าธรรมเนียมไม่ตรงกัน** — `portfolio/tracker.py:207` (เทรดแรกของเดือนฟรี — **ผิด**) vs `backend/services/rebalance_service.py:93` (คิดทุกครั้ง — **ถูกตามบัญชีจริง**, มติข้อ 2) → สูตรเดียว 0.15% ทุก transaction ใน module กลาง; **ห้าม rewrite ค่า fee ที่บันทึกแล้วใน ledger** (AUDIT M12 — เติมค่าประมาณเฉพาะแถวที่ไม่มีค่า)
 3. **แหล่งราคาสำรอง (J)** — เพิ่ม fallback (Stooq/Alpha Vantage) รอบ `data/fetcher.py` ให้ yfinance ล่มแล้วยังทำงาน (คง fail-loud เมื่อทุกแหล่งล่ม)
+   - **นโยบาย:** fallback ใช้กับ "ราคาล่าสุด/สัญญาณวันนี้" เท่านั้น — **ห้ามผสมเข้า series ประวัติที่ใช้คำนวณ score** (Stooq ไม่ adjust ปันผล ≠ Adj Close → คะแนนเพี้ยนเงียบ ๆ)
+   - ลำดับ: yfinance → Stooq (ฟรี ไม่ใช้ key) → Alpha Vantage (optional ผ่าน env, free tier 25 req/วัน); ทุกค่าติด field `source` กำกับที่มา
 
 ## Phase 1 — moat edges (deterministic จากราคา/ค่าเงิน) — *gated ด้วย Phase 0*
 - **Edge 2: regime tilt** (per-ticker, bounded 0.8–1.2) — ไฟล์ใหม่ `analysis/regime.py`, ต่อ `calculate_allocation`
@@ -75,8 +85,9 @@
 4. **ภาษี + ต้นทุนจริง** — ภาษีหัก ณ ที่จ่าย 15% ปันผล US (กระทบ SCHD หนักสุด), FX spread, ค่าคอมขั้นต่ำ
    - ที่มีอยู่: ค่าคอม Dime 0.15% (`tracker.py:38`), FX mid-rate (`utils/fx.py`) — เพิ่มชั้นภาษี+spread ทับ
    - dashboard มี disclaimer "ไม่คิดภาษี" (`dashboard/app.py:1213`) → แทนที่ด้วยตัวเลขจริง
+   - เพิ่ม disclaimer แยกบรรทัด: ภาษีเงินได้ไทยกรณีนำเงินกลับประเทศ (ปอ.161/2566 มีผลตั้งแต่ปีภาษี 2567) — **ไม่เข้าเลขคำนวณ** แค่แจ้งว่ามีประเด็นนี้อยู่
 5. **ติดตามเงินปันผลจริง + DRIP** — ledger ปัจจุบัน buy-only (`tracker.py:23-33`) → เพิ่ม tx type "รับปันผล", คำนวณ income หลังภาษี, จำลอง DRIP
-6. **ผลตอบแทนจริงหลังภาษี+FX+เงินเฟ้อ (B)** — real return เป็นบาท ใช้ Thai CPI (`analysis/macro.py`) — *ต่อยอดจากข้อ 4-5*
+6. **ผลตอบแทนจริงหลังภาษี+FX+เงินเฟ้อ (B)** — real return เป็นบาท ด้วย Thai CPI — **`analysis/macro.py` ยังไม่มี Thai CPI (มีแต่ US `CPIAUCSL`)** → ต้องเพิ่ม source ใหม่ (ประเมิน FRED series ไทยที่หลายตัวถูก discontinue / BOT API / World Bank) + fail-soft เป็น "ไม่ทราบเงินเฟ้อ" — *ต่อยอดจากข้อ 4-5*
 
 ## Phase 3 — personalization & ความโปร่งใส
 7. **Edge 3: drift personalization** (advisory) — `portfolio/tracker.get_portfolio_summary()` + `get_target_weights()`
@@ -92,6 +103,7 @@
 15. **Monte Carlo ผูกพอร์ตจริง (C) — ⭐ เครื่องพยากรณ์หลักของระบบ** — ต่อ `goal_service.calculate_probability()`
     (1000 sims มีอยู่แล้ว) เข้าพอร์ต+จังหวะ DCA จริง → "ด้วยจังหวะนี้ ถึงเป้าด้วยความน่าจะเป็น X%"
     นี่คือ horizon ที่ถูกต้องของ DCA (สิบปี, เชิงความน่าจะเป็น) — เป็นตัวเน้น
+    (หมายเหตุ: `calculate_probability` ปัจจุบันใช้ normal dist + `EXPECTED_RETURNS` คงที่ต่อ risk profile → ต้องคำนวณ μ/σ จากน้ำหนักพอร์ตจริงแทน)
 
 ## Phase 5 — reach & AI ขั้นสูง (เสี่ยง/แพงสุด — ท้ายสุด)
 16. **แจ้งเตือน LINE (A)** — เพิ่มช่องทาง LINE Messaging API ข้าง Discord/Telegram (localization)
