@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 import yfinance as yf
 from dotenv import load_dotenv
 from fredapi import Fred
@@ -30,6 +32,48 @@ _YF_SYMBOLS = {
     "dxy": "DX-Y.NYB",
     "vix": "^VIX",
 }
+
+
+# --- เงินเฟ้อไทย (Roadmap Phase 2 ข้อ 6) ---
+# FRED series ของไทยหลายตัวถูก discontinue → ใช้ World Bank API (ฟรี ไม่ใช้ key, รายปี)
+_WORLD_BANK_TH_CPI_URL = (
+    "https://api.worldbank.org/v2/country/THA/indicator/FPCPITOTLZG"
+    "?format=json&per_page=10&mrnev=1"  # mrnev=1 = ค่าล่าสุดที่ไม่ว่าง
+)
+_thai_cpi_cache: tuple[float, dict[str, Any] | None] | None = None  # (fetched_at, result)
+
+
+def get_thai_inflation() -> dict[str, Any] | None:
+    """เงินเฟ้อไทยปีล่าสุดที่มีข้อมูล (CPI YoY, %) จาก World Bank.
+
+    fail-soft: ดึงไม่ได้/รูปแบบผิด → ``None`` — ผู้เรียกต้องแสดง "ไม่ทราบเงินเฟ้อ"
+    ห้ามเดาเลขแทน; cache สำเร็จ 24 ชม. (ข้อมูลรายปี) / ล้มเหลว 10 นาที
+    """
+    global _thai_cpi_cache
+    now = time.time()
+    if _thai_cpi_cache is not None:
+        fetched_at, cached = _thai_cpi_cache
+        ttl = 86400.0 if cached is not None else 600.0
+        if now - fetched_at < ttl:
+            return dict(cached) if cached is not None else None
+
+    result: dict[str, Any] | None = None
+    try:
+        response = requests.get(_WORLD_BANK_TH_CPI_URL, timeout=10)
+        response.raise_for_status()
+        rows = response.json()[1]
+        latest = rows[0]
+        result = {
+            "inflation_pct": float(latest["value"]),
+            "year": int(latest["date"]),
+            "source": "World Bank",
+        }
+    except Exception as exc:
+        logger.warning("ดึงเงินเฟ้อไทยจาก World Bank ไม่สำเร็จ: %s", exc)
+        result = None
+
+    _thai_cpi_cache = (now, result)
+    return dict(result) if result is not None else None
 
 
 def _cpi_yoy_percent(cpi_series: pd.Series) -> pd.Series:

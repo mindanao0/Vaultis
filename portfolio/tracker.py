@@ -31,7 +31,13 @@ CSV_COLUMNS = [
     "amount_thb",
     "fee_thb",
     "note",
+    "tx_type",
 ]
+
+# ประเภทธุรกรรมใน ledger (Roadmap Phase 2 ข้อ 5 — เดิม buy-only)
+# แถวเก่า/ค่าว่าง/ค่าที่ไม่รู้จัก ถูก normalize เป็น buy เสมอ (backward compatible)
+TX_BUY = "buy"
+TX_DIVIDEND = "dividend"
 TRACKER_DIR = Path(__file__).resolve().parent
 DATA_DIR = TRACKER_DIR / "data"
 TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
@@ -49,7 +55,12 @@ def _ensure_storage() -> None:
     changed = False
     for col in CSV_COLUMNS:
         if col not in existing_df.columns:
-            existing_df[col] = 0.0 if col == "fee_thb" else ""
+            if col == "fee_thb":
+                existing_df[col] = 0.0
+            elif col == "tx_type":
+                existing_df[col] = TX_BUY  # แถวเก่าทั้งหมดคือรายการซื้อ
+            else:
+                existing_df[col] = ""
             changed = True
 
     # แถวเก่าที่ยังไม่มี tx_id → ออกให้ (ใช้อ้างอิงตอนลบผ่าน API)
@@ -83,10 +94,19 @@ def _calculate_dime_fee_info(transactions: pd.DataFrame) -> pd.DataFrame:
 
     result = transactions.sort_values("date").reset_index(drop=True).copy()
     result["trade_month"] = result["date"].dt.to_period("M")
-    result["trade_number_in_month"] = result.groupby("trade_month").cumcount() + 1
+    # ปันผลไม่ใช่เทรด — ไม่นับลำดับเทรดของเดือนและไม่ประมาณค่าธรรมเนียม
+    if "tx_type" in result.columns:
+        is_trade = result["tx_type"] != TX_DIVIDEND
+    else:
+        is_trade = pd.Series(True, index=result.index)
+    result["trade_number_in_month"] = 0
+    result.loc[is_trade, "trade_number_in_month"] = (
+        result[is_trade].groupby("trade_month").cumcount() + 1
+    )
     result["trade_value_usd"] = result["shares"] * result["price_usd"]
 
     estimated_fee = dime_fee_thb(result["trade_value_usd"], result["fx_rate_thb"])
+    estimated_fee = estimated_fee.where(is_trade, 0.0)
     # ใช้ค่าที่บันทึกไว้ก่อน; เติมด้วยค่าประมาณเฉพาะแถวที่ไม่มีค่า
     result["fee_thb"] = pd.to_numeric(result.get("fee_thb"), errors="coerce").fillna(estimated_fee)
     return result.drop(columns=["trade_month", "trade_value_usd"])
@@ -109,6 +129,7 @@ def _empty_transactions() -> pd.DataFrame:
             "amount_thb": pd.Series(dtype="float64"),
             "fee_thb": pd.Series(dtype="float64"),
             "note": pd.Series(dtype="object"),
+            "tx_type": pd.Series(dtype="object"),
         }
     )
     empty["trade_number_in_month"] = pd.Series(dtype="int64")
@@ -136,6 +157,9 @@ def _load_transactions() -> pd.DataFrame:
     df["amount_thb"] = pd.to_numeric(df["amount_thb"], errors="coerce")
     df["fee_thb"] = pd.to_numeric(df["fee_thb"], errors="coerce")
     df["note"] = df["note"].fillna("").astype(str)
+    # ค่าว่าง/ไม่รู้จัก = buy เสมอ — ห้ามทิ้งแถวเก่าเงียบ ๆ เพราะ schema เพิ่มทีหลัง
+    tx_type = df["tx_type"].fillna("").astype(str).str.strip().str.lower()
+    df["tx_type"] = tx_type.where(tx_type.isin([TX_BUY, TX_DIVIDEND]), TX_BUY)
     df = df.dropna(subset=["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb"])
     if df.empty:
         return _empty_transactions()
@@ -204,6 +228,8 @@ def estimate_dime_fee_thb(
     """
     transaction_date = pd.to_datetime(trade_date)
     transactions = _load_transactions()
+    if "tx_type" in transactions.columns:
+        transactions = transactions[transactions["tx_type"] != TX_DIVIDEND]
     same_month_count = int(
         (transactions["date"].dt.to_period("M") == transaction_date.to_period("M")).sum()
     )
@@ -244,6 +270,7 @@ def add_transaction(
         "amount_thb": float(amount_thb),
         "fee_thb": float(fee_thb),
         "note": note.strip(),
+        "tx_type": TX_BUY,
     }
     pd.DataFrame([row], columns=CSV_COLUMNS).to_csv(
         TRANSACTIONS_FILE,
@@ -252,6 +279,77 @@ def add_transaction(
         index=False,
     )
     return row
+
+
+def add_dividend(
+    date: str,
+    ticker: str,
+    amount_usd: float,
+    fx_rate_thb: float,
+    note: str = "",
+) -> dict[str, object]:
+    """บันทึกปันผลที่ได้รับจริง (Roadmap Phase 2 ข้อ 5).
+
+    ``amount_usd`` = ยอด **สุทธิ** ที่เข้าบัญชีจริง (โบรกหักภาษี ณ ที่จ่าย 15% แล้ว)
+    — บันทึกตามที่รับจริง ไม่คำนวณกลับ; ยอด gross/ภาษีเป็นชั้นแสดงผล (portfolio/costs.py)
+    แถวปันผล: shares=0, price_usd=0 → ไม่กระทบ cost basis และไม่นับเป็นเทรด
+    """
+    if not ticker or amount_usd <= 0 or fx_rate_thb <= 0:
+        raise ValueError("ticker, amount_usd และ fx_rate_thb ต้องมีค่ามากกว่า 0")
+
+    _ensure_storage()
+    row = {
+        "tx_id": str(uuid.uuid4()),
+        "date": pd.to_datetime(date).strftime("%Y-%m-%d"),
+        "ticker": ticker.strip().upper(),
+        "shares": 0.0,
+        "price_usd": 0.0,
+        "fx_rate_thb": float(fx_rate_thb),
+        "amount_thb": float(amount_usd) * float(fx_rate_thb),
+        "fee_thb": 0.0,
+        "note": note.strip(),
+        "tx_type": TX_DIVIDEND,
+    }
+    pd.DataFrame([row], columns=CSV_COLUMNS).to_csv(
+        TRANSACTIONS_FILE,
+        mode="a",
+        header=False,
+        index=False,
+    )
+    return row
+
+
+def get_dividends(ticker: str | None = None) -> pd.DataFrame:
+    """แถวปันผลจาก ledger (ใหม่→เก่า); เพิ่มคอลัมน์ ``amount_usd`` (สุทธิ ณ วันรับ)."""
+    transactions = _load_transactions()
+    dividends = transactions[transactions["tx_type"] == TX_DIVIDEND].copy()
+    if ticker:
+        dividends = dividends[dividends["ticker"] == ticker.strip().upper()]
+    if dividends.empty:
+        return dividends
+    dividends["amount_usd"] = dividends["amount_thb"] / dividends["fx_rate_thb"]
+    return dividends.sort_values("date", ascending=False).reset_index(drop=True)
+
+
+def get_dividend_summary() -> dict[str, object]:
+    """สรุปปันผลสุทธิที่รับจริงทั้งหมด (THB/USD) รวมและรายปีปัจจุบัน."""
+    dividends = get_dividends()
+    if dividends.empty:
+        return {
+            "total_thb": 0.0,
+            "total_usd": 0.0,
+            "count": 0,
+            "this_year_thb": 0.0,
+            "by_ticker_thb": {},
+        }
+    this_year = dividends[dividends["date"].dt.year == pd.Timestamp.today().year]
+    return {
+        "total_thb": float(dividends["amount_thb"].sum()),
+        "total_usd": float(dividends["amount_usd"].sum()),
+        "count": int(len(dividends)),
+        "this_year_thb": float(this_year["amount_thb"].sum()),
+        "by_ticker_thb": dividends.groupby("ticker")["amount_thb"].sum().to_dict(),
+    }
 
 
 def delete_transaction(tx_id: str) -> bool:
@@ -274,8 +372,14 @@ def delete_transaction(tx_id: str) -> bool:
 
 
 def get_portfolio_summary() -> pd.DataFrame:
-    """สรุปพอร์ตปัจจุบันรายสินทรัพย์ พร้อม P&L และ % Return."""
+    """สรุปพอร์ตปัจจุบันรายสินทรัพย์ พร้อม P&L และ % Return.
+
+    คิดจากรายการซื้อเท่านั้น — ปันผล (tx_type=dividend) ไม่เข้า cost basis/จำนวนหุ้น
+    (P&L ที่ได้จึงเป็นกำไรจากราคาล้วน; รายรับปันผลดูจาก ``get_dividend_summary``)
+    """
     transactions = _load_transactions()
+    if "tx_type" in transactions.columns:
+        transactions = transactions[transactions["tx_type"] != TX_DIVIDEND]
     if transactions.empty:
         return pd.DataFrame(
             columns=[

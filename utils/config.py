@@ -45,6 +45,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "currency": "THB",
         "default_fx_rate": 33.5,
     },
+    # ชั้นต้นทุนโดยประมาณ (Roadmap Phase 2 ข้อ 4) — ไม่มี secret
+    "costs": {
+        # FX spread ของโบรก/ธนาคาร เป็น "ประมาณการ" — ปรับให้ตรงบัญชีจริงได้ที่นี่
+        "fx_spread_pct": 0.25,
+    },
 }
 
 
@@ -98,6 +103,12 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     currency = str(merged["display"].get("currency", "THB")).upper()
     merged["display"]["currency"] = currency if currency in {"THB", "USD"} else "THB"
     merged["display"]["default_fx_rate"] = float(merged["display"].get("default_fx_rate", 33.5))
+
+    try:
+        fx_spread = float(merged["costs"].get("fx_spread_pct", 0.25))
+    except (TypeError, ValueError):
+        fx_spread = 0.25
+    merged["costs"]["fx_spread_pct"] = min(max(fx_spread, 0.0), 5.0)
 
     return merged
 

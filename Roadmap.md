@@ -86,13 +86,13 @@
 - **Edge 1: FX timing** (สัญญาณระดับงบ) — ไฟล์ใหม่ `analysis/fx_timing.py`
 - *(สเปกละเอียดทั้งสองอยู่ท้ายเอกสาร)*
 
-## Phase 2 — ชั้นความจริง & ต้นทุน (moat ไทยที่แข็งสุด)
-4. **ภาษี + ต้นทุนจริง** — ภาษีหัก ณ ที่จ่าย 15% ปันผล US (กระทบ SCHD หนักสุด), FX spread, ค่าคอมขั้นต่ำ
+## Phase 2 — ชั้นความจริง & ต้นทุน (moat ไทยที่แข็งสุด) — **✅ เสร็จ 2026-07-17**
+4. ✅ **ภาษี + ต้นทุนจริง** (เสร็จ 2026-07-17 — `portfolio/costs.py`: withholding 15%, net yield, FX spread จาก config `costs.fx_spread_pct` (ประมาณการ default 0.25%), ต้นทุนต่อรอบ DCA; แผง "ต้นทุนจริง & ภาษี" ในหน้า Portfolio + ตารางภาษีปันผล/ปีต่อ holding + disclaimer ปอ.161/2566) — ภาษีหัก ณ ที่จ่าย 15% ปันผล US (กระทบ SCHD หนักสุด), FX spread, ค่าคอมขั้นต่ำ
    - ที่มีอยู่: ค่าคอม Dime 0.15% (`tracker.py:38`), FX mid-rate (`utils/fx.py`) — เพิ่มชั้นภาษี+spread ทับ
    - dashboard มี disclaimer "ไม่คิดภาษี" (`dashboard/app.py:1213`) → แทนที่ด้วยตัวเลขจริง
    - เพิ่ม disclaimer แยกบรรทัด: ภาษีเงินได้ไทยกรณีนำเงินกลับประเทศ (ปอ.161/2566 มีผลตั้งแต่ปีภาษี 2567) — **ไม่เข้าเลขคำนวณ** แค่แจ้งว่ามีประเด็นนี้อยู่
-5. **ติดตามเงินปันผลจริง + DRIP** — ledger ปัจจุบัน buy-only (`tracker.py:23-33`) → เพิ่ม tx type "รับปันผล", คำนวณ income หลังภาษี, จำลอง DRIP
-6. **ผลตอบแทนจริงหลังภาษี+FX+เงินเฟ้อ (B)** — real return เป็นบาท ด้วย Thai CPI — **`analysis/macro.py` ยังไม่มี Thai CPI (มีแต่ US `CPIAUCSL`)** → ต้องเพิ่ม source ใหม่ (ประเมิน FRED series ไทยที่หลายตัวถูก discontinue / BOT API / World Bank) + fail-soft เป็น "ไม่ทราบเงินเฟ้อ" — *ต่อยอดจากข้อ 4-5*
+5. ✅ **ติดตามเงินปันผลจริง + DRIP** (เสร็จ 2026-07-17 — ledger เพิ่มคอลัมน์ `tx_type` (buy|dividend, แถวเก่า/ค่าว่าง = buy เสมอ), `add_dividend` บันทึกยอด**สุทธิ**ที่รับจริง, ปันผลไม่เข้า cost basis/ไม่นับเป็นเทรด (มีเทสต์คุม), ฟอร์ม+สรุปรายรับในหน้า Portfolio, `portfolio/drip.py` จำลอง DRIP จากราคาจริง ณ วันรับ)
+6. ✅ **ผลตอบแทนจริงหลังภาษี+FX+เงินเฟ้อ (B)** (เสร็จ 2026-07-17 — `analysis/macro.get_thai_inflation` จาก World Bank API (ฟรี ไม่ใช้ key, fail-soft → "ไม่ทราบเงินเฟ้อ", cache 24 ชม.) + บรรทัด "เป้าที่ต้องชนะต่อปี" ในหน้า Portfolio; **จงใจไม่โชว์ real return จากผลตอบแทนสะสม** เพราะเทียบสะสมกับเงินเฟ้อรายปีตรง ๆ เป็นเลขหลอก — real return เต็มรูปผูกกับ XIRR ในข้อ 14 benchmark)
 
 ## Phase 3 — personalization & ความโปร่งใส
 7. **Edge 3: drift personalization** (advisory) — `portfolio/tracker.get_portfolio_summary()` + `get_target_weights()`

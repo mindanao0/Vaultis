@@ -34,12 +34,14 @@ from analysis.financial_model import (
     TILT_MIN,
     TIMING_MAX,
     TREND_MAX,
+    _dividend_yield,
     build_etf_scores,
     calculate_allocation,
     run_full_analysis,
 )
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns, monthly_seasonality
+from analysis.macro import get_thai_inflation
 from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
 from analysis.trend_channel import fit_trend_channel
 from alerts.notifier import test_alert
@@ -56,9 +58,22 @@ from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from portfolio.backtest import run_portfolio_backtest
 from portfolio.dca import simulate_monthly_dca
 from portfolio.targets import RISK_PROFILES, get_risk_profile, get_target_weights
+from portfolio.costs import (
+    US_DIVIDEND_WITHHOLDING,
+    estimate_annual_dividend_tax_thb,
+    estimate_monthly_costs_thb,
+    fx_spread_pct,
+    gross_up_net_dividend,
+    net_dividend_yield,
+)
+from portfolio.drip import simulate_drip
 from portfolio.tracker import (
+    TX_DIVIDEND,
+    add_dividend,
     add_transaction,
     estimate_dime_fee_thb,
+    get_dividend_summary,
+    get_dividends,
     get_portfolio_summary,
     get_today_fx_rate_thb,
     get_total_summary,
@@ -2248,6 +2263,12 @@ def render_macro_page() -> None:
         st.info(f"ข้อมูลไม่ครบ ไม่สามารถสรุปได้ (ขาด: {', '.join(missing)})")
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_dividend_yields(tickers: tuple[str, ...]) -> dict[str, float | None]:
+    """gross dividend yield ต่อ ticker (ตัวดึงเดียวกับระบบคะแนน); ดึงไม่ได้ = None ไม่เดา."""
+    return {ticker: _dividend_yield(ticker) for ticker in tickers}
+
+
 def render_portfolio_page() -> None:
     """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ต."""
     st.header("Portfolio")
@@ -2311,6 +2332,45 @@ def render_portfolio_page() -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"บันทึกไม่สำเร็จ: {exc}")
+
+    with st.expander("บันทึกปันผลรับ (Dividend)"):
+        st.caption(
+            f"กรอกยอด**สุทธิ**ที่เข้าบัญชีจริง (โบรกหักภาษี ณ ที่จ่าย {US_DIVIDEND_WITHHOLDING:.0%} แล้ว) "
+            "— ระบบเก็บตามที่รับจริง ไม่กระทบต้นทุน/จำนวนหุ้น"
+        )
+        with st.form("portfolio_dividend_form", clear_on_submit=True):
+            div_col1, div_col2, div_col3 = st.columns(3)
+            with div_col1:
+                dividend_date = st.date_input("วันที่รับ", key="dividend_date")
+                dividend_ticker = st.selectbox("ETF", get_tickers(), key="dividend_ticker")
+            with div_col2:
+                dividend_usd = st.number_input(
+                    "ปันผลสุทธิ (USD)", min_value=0.01, value=10.0, step=0.01, format="%.2f"
+                )
+            with div_col3:
+                dividend_fx = st.number_input(
+                    "FX Rate (THB/USD)",
+                    min_value=0.0001,
+                    value=float(today_fx_rate),
+                    step=0.01,
+                    format="%.4f",
+                    key="dividend_fx",
+                )
+                dividend_note = st.text_input("หมายเหตุ", value="", key="dividend_note")
+            dividend_submitted = st.form_submit_button("บันทึกปันผล", type="primary")
+            if dividend_submitted:
+                try:
+                    add_dividend(
+                        date=dividend_date.strftime("%Y-%m-%d"),
+                        ticker=dividend_ticker,
+                        amount_usd=float(dividend_usd),
+                        fx_rate_thb=float(dividend_fx),
+                        note=dividend_note,
+                    )
+                    st.success("บันทึกปันผลแล้ว")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"บันทึกไม่สำเร็จ: {exc}")
 
     st.divider()
     st.subheader("Portfolio Summary")
@@ -2396,6 +2456,111 @@ def render_portfolio_page() -> None:
             st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
 
     st.divider()
+    st.subheader("ต้นทุนจริง & ภาษี (โดยประมาณ)")
+    dca_budget_thb = float(config["dca"]["monthly_budget_thb"])
+    month_costs = estimate_monthly_costs_thb(dca_budget_thb)
+    cost_col1, cost_col2, cost_col3 = st.columns(3)
+    cost_col1.metric("ค่าคอมสะสมที่จ่ายแล้ว", f"{float(total_summary['total_fee_thb']):,.2f} ฿")
+    cost_col2.metric(
+        f"ต้นทุนต่อรอบ DCA ({dca_budget_thb:,.0f} ฿)",
+        f"~{month_costs['total_thb']:,.0f} ฿ ({month_costs['total_pct']:.2f}%)",
+    )
+
+    tax_rows: list[dict[str, object]] = []
+    if not holdings_df.empty:
+        with st.spinner("กำลังดึง dividend yield..."):
+            yields = cached_dividend_yields(tuple(holdings_df["Ticker"].astype(str)))
+        for _, holding in holdings_df[holdings_df["Price OK"]].iterrows():
+            gross_yield = yields.get(str(holding["Ticker"]))
+            if gross_yield is None or gross_yield <= 0:
+                continue
+            tax_rows.append(
+                {
+                    "Ticker": holding["Ticker"],
+                    "Gross yield": gross_yield * 100.0,
+                    "Net yield (หลังภาษี 15%)": net_dividend_yield(gross_yield) * 100.0,
+                    "ภาษีถูกหัก/ปี (฿)": estimate_annual_dividend_tax_thb(
+                        float(holding["Current Value (THB)"]), gross_yield
+                    ),
+                }
+            )
+    estimated_annual_tax = sum(float(r["ภาษีถูกหัก/ปี (฿)"]) for r in tax_rows)
+    cost_col3.metric("ภาษีปันผลถูกหัก/ปี (ประมาณ)", f"~{estimated_annual_tax:,.0f} ฿")
+    if tax_rows:
+        st.dataframe(
+            pd.DataFrame(tax_rows).style.format(
+                {
+                    "Gross yield": "{:.2f}%",
+                    "Net yield (หลังภาษี 15%)": "{:.2f}%",
+                    "ภาษีถูกหัก/ปี (฿)": "{:,.0f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.caption(
+        f"ค่าคอม 0.15%/รายการ (ตามบัญชีจริง) · FX spread ~{fx_spread_pct():.2f}% เป็น**ประมาณการ** "
+        "(ปรับได้ที่ config `costs.fx_spread_pct`) · "
+        f"ปันผล US ถูกหักภาษี ณ ที่จ่าย {US_DIVIDEND_WITHHOLDING:.0%} ตามสนธิสัญญาภาษี US-ไทย "
+        "(กระทบ SCHD มากสุด) · P&L ด้านบนเป็นกำไรจากราคาล้วน ไม่รวมปันผลรับ"
+    )
+    st.caption(
+        "หมายเหตุภาษีไทย: การนำเงินกลับประเทศมีประเด็นภาษีเงินได้ (ปอ.161/2566 มีผลตั้งแต่ปีภาษี 2567) "
+        "— ขึ้นกับสถานการณ์รายบุคคล ระบบไม่นำมาคิดในตัวเลข แจ้งไว้เพื่อความครบถ้วน"
+    )
+
+    thai_inflation = get_thai_inflation()
+    if thai_inflation is not None:
+        st.caption(
+            f"เงินเฟ้อไทยล่าสุด ~{thai_inflation['inflation_pct']:.1f}%/ปี "
+            f"(ปี {thai_inflation['year']}, {thai_inflation['source']}) — เป้าขั้นต่ำที่พอร์ต"
+            "ต้องชนะต่อปีเพื่อรักษาอำนาจซื้อเงินบาท · ผลตอบแทนรวมด้านบนเป็นตัวเลขสะสม"
+            "ตั้งแต่เริ่มพอร์ต จึงเทียบตรง ๆ กับเงินเฟ้อรายปีไม่ได้ (real return เต็มรูป"
+            "จะมากับ XIRR ในหัวข้อ benchmark)"
+        )
+    else:
+        st.caption("ไม่ทราบเงินเฟ้อไทยขณะนี้ (ดึงข้อมูลไม่สำเร็จ) — ไม่แสดงตัวเลขประมาณแทน")
+
+    dividend_summary = get_dividend_summary()
+    if int(dividend_summary["count"]) > 0:
+        st.subheader("ปันผลรับจริง (สุทธิหลังภาษี)")
+        _, withheld_tax_thb = gross_up_net_dividend(float(dividend_summary["total_thb"]))
+        income_col1, income_col2, income_col3 = st.columns(3)
+        income_col1.metric("รับสุทธิสะสม", f"{float(dividend_summary['total_thb']):,.2f} ฿")
+        income_col2.metric("ปีนี้", f"{float(dividend_summary['this_year_thb']):,.2f} ฿")
+        income_col3.metric("ภาษีที่ถูกหักไปแล้ว (ประมาณ)", f"~{withheld_tax_thb:,.2f} ฿")
+
+        with st.expander("จำลอง DRIP — ถ้านำปันผลทุกงวดซื้อหุ้นเพิ่มทันที ณ วันรับ"):
+            try:
+                drip_prices = cached_prices(get_tickers(), years=10)
+            except PriceDataUnavailableError as exc:
+                drip_prices = pd.DataFrame()
+                st.error(f"ดึงราคาไม่สำเร็จ — จำลอง DRIP ไม่ได้: {exc}")
+            for drip_ticker in sorted(dividend_summary["by_ticker_thb"]):
+                if drip_ticker not in drip_prices.columns:
+                    st.warning(f"{drip_ticker}: ไม่มีข้อมูลราคา — ข้ามการจำลอง")
+                    continue
+                try:
+                    drip_result = simulate_drip(
+                        get_dividends(drip_ticker), drip_prices[drip_ticker].dropna()
+                    )
+                except ValueError as exc:
+                    st.warning(f"{drip_ticker}: {exc}")
+                    continue
+                skipped_note = (
+                    f" · ข้าม {drip_result['skipped']} งวด (ไม่มีราคา ณ วันรับ)"
+                    if drip_result["skipped"]
+                    else ""
+                )
+                st.markdown(
+                    f"**{drip_ticker}** — ปันผลสุทธิ {drip_result['cash_usd']:,.2f} USD: "
+                    f"ถ้า DRIP จะได้เพิ่ม {drip_result['extra_shares']:.4f} หุ้น "
+                    f"มูลค่าปัจจุบัน {drip_result['drip_value_usd']:,.2f} USD "
+                    f"({drip_result['advantage_usd']:+,.2f} USD เทียบถือเงินสด){skipped_note}"
+                )
+            st.caption("จำลองจากราคาจริง ณ วันรับปันผล — สถิติเปรียบเทียบ ไม่ใช่คำแนะนำ")
+
+    st.divider()
     st.subheader("Transaction History")
     with st.spinner(" ..."):
         all_transactions = get_transactions()
@@ -2409,10 +2574,14 @@ def render_portfolio_page() -> None:
     if selected_ticker != "ทั้งหมด":
         filtered_transactions = get_transactions(selected_ticker)
 
+    filtered_transactions["tx_type"] = filtered_transactions["tx_type"].map(
+        {TX_DIVIDEND: "ปันผล"}
+    ).fillna("ซื้อ")
     filtered_transactions = filtered_transactions.rename(
         columns={
             "date": "Date",
             "ticker": "Ticker",
+            "tx_type": "ประเภท",
             "shares": "Shares",
             "price_usd": "Price (USD)",
             "fx_rate_thb": "FX Rate (THB/USD)",
