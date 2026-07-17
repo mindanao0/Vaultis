@@ -75,6 +75,27 @@ def calculate_rsi(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ RSI: {exc}") from exc
 
 
+def ma_cross_dates(ma_fast: pd.Series, ma_slow: pd.Series) -> dict[str, list[pd.Timestamp]]:
+    """หาวันที่เกิด golden/death cross ทั้งหมดจากอนุกรม MA สองเส้น (Roadmap A1).
+
+    CrossoverDetector ของ screener ตอบได้แค่ "เพิ่ง cross ในไม่กี่วันล่าสุด"
+    แต่กราฟวาดเหตุผลต้องการตำแหน่ง cross ทุกจุดย้อนหลัง จึงสกัดจาก MA series ตรง ๆ
+
+    ช่วง warm-up ที่ MA ยังเป็น NaN ถูกตัดทิ้ง — ไม่ตีความเป็น cross (AUDIT.md C1)
+    คืน ``{"golden": [วันที่ fast ตัดขึ้น], "death": [วันที่ fast ตัดลง]}``
+    """
+    aligned = pd.concat([ma_fast.rename("fast"), ma_slow.rename("slow")], axis=1).dropna()
+    if len(aligned) < 2:
+        return {"golden": [], "death": []}
+    above = aligned["fast"] > aligned["slow"]
+    flipped = above.ne(above.shift(1))
+    flipped.iloc[0] = False  # จุดแรกไม่มีอดีตให้เทียบ — ไม่นับเป็น cross
+    return {
+        "golden": list(aligned.index[flipped & above]),
+        "death": list(aligned.index[flipped & ~above]),
+    }
+
+
 @cache_data_1h
 def get_signals(ticker: str) -> dict[str, Any]:
     """สรุปสถานะ MA และ RSI ของ ticker ปัจจุบัน."""

@@ -15,6 +15,9 @@ numpy-financial==1.0.0
 matplotlib==3.9.2
 plotly==5.24.1
 streamlit==1.41.1
+# pyarrow เดิมหลุดจากการ pin (มากับ streamlit) แล้วไหลถึง 25.0.0 — pin ค่าที่ติดตั้งจริงไว้กันไหลต่อ
+# (25.0.0 + ตารางบางแบบเคย segfault ใน AppTest — เลี่ยง st.dataframe ในหน้า Technical ดู comment ใน app.py)
+pyarrow==25.0.0
 
 fastapi==0.115.6
 uvicorn==0.34.0

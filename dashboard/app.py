@@ -26,10 +26,20 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
-from analysis.financial_model import TILT_MAX, TILT_MIN, run_full_analysis
+from analysis.financial_model import (
+    DIVIDEND_MAX,
+    MOMENTUM_MAX,
+    TILT_MAX,
+    TILT_MIN,
+    TIMING_MAX,
+    TREND_MAX,
+    build_etf_scores,
+    calculate_allocation,
+    run_full_analysis,
+)
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
-from analysis.risk import calculate_risk_metrics
+from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
 from alerts.notifier import test_alert
 from alerts.price_alert import (
     add_alert,
@@ -53,6 +63,7 @@ from portfolio.tracker import (
     get_transactions,
 )
 from technical import signal_rules
+from technical.indicators import ma_cross_dates
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
 from utils.pdf_export import generate_monthly_report
 
@@ -84,7 +95,7 @@ THEME = {
 }
 
 NAV_GROUPS = [
-    ("Main", ["Overview", "Portfolio"]),
+    ("Main", ["Overview", "Scorecard", "Portfolio"]),
     ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "Price Alerts"]),
     ("System", ["Settings"]),
@@ -292,6 +303,8 @@ def _render_custom_sidebar(default_page: str) -> str:
         st.markdown('<p class="nav-group">MAIN</p>', unsafe_allow_html=True)
         if st.button("Overview", key="nav_overview", use_container_width=True):
             st.session_state["page"] = "Overview"
+        if st.button("Scorecard", key="nav_scorecard", use_container_width=True):
+            st.session_state["page"] = "Scorecard"
         if st.button("Portfolio", key="nav_portfolio", use_container_width=True):
             st.session_state["page"] = "Portfolio"
 
@@ -572,6 +585,7 @@ def render_settings_page() -> None:
     current_tickers = get_tickers()
     page_options = [
         "Overview",
+        "Scorecard",
         "Portfolio",
         "Backtest",
         "DCA Simulator",
@@ -1046,6 +1060,108 @@ def _overall_signal(price: float, ma50: float, ma200: float, rsi_value: float) -
     return signal_rules.thai_description(central)
 
 
+def _signal_bar_positions(display_ohlc: pd.DataFrame, dates: list) -> pd.DataFrame:
+    """map วันสัญญาณ (นิยามรายวัน) → แท่งที่ครอบวันนั้นบนกราฟที่กำลังแสดง.
+
+    มุมมองรายวัน = แท่งวันเดียวกัน; รายสัปดาห์ = แท่งของสัปดาห์ที่มีวันนั้น
+    (index W-FRI คือวันสิ้นสัปดาห์ → ใช้แท่งแรกที่ index ≥ วันสัญญาณ)
+    หลายสัญญาณตกแท่งเดียวกันถูกยุบเหลือเครื่องหมายเดียว
+    """
+    if not dates or display_ohlc.empty:
+        return pd.DataFrame(columns=["x", "high", "low"])
+    index = display_ohlc.index
+    rows: list[dict[str, object]] = []
+    for date in dates:
+        pos = int(index.searchsorted(date, side="left"))
+        if pos >= len(index):
+            pos = len(index) - 1
+        rows.append(
+            {
+                "x": index[pos],
+                "high": float(display_ohlc["High"].iloc[pos]),
+                "low": float(display_ohlc["Low"].iloc[pos]),
+            }
+        )
+    return pd.DataFrame(rows).drop_duplicates(subset=["x"])
+
+
+def _render_underwater_section(ticker: str, close_series: pd.Series) -> None:
+    """กราฟ underwater (Roadmap A3): % ต่ำกว่า ATH ตามเวลา + สถิติการฟื้นรอบก่อน.
+
+    เป้าหมายคือกัน panic-selling — ให้เห็นว่า drawdown ระดับนี้เคยเกิดและเคยฟื้นอย่างไร
+    ตัวเลขเป็นสถิติเชิงบรรยายจากราคาจริง (analysis/risk.py) ไม่ใช่สัญญาณซื้อขาย
+    """
+    st.subheader(f"Underwater — {ticker} ต่ำกว่าจุดสูงสุดเดิม (ATH) กี่ %")
+    if close_series.empty:
+        st.error(f"{ticker}: ไม่มีข้อมูลราคา — ไม่แสดงกราฟ underwater")
+        return
+
+    underwater_pct = underwater_series(close_series) * 100.0
+
+    uw_fig = go.Figure()
+    uw_fig.add_trace(
+        go.Scatter(
+            x=underwater_pct.index,
+            y=underwater_pct,
+            mode="lines",
+            line=dict(color=THEME["negative"], width=1.5),
+            fill="tozeroy",
+            fillcolor="rgba(248, 81, 73, 0.25)",
+            name="ต่ำกว่า ATH (%)",
+        )
+    )
+    uw_fig.update_layout(height=300, yaxis_title="% จาก ATH", showlegend=False)
+    st.plotly_chart(_apply_plotly_dark_theme(uw_fig), use_container_width=True)
+
+    current_uw = float(underwater_pct.iloc[-1])
+    if current_uw > -0.1:
+        st.caption(f"ตอนนี้ {ticker} อยู่ที่จุดสูงสุดเดิม (ATH)")
+    else:
+        st.caption(f"ตอนนี้ {ticker} ต่ำกว่า ATH {abs(current_uw):.1f}%")
+
+    episodes = drawdown_episodes(close_series, min_depth=0.10)
+    if not episodes:
+        st.caption("ในช่วงข้อมูลที่โหลด ยังไม่เคยมี drawdown ลึกเกิน 10%")
+        return
+
+    st.markdown("**การฟื้นตัวรอบก่อน (เฉพาะรอบที่ลงลึกเกิน 10%)**")
+
+    def _fmt_date(value: object) -> str:
+        return pd.Timestamp(value).strftime("%b %Y") if value is not None else "-"
+
+    # จงใจใช้ตาราง markdown แทน st.dataframe — การแปลง Arrow ของตารางนี้ในบริบทหน้าเต็ม
+    # segfault กับ pyarrow 25 (จับได้จาก AppTest; pyarrow เพิ่งถูก pin ใน requirements.txt)
+    lines = [
+        "| พีคเมื่อ | ลึกสุด | จุดต่ำสุดเมื่อ | กลับมา ATH เมื่อ | เวลาฟื้นจากพีค (เดือน) |",
+        "|---|---|---|---|---|",
+    ]
+    for e in episodes:
+        recovery_text = (
+            _fmt_date(e["recovery_date"])
+            if e["recovery_date"] is not None
+            else "ยังไม่ฟื้น (รอบปัจจุบัน)"
+        )
+        months_text = (
+            f"{e['months_to_recover']:.1f}" if e["months_to_recover"] is not None else "-"
+        )
+        lines.append(
+            f"| {_fmt_date(e['peak_date'])} | {e['depth_pct']:.1f}% | "
+            f"{_fmt_date(e['trough_date'])} | {recovery_text} | {months_text} |"
+        )
+    st.markdown("\n".join(lines))
+
+    recovered_months = [
+        float(e["months_to_recover"]) for e in episodes if e["months_to_recover"] is not None
+    ]
+    if recovered_months:
+        median_months = float(pd.Series(recovered_months).median())
+        st.caption(
+            f"รอบที่ลึกเกิน 10% ในช่วงข้อมูลนี้ฟื้นกลับ ATH แล้ว {len(recovered_months)} รอบ "
+            f"ใช้เวลา median {median_months:.0f} เดือนจากพีคเดิม — "
+            "สถิติในอดีตของช่วงข้อมูลที่โหลด ไม่ใช่การพยากรณ์"
+        )
+
+
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
     """หน้า Technical Signals: กราฟ Candlestick + RSI + การ์ดสรุปสัญญาณ."""
     st.header("Technical Signals")
@@ -1055,17 +1171,44 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         return
 
     selected_ticker = st.selectbox("เลือก ETF", technical_tickers, index=0)
+    timeframe = st.radio(
+        "กรอบเวลา",
+        ["รายสัปดาห์", "รายวัน"],
+        horizontal=True,
+        key="technical_timeframe",
+        help="สัญญาณทุกตัว (MA/RSI/จุดสะสม) คำนวณจากแท่งรายวันตามนิยามกลางเสมอ — กรอบเวลาเปลี่ยนแค่มุมมอง",
+    )
 
     with st.spinner("กำลังโหลดข้อมูลราคา..."):
         ohlc_map = fetch_ohlc_data(technical_tickers, years=10)
     selected_ohlc = ohlc_map.get(selected_ticker)
     if selected_ohlc is None or selected_ohlc.empty:
-        st.warning(f"ไม่พบข้อมูล OHLC ของ {selected_ticker}")
+        # fetch_ohlc_data คืน {} เมื่อดึงไม่สำเร็จ — หยุดชัด ๆ ห้ามวาดกราฟจากข้อมูลว่าง (AUDIT.md C1)
+        st.error(f"ดึงข้อมูล OHLC ของ {selected_ticker} ไม่สำเร็จ — ไม่แสดงกราฟจากข้อมูลว่าง ลองกด Refresh Data")
         return
 
     selected_signals = calculate_technical_signals(prices[selected_ticker]).dropna(subset=["MA50", "MA200", "RSI14"])
-    aligned_signals = selected_signals.reindex(selected_ohlc.index)
-    aligned_signals[["MA50", "MA200", "RSI14"]] = aligned_signals[["MA50", "MA200", "RSI14"]].ffill()
+    if selected_signals.empty:
+        st.error(f"{selected_ticker}: ข้อมูลไม่พอคำนวณ MA200/RSI — ไม่แสดงสัญญาณ")
+        return
+
+    # สัญญาณกลางรายวัน (นิยามเดียวกับทุก subsystem — AUDIT.md C2) แล้วค่อยวาดลงแท่งที่เลือก
+    sig = selected_signals.copy()
+    sig["central"] = [
+        signal_rules.dca_signal(price, ma50, ma200, rsi)
+        for price, ma50, ma200, rsi in zip(sig["Price"], sig["MA50"], sig["MA200"], sig["RSI14"])
+    ]
+    accumulate_days = list(sig.index[sig["central"] == signal_rules.ACCUMULATE])
+    crosses = ma_cross_dates(sig["MA50"], sig["MA200"])
+
+    if timeframe == "รายสัปดาห์":
+        display_ohlc = (
+            selected_ohlc.resample("W-FRI")
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+            .dropna(how="any")
+        )
+    else:
+        display_ohlc = selected_ohlc
 
     fig = make_subplots(
         rows=2,
@@ -1073,48 +1216,109 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         shared_xaxes=True,
         vertical_spacing=0.06,
         row_heights=[0.7, 0.3],
-        subplot_titles=(f"{selected_ticker} Candlestick + MA50/MA200", "RSI (14)"),
+        subplot_titles=(f"{selected_ticker} Candlestick + เหตุผลบนกราฟ", "RSI (14) รายวัน"),
     )
 
     fig.add_trace(
         go.Candlestick(
-            x=selected_ohlc.index,
-            open=selected_ohlc["Open"],
-            high=selected_ohlc["High"],
-            low=selected_ohlc["Low"],
-            close=selected_ohlc["Close"],
+            x=display_ohlc.index,
+            open=display_ohlc["Open"],
+            high=display_ohlc["High"],
+            low=display_ohlc["Low"],
+            close=display_ohlc["Close"],
             name="Candlestick",
         ),
         row=1,
         col=1,
     )
+
+    # พื้นหลังเขียว = ช่วงที่ราคายืนเหนือ MA200 (เห็นขาขึ้นแวบเดียวโดยไม่ต้องไล่เส้น)
+    uptrend = sig["Price"] >= sig["MA200"]
+    runs = (uptrend != uptrend.shift(1)).cumsum()
+    for _, segment in sig[uptrend].groupby(runs[uptrend]):
+        fig.add_vrect(
+            x0=segment.index[0],
+            x1=segment.index[-1],
+            fillcolor="rgba(63, 185, 80, 0.08)",
+            line_width=0,
+            row=1,
+            col=1,
+        )
+
+    # เส้น MA คงนิยามรายวันเสมอ (MA50/MA200 วัน — ห้ามคำนวณใหม่บนแท่ง week)
     fig.add_trace(
         go.Scatter(
-            x=aligned_signals.index,
-            y=aligned_signals["MA50"],
+            x=sig.index,
+            y=sig["MA50"],
             mode="lines",
             line=dict(color="orange", width=2),
-            name="MA50",
+            name="MA50 (วัน)",
         ),
         row=1,
         col=1,
     )
     fig.add_trace(
         go.Scatter(
-            x=aligned_signals.index,
-            y=aligned_signals["MA200"],
+            x=sig.index,
+            y=sig["MA200"],
             mode="lines",
             line=dict(color="red", width=2),
-            name="MA200",
+            name="MA200 (วัน)",
         ),
         row=1,
         col=1,
     )
 
+    # เครื่องหมายบนแท่งจริง: ▲ วันสะสม, ★ golden, ✕ death (ไม่มีลูกศรขาย — โมเดลนี้คือ DCA)
+    acc_pos = _signal_bar_positions(display_ohlc, accumulate_days)
+    if not acc_pos.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=acc_pos["x"],
+                y=acc_pos["low"] * 0.97,
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=9, color=THEME["positive"]),
+                name="จุดสะสม (ACCUMULATE)",
+                hoverinfo="x+name",
+            ),
+            row=1,
+            col=1,
+        )
+    golden_pos = _signal_bar_positions(display_ohlc, crosses["golden"])
+    if not golden_pos.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=golden_pos["x"],
+                y=golden_pos["high"] * 1.03,
+                mode="text",
+                text=["★"] * len(golden_pos),
+                textfont=dict(size=18, color="#E3B341"),
+                name="Golden Cross ★",
+                hoverinfo="x+name",
+            ),
+            row=1,
+            col=1,
+        )
+    death_pos = _signal_bar_positions(display_ohlc, crosses["death"])
+    if not death_pos.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=death_pos["x"],
+                y=death_pos["high"] * 1.03,
+                mode="text",
+                text=["✕"] * len(death_pos),
+                textfont=dict(size=16, color=THEME["negative"]),
+                name="Death Cross ✕",
+                hoverinfo="x+name",
+            ),
+            row=1,
+            col=1,
+        )
+
     fig.add_trace(
         go.Scatter(
-            x=aligned_signals.index,
-            y=aligned_signals["RSI14"],
+            x=sig.index,
+            y=sig["RSI14"],
             mode="lines",
             line=dict(color="deepskyblue", width=2),
             name="RSI",
@@ -1122,28 +1326,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         row=2,
         col=1,
     )
-    fig.add_trace(
-        go.Scatter(
-            x=aligned_signals.index,
-            y=[70] * len(aligned_signals.index),
-            mode="lines",
-            line=dict(color="red", dash="dash"),
-            name="Overbought (70)",
-        ),
-        row=2,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=aligned_signals.index,
-            y=[30] * len(aligned_signals.index),
-            mode="lines",
-            line=dict(color="green", dash="dash"),
-            name="Oversold (30)",
-        ),
-        row=2,
-        col=1,
-    )
+    fig.add_hline(y=70, line=dict(color="red", dash="dash"), row=2, col=1)
+    fig.add_hline(y=30, line=dict(color="green", dash="dash"), row=2, col=1)
     fig.add_hrect(y0=70, y1=100, fillcolor="rgba(255, 0, 0, 0.12)", line_width=0, row=2, col=1)
     fig.add_hrect(y0=0, y1=30, fillcolor="rgba(0, 128, 0, 0.12)", line_width=0, row=2, col=1)
 
@@ -1151,6 +1335,13 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
     fig.update_yaxes(title_text="Price (USD)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
     st.plotly_chart(_apply_plotly_dark_theme(fig), use_container_width=True)
+    st.caption(
+        "พื้นหลังเขียว = ราคายืนเหนือ MA200 (ขาขึ้น) · ▲ = วัน ACCUMULATE (ย่อในขาขึ้น — จังหวะสะสมตามแผน DCA) · "
+        "★/✕ = golden/death cross MA50-MA200 (ข้อมูลแนวโน้ม ไม่ใช่คำสั่งซื้อขาย) · "
+        "สัญญาณทั้งหมดคำนวณจากแท่งรายวันตามนิยามกลาง `technical/signal_rules`"
+    )
+
+    _render_underwater_section(selected_ticker, prices[selected_ticker].dropna())
 
     st.subheader("Signal Summary Cards")
     columns = st.columns(len(technical_tickers))
@@ -2018,6 +2209,283 @@ def render_portfolio_page() -> None:
     )
 
 
+# --- Scorecard (Roadmap B1): รวมคำตอบ "เดือนนี้ซื้ออะไร เท่าไร เพราะอะไร" ไว้หน้าเดียว ---
+# ตัวเลขทุกตัวมาจาก build_etf_scores / calculate_allocation — หน้านี้ห้ามคำนวณเกณฑ์เอง
+# (คะแนนของ ETF ตัวเดียวกันต้องเท่ากันทุกหน้าจอ — AUDIT.md C2)
+
+THAI_MONTHS = [
+    "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+    "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
+]
+
+# สี 4 องค์ประกอบคะแนน (โทน GitHub dark เดียวกับ THEME)
+_SCORE_PARTS = [
+    ("Trend", "trend_score", TREND_MAX, THEME["accent"]),
+    ("Timing", "timing_score", TIMING_MAX, "#A371F7"),
+    ("Momentum", "momentum_score", MOMENTUM_MAX, "#D29922"),
+    ("Dividend", "dividend_score", DIVIDEND_MAX, THEME["text_secondary"]),
+]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_etf_scores(tickers: tuple[str, ...]) -> list[dict]:
+    """คะแนนกลางต่อ ETF (cache 1 ชม.) — ชุดเดียวกับ AI Advisor/หน้า DCF/cron."""
+    return build_etf_scores(list(tickers))
+
+
+def _chip_html(text: str, color: str) -> str:
+    return (
+        f'<span style="display:inline-block;padding:2px 10px;margin:2px 6px 2px 0;'
+        f'border:1px solid {color};border-radius:12px;font-size:12px;color:{color};">{text}</span>'
+    )
+
+
+def _central_signal_color(central: str) -> str:
+    label = signal_rules.to_technical_label(central)
+    if label == "bullish":
+        return THEME["positive"]
+    if label == "bearish":
+        return THEME["negative"]
+    return THEME["text_secondary"]
+
+
+def _score_reason_chips(row: dict) -> str:
+    """chips เหตุผลจากตัวเลขที่โมเดลคืนมา — แสดงข้อเท็จจริง ไม่ตั้งเกณฑ์ใหม่ (เกณฑ์อยู่ใน signal_rules)."""
+    chips: list[str] = []
+    central = str(row.get("technical_signal", ""))
+    chips.append(_chip_html(str(row.get("technical_signal_th", central)), _central_signal_color(central)))
+
+    price, ma50, ma200, rsi = row.get("price"), row.get("ma50"), row.get("ma200"), row.get("rsi")
+    if price is not None and ma200 is not None:
+        if float(price) >= float(ma200):
+            chips.append(_chip_html("เหนือ MA200 ✓", THEME["positive"]))
+        else:
+            chips.append(_chip_html("ใต้ MA200 ✗", THEME["negative"]))
+    if price is not None and ma50 is not None:
+        if float(price) >= float(ma50):
+            chips.append(_chip_html("เหนือ MA50 ✓", THEME["positive"]))
+        else:
+            chips.append(_chip_html("ใต้ MA50", THEME["text_secondary"]))
+    if rsi is not None:
+        zone = signal_rules.rsi_zone(rsi)
+        zone_th = {"oversold": "ย่อลึก", "neutral": "โซนกลาง", "overbought": "ร้อนแรง"}.get(zone, zone)
+        zone_color = {"oversold": THEME["accent"], "overbought": THEME["negative"]}.get(
+            zone, THEME["text_secondary"]
+        )
+        chips.append(_chip_html(f"RSI {float(rsi):.0f} · {zone_th}", zone_color))
+    for key, label in (("return_1m_pct", "1 เดือน"), ("return_3m_pct", "3 เดือน")):
+        value = row.get(key)
+        if value is None:
+            continue
+        v = float(value)
+        v_color = THEME["positive"] if v > 0 else THEME["negative"] if v < 0 else THEME["text_secondary"]
+        chips.append(_chip_html(f"{label} {v:+.1f}%", v_color))
+    if not row.get("dividend_available", False):
+        chips.append(_chip_html("ปันผล: ไม่มีข้อมูล (ตัดจากคะแนนเต็ม)", THEME["text_secondary"]))
+    elif int(row.get("dividend_score") or 0) > 0:
+        chips.append(_chip_html(f"ปันผลหนุน +{int(row['dividend_score'])}", THEME["positive"]))
+    else:
+        chips.append(_chip_html("ปันผลต่ำ/ไม่มี", THEME["text_secondary"]))
+    return "".join(chips)
+
+
+def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
+    """การ์ดเงินที่จะซื้อต่อ ETF เดือนนี้ — จำนวนเงิน/ตัวคูณมาจาก calculate_allocation ตรง ๆ."""
+    cards = st.columns(len(allocation))
+    for col, (ticker, item) in zip(cards, allocation.items()):
+        amount = float(item.get("amount_thb") or 0)
+        tilt = float(item.get("tilt") or 1.0)
+        target_pct = float(item.get("target_percent") or 0)
+        actual_pct = float(item.get("percent") or 0)
+        with col:
+            st.markdown(
+                f'<div style="border:1px solid {THEME["border"]};border-radius:8px;'
+                f'padding:12px 8px;background:{THEME["card_bg"]};text-align:center;">'
+                f'<div style="font-size:14px;color:{THEME["text_secondary"]};">{ticker}</div>'
+                f'<div style="font-size:22px;font-weight:600;color:{THEME["text_primary"]};">'
+                f'{amount:,.0f} ฿</div>'
+                f'<div style="font-size:12px;color:{THEME["text_secondary"]};">'
+                f'เป้า {target_pct:.0f}% → จริง {actual_pct:.0f}% (×{tilt:.2f})</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    unallocated = float(budget_thb) - sum(float(i.get("amount_thb") or 0) for i in allocation.values())
+    if unallocated > 0:
+        st.caption(f"เศษจากการปัดหลักร้อย {unallocated:,.0f} บาท — สมทบเดือนถัดไป")
+
+
+def render_scorecard_page() -> None:
+    """หน้า Scorecard (Roadmap B1): เรียง 5 ETF + การ์ด "คำตัดสินเดือนนี้"."""
+    st.header("Scorecard")
+    now = datetime.now()
+    st.caption(
+        f"คำตัดสินเดือน{THAI_MONTHS[now.month - 1]} {now.year + 543}: ซื้ออะไร เท่าไร เพราะอะไร "
+        "— คะแนนคำนวณในโค้ด (ชุดเดียวกับ AI Advisor/DCF) ไม่ใช่ AI"
+    )
+
+    config = load_config()
+    tickers = get_tickers()
+    if not tickers:
+        st.warning("ยังไม่มี ETF ในระบบ — เพิ่มได้ที่หน้า Settings")
+        return
+
+    budget_col, refresh_col = st.columns([2.6, 1])
+    with budget_col:
+        budget_thb = st.number_input(
+            "งบ DCA เดือนนี้ (บาท)",
+            min_value=500.0,
+            value=float(config["dca"]["monthly_budget_thb"]),
+            step=500.0,
+            format="%.0f",
+            key="scorecard_budget",
+        )
+    with refresh_col:
+        st.write("")
+        st.write("")
+        if st.button("คำนวณคะแนนใหม่", key="scorecard_refresh"):
+            cached_etf_scores.clear()
+
+    with st.spinner("กำลังคำนวณคะแนน ETF..."):
+        scores = cached_etf_scores(tuple(tickers))
+
+    ok_rows = [r for r in scores if r.get("data_ok", True) and r.get("total_pct") is not None]
+    no_data_rows = [r for r in scores if r not in ok_rows]
+
+    if not ok_rows:
+        # ข้อมูลพังทั้งหมด = บอกตรง ๆ ห้ามแสดงเลขปลอม (AUDIT.md C1)
+        st.error("ดึงข้อมูลราคาไม่สำเร็จทุกตัว — ไม่มีคะแนนให้แสดง")
+        for row in no_data_rows:
+            st.caption(f"• {row.get('ticker')}: {row.get('error', 'ไม่ทราบสาเหตุ')}")
+        return
+
+    scores_by_ticker = {str(r["ticker"]): r for r in scores if r.get("ticker")}
+    allocation = calculate_allocation(scores_by_ticker, float(budget_thb))
+
+    # --- การ์ดคำตัดสินเดือนนี้ ---
+    st.subheader("คำตัดสินเดือนนี้")
+    st.caption(
+        f"ซื้อทุกตัวที่มีข้อมูลตามแผน DCA — คะแนนแค่เอียงน้ำหนักจากเป้า ({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) "
+        "ไม่มีการเลือกตัวเดียวหรือตัดตัวไหนออก"
+    )
+    if no_data_rows:
+        missing = ", ".join(str(r.get("ticker")) for r in no_data_rows)
+        st.warning(f"ไม่มีข้อมูล: {missing} — ไม่ถูกนำมาคิดคะแนน/จัดสรร งบส่วนนั้นกระจายให้ตัวที่เหลือ")
+
+    if allocation:
+        _render_verdict_cards(allocation, float(budget_thb))
+
+        table_col, donut_col = st.columns([1.25, 1])
+        with table_col:
+            alloc_df = pd.DataFrame(
+                [
+                    {
+                        "Ticker": ticker,
+                        "Amount (THB)": item.get("amount_thb", 0),
+                        "จัดสรรจริง": item.get("percent", 0),
+                        "เป้าหมาย": item.get("target_percent", 0),
+                        "ตัวคูณ": item.get("tilt"),
+                        "Score %": item.get("score"),
+                        "Signal": item.get("group", ""),
+                    }
+                    for ticker, item in allocation.items()
+                ]
+            )
+            st.dataframe(
+                alloc_df.style.format(
+                    {
+                        "Amount (THB)": "{:,.0f}",
+                        "จัดสรรจริง": "{:.0f}%",
+                        "เป้าหมาย": "{:.0f}%",
+                        "ตัวคูณ": "{:.2f}×",
+                        "Score %": "{:.1f}",
+                    },
+                    na_rep="N/A",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        with donut_col:
+            donut_df = pd.DataFrame(
+                [
+                    {"label": f"{t} ×{float(i.get('tilt') or 1):.2f}", "amount": i.get("amount_thb", 0)}
+                    for t, i in allocation.items()
+                ]
+            )
+            donut = px.pie(
+                donut_df,
+                names="label",
+                values="amount",
+                title="น้ำหนักเดือนนี้ (บาท)",
+                hole=0.45,
+            )
+            st.plotly_chart(_apply_plotly_dark_theme(donut), use_container_width=True)
+            st.caption("× = ตัวคูณจากคะแนน — 1.00 คือตามเป้าพอดี, สูง/ต่ำกว่าคือซื้อมาก/น้อยกว่าเป้า")
+    else:
+        st.warning("จัดสรรไม่ได้ — ไม่มี ETF ที่ข้อมูลพร้อม หรืองบเป็นศูนย์")
+
+    # --- stacked bar: คะแนนรวมแยก 4 องค์ประกอบ ---
+    st.subheader("คะแนน 0-100 แยกองค์ประกอบ")
+    ranked = sorted(ok_rows, key=lambda r: float(r.get("total_pct") or 0), reverse=True)
+    bar_fig = go.Figure()
+    for label, key, part_max, color in _SCORE_PARTS:
+        bar_fig.add_trace(
+            go.Bar(
+                y=[str(r["ticker"]) for r in ranked],
+                x=[int(r.get(key) or 0) for r in ranked],
+                name=f"{label} (เต็ม {part_max})",
+                orientation="h",
+                marker_color=color,
+            )
+        )
+    for r in ranked:
+        bar_fig.add_annotation(
+            y=str(r["ticker"]),
+            x=int(r.get("total_score") or 0),
+            text=f" {float(r.get('total_pct') or 0):.0f}% ({r.get('total_score')}/{r.get('max_score')})",
+            showarrow=False,
+            xanchor="left",
+            font={"size": 12, "color": THEME["text_primary"]},
+        )
+    bar_fig.update_layout(
+        barmode="stack",
+        xaxis={"range": [0, 112], "title": "คะแนนดิบ"},
+        yaxis={
+            "categoryorder": "array",
+            # เรียงคะแนนมากสุดไว้บนสุด (แกน y ของ plotly ไล่จากล่างขึ้นบน)
+            "categoryarray": [str(r["ticker"]) for r in reversed(ranked)],
+        },
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
+        height=320,
+    )
+    st.plotly_chart(_apply_plotly_dark_theme(bar_fig), use_container_width=True)
+    if any(not r.get("dividend_available", False) for r in ranked):
+        st.caption(
+            "ตัวที่ไม่มีข้อมูลปันผล คะแนนเต็มคือ 90 (ตัดหมวด Dividend ออก) — % คิดจากคะแนนเต็มจริงของตัวนั้น"
+        )
+
+    # --- เจาะราย ETF พร้อม chips เหตุผล ---
+    st.subheader("เจาะราย ETF (เรียงตามคะแนน)")
+    for row in ranked:
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([0.9, 1.0, 3.3])
+            c1.markdown(f"**{row['ticker']}**  \n${float(row.get('price') or 0):,.2f}")
+            c2.markdown(
+                f"**{float(row.get('total_pct') or 0):.1f}** / 100  \n{row.get('signal', '')}"
+            )
+            c3.markdown(_score_reason_chips(row), unsafe_allow_html=True)
+    for row in no_data_rows:
+        with st.container(border=True):
+            st.markdown(
+                f"**{row.get('ticker')}** — ไม่มีข้อมูล ({row.get('error', 'ไม่ทราบสาเหตุ')}) "
+                "· แสดงเป็น NO DATA ไม่ใช่คะแนน 0"
+            )
+
+    st.caption(
+        "ตัวเลขทุกตัวมาจาก `build_etf_scores` / `calculate_allocation` (โมเดลกลางตัวเดียวกับ "
+        "AI Advisor และหน้า DCF) — รายละเอียด DCF/heatmap ดูได้ที่หน้า DCF Analysis"
+    )
+
+
 def render_dashboard() -> None:
     """เรนเดอร์ dashboard หลักของ Vaultis."""
     try:
@@ -2051,6 +2519,9 @@ def render_dashboard() -> None:
 
         if page == "Overview":
             pass
+        elif page == "Scorecard":
+            render_scorecard_page()
+            return
         elif page == "Portfolio":
             render_portfolio_page()
             return

@@ -38,20 +38,20 @@
 - ⏸️ **Volume analysis** — ต้อง plumb OHLCV ใหม่ (ตอนนี้ close-only) + คุณค่าต่ำสำหรับคนถือ 10 ปี → เลื่อน
 
 ## (A) "มองกราฟออก" — chart/visual (ช่องว่างใหญ่สุด)
-- **A1. ⭐ Candlestick วาดเหตุผลลงบนกราฟ** — พื้นหลัง shade เขียวเมื่อ price≥MA200, ★golden/✕death cross บนบาร์จริง, สามเหลี่ยมวันที่เป็น ACCUMULATE, default **weekly**. ย้าย signal ขึ้นมาบนราคา เห็นแวบเดียว. *reuse: `app.py:1080-1148`, `crossover_detector.py` (backend/screener/), `fetch_ohlc_data`(app.py:997). เสี่ยง: `fetch_ohlc_data` คืน `{}` ไม่ fail-loud → ต้อง guard; `crossover_detector` คืนแค่ bool "เพิ่ง cross ใน 3 วัน" → ต้องเขียน helper สกัดวันที่ cross ทั้งหมดย้อนหลังจาก MA series; วาดเฉพาะ ACCUMULATE/BULLISH ไม่มีลูกศรขาย. effort M*
+- **A1. ✅ Candlestick วาดเหตุผลลงบนกราฟ** (เสร็จ 2026-07-17 — หน้า Technical Signals: default weekly + toggle รายวัน, พื้นหลังเขียวช่วงเหนือ MA200, ★/✕ ทุก cross ผ่าน helper ใหม่ `technical/indicators.ma_cross_dates`, ▲ วัน ACCUMULATE; สัญญาณทุกตัวคงคำนวณจากแท่งรายวัน; guard `fetch_ohlc_data` คืน `{}` เป็น st.error แล้ว) — สเปกเดิม: พื้นหลัง shade เขียวเมื่อ price≥MA200, ★golden/✕death cross บนบาร์จริง, สามเหลี่ยมวันที่เป็น ACCUMULATE, default **weekly**. วาดเฉพาะ ACCUMULATE/BULLISH ไม่มีลูกศรขาย.
 - **A2. Trend channel** (linear regression log ±2σ) — เส้นเทรนด์หลายปี + แถบ σ + badge "+1.8σ = เติมพิเศษน้อยลง". ตอบ "ซื้อใกล้ยอดหรือก้น" เชิงสถิติ. *reuse: `numpy.polyfit` (ไม่มี dep ใหม่). effort M เสี่ยงต่ำ*
-- **A3. ⭐ Underwater/drawdown chart** — % ต่ำกว่า ATH ตามเวลา + การฟื้นรอบก่อน. กัน panic-selling ตรง ๆ. *reuse: ต่อ cumulative-max ใน `analysis/risk.py:52` (`calculate_max_drawdown` ปัจจุบันคืน scalar ต่อ ticker — ต้อง expose ซีรีส์ underwater ที่เป็นค่ากลางในฟังก์ชันอยู่แล้ว). effort S-M, close-only = fail-loud ฟรี*
+- **A3. ✅ Underwater/drawdown chart** (เสร็จ 2026-07-17 — `analysis/risk.py` เพิ่ม `underwater_series` + `drawdown_episodes` และ refactor `calculate_max_drawdown` ให้ใช้ตัวเดียวกัน; section ใหม่ในหน้า Technical Signals: กราฟ % ต่ำกว่า ATH + ตารางการฟื้นรอบที่ลึกเกิน 10% + median เดือนที่ใช้ฟื้น; ตารางใช้ markdown เพราะ st.dataframe+pyarrow 25 segfault — ดู requirements.txt) — สเปกเดิม: % ต่ำกว่า ATH ตามเวลา + การฟื้นรอบก่อน. กัน panic-selling ตรง ๆ.
 - **A4. จุดซื้อของคุณ + เส้น cost-basis** บนกราฟ — เห็นการเฉลี่ยต้นทุนจริง. *reuse: `portfolio/tracker.py`, `utils/fx.py`. เสี่ยง: โชว์ `is_live=False` ตรง ๆ; dashboard-only (ledger gitignored). effort M*
 
 ## (B) "วิเคราะห์/เลือกเก่งขึ้น" — analytical depth
-- **B1. ⭐ Scorecard 5 ETF + การ์ด "คำตัดสินเดือนนี้"** — เรียง 5 ETF, stacked bar 4 องค์ประกอบ (Trend/Timing/Momentum/Dividend), reason chips ("เหนือ MA200 ✓", "RSI 34 ถูก"), THB ที่จะซื้อ. รวมคำตอบจาก 4 หน้าเป็นหน้าเดียว. *reuse: `build_etf_scores`(fm:536), `calculate_allocation`, score bar app.py:1435. effort M. **เสี่ยง market-timing:** label "น้ำหนัก/tilt เดือนนี้" ห้าม "เลือกตัวเดียว/ข้าม GLDM"; `data_ok=False` = "ไม่มีข้อมูล" ไม่ใช่ 0*
+- **B1. ✅ Scorecard 5 ETF + การ์ด "คำตัดสินเดือนนี้"** (เสร็จ 2026-07-17 — หน้าใหม่ "Scorecard" ในเมนู Main: การ์ด THB ต่อ ETF + donut ติดตัวคูณ, stacked bar 4 องค์ประกอบ, reason chips ต่อตัว; เลขทั้งหมดจาก `build_etf_scores`/`calculate_allocation` ห้าม UI คำนวณเอง; NO DATA แสดง "ไม่มีข้อมูล" และ caption ย้ำซื้อทุกตัวทุกเดือน) — สเปกเดิม: เรียง 5 ETF, stacked bar 4 องค์ประกอบ (Trend/Timing/Momentum/Dividend), reason chips, THB ที่จะซื้อ. **เสี่ยง market-timing:** label "น้ำหนัก/tilt เดือนนี้" ห้าม "เลือกตัวเดียว/ข้าม GLDM"; `data_ok=False` = "ไม่มีข้อมูล" ไม่ใช่ 0
 - **B2. Relative-strength ranking → ป้อน tilt** — momentum ปรับความเสี่ยง (3M/6M/12M ÷ vol). RS cross-sectional ยัง ABSENT. *reuse: `analysis/returns.py`, `risk.py`, `TILT_MIN/MAX`. เสี่ยง: ป้อน tilt เท่านั้น ทุกตัวยังซื้อทุกเดือน*
 - **B3. Multi-timeframe confluence** (Daily+Weekly ตรงกัน = มั่นใจสูง) — รัน `dca_signal` เดิมบนแท่ง weekly ด้วย RSI14 weekly + **MA10w/MA40w** (เทียบเท่า MA50d/MA200d — ห้ามใช้ MA50/MA200 บนแท่ง week ตรง ๆ เพราะ MA200w = ค่าเฉลี่ย ~4 ปี, QQQM ข้อมูลไม่พอ). effort M เสี่ยงต่ำ
 - **B4. Stretch gauge** (distance-from-MA200 percentile) — เปลี่ยน trend gate จาก on/off เป็น dimmer. *reuse: `ta_compat.sma`, ต่อ `_timing_score`(fm:213). effort S-M*
 - **B5. Seasonality** (เดือนไหนเคยอ่อน) — **เชิงบรรยายเท่านั้น ห้าม override score**. *reuse: `analysis/returns.py`. เสี่ยง: noisy บน 10y*
 - *ของแถมถูก:* score **waterfall** แทน flat bar (app.py:1435) + **donut annotated tilt** (app.py:1576, "SCHD ×1.3 เพราะ RSI ถูก") — effort S ปิดลูป score→tilt→THB
 
-## เริ่มจาก 3 อันนี้ (หลังจบ Phase 0 — ตามมติ 2026-07-16)
+## เริ่มจาก 3 อันนี้ (หลังจบ Phase 0 — ตามมติ 2026-07-16) — **✅ เสร็จครบทั้งสาม 2026-07-17**
 1. **B1 Scorecard 5 ETF** — ประกอบเลขที่มีอยู่ล้วน ๆ, leverage การตัดสินใจสูงสุด
 2. **A1 Candlestick วาดเหตุผล** — ปิดช่องว่าง chart-form ที่ใหญ่สุด
 3. **A3 Underwater chart** — ถูกสุด, กัน panic-selling, fail-loud ฟรี

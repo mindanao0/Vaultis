@@ -49,17 +49,70 @@ def calculate_sharpe_ratio(
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Sharpe Ratio: {exc}") from exc
 
 
+def underwater_series(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """ซีรีส์ % ต่ำกว่าจุดสูงสุดเดิม (underwater) — ค่ากลางตัวเดียวกับที่ใช้คิด Max Drawdown.
+
+    0 = อยู่ที่ ATH, -0.25 = ต่ำกว่า ATH 25% (Roadmap A3 — กราฟ underwater)
+    รับได้ทั้ง DataFrame (ต่อคอลัมน์) และ Series ตัวเดียว
+    """
+    if prices.empty:
+        raise ValueError("prices ว่าง ไม่สามารถคำนวณ underwater ได้")
+    cumulative_max = prices.ffill().cummax()
+    return (prices / cumulative_max) - 1.0
+
+
 def calculate_max_drawdown(price_df: pd.DataFrame) -> pd.Series:
-    """คำนวณ Max Drawdown ของ ETF แต่ละตัว."""
+    """คำนวณ Max Drawdown ของ ETF แต่ละตัว (จุดต่ำสุดของซีรีส์ underwater)."""
     try:
-        if price_df.empty:
-            raise ValueError("price_df ว่าง ไม่สามารถคำนวณ Max Drawdown ได้")
-        cumulative_max = price_df.ffill().cummax()
-        drawdown = (price_df / cumulative_max) - 1.0
-        max_drawdown = drawdown.min()
-        return max_drawdown
+        return underwater_series(price_df).min()
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Max Drawdown: {exc}") from exc
+
+
+def drawdown_episodes(prices: pd.Series, min_depth: float = 0.10) -> list[dict]:
+    """แยกรอบ drawdown ในอดีตของ ETF ตัวเดียว: พีค → จุดต่ำสุด → วันกลับมา ATH.
+
+    ใช้เล่าประวัติ "เคยลงลึกแค่ไหน ฟื้นกี่เดือน" ประกอบกราฟ underwater (Roadmap A3)
+    — สถิติเชิงบรรยายจากราคาจริง ไม่ใช่สัญญาณซื้อขาย และไม่เข้าเลขคะแนน/จัดสรรใด ๆ
+
+    คืนเฉพาะรอบที่ลึกเกิน ``min_depth`` (สัดส่วน เช่น 0.10 = ลง 10%) เรียงจากลึกสุด
+    รอบที่ยังไม่กลับมา ATH (รอบปัจจุบัน) จะมี ``recovery_date=None``
+    """
+    close = pd.to_numeric(prices, errors="coerce").dropna()
+    if close.empty:
+        raise ValueError("ไม่มีข้อมูลราคา ไม่สามารถแยกรอบ drawdown ได้")
+
+    uw = underwater_series(close)
+    in_drawdown = uw < 0
+    runs = (in_drawdown != in_drawdown.shift(1)).cumsum()
+
+    episodes: list[dict] = []
+    for _, segment in uw[in_drawdown].groupby(runs[in_drawdown]):
+        depth = float(segment.min())
+        if depth > -abs(min_depth):
+            continue
+        start = segment.index[0]
+        start_pos = int(uw.index.get_loc(start))
+        peak_date = uw.index[start_pos - 1] if start_pos > 0 else start
+        trough_date = segment.idxmin()
+        end_pos = int(uw.index.get_loc(segment.index[-1]))
+        recovered = end_pos + 1 < len(uw)  # มีวันถัดไปที่กลับมา ≥ ATH; ไม่มี = รอบปัจจุบัน
+        recovery_date = uw.index[end_pos + 1] if recovered else None
+        episodes.append(
+            {
+                "peak_date": peak_date,
+                "trough_date": trough_date,
+                "recovery_date": recovery_date,
+                "depth_pct": round(depth * 100, 1),
+                "months_to_trough": round((trough_date - peak_date).days / 30.44, 1),
+                "months_to_recover": (
+                    round((recovery_date - peak_date).days / 30.44, 1) if recovered else None
+                ),
+            }
+        )
+
+    episodes.sort(key=lambda e: e["depth_pct"])
+    return episodes
 
 
 @cache_data_1h
