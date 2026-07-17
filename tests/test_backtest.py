@@ -21,7 +21,8 @@ def test_backtest():
     print("\nRunning optimize() for VOO...")
     opt = engine.optimize("VOO", "2022-01-01", "2024-01-01")
     print(f"best_params     : {opt['best_params']}")
-    print(f"best_sharpe     : {opt['best_sharpe']}")
+    print(f"train_sharpe    : {opt['train_sharpe']}")
+    print(f"test_sharpe     : {opt['test_sharpe']}")
 
     assert result["num_trades"] >= 0
     assert result["total_return"] is not None
@@ -30,6 +31,10 @@ def test_backtest():
     assert result["win_rate"] is not None
     assert result["benchmark_return"] is not None
     assert opt["best_params"] is not None
+    # AUDIT M2: optimize รายงาน train/test แยกกัน — ห้ามมีคีย์ in-sample เดิม
+    assert "best_sharpe" not in opt
+    assert opt["train_sharpe"] is not None
+    assert opt["test_sharpe"] is not None
 
     print("\n✅ passed")
 
