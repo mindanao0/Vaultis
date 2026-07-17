@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import math
 import os
 import re
 import sys
@@ -40,6 +41,7 @@ from analysis.financial_model import (
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns
 from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
+from analysis.trend_channel import fit_trend_channel
 from alerts.notifier import test_alert
 from alerts.price_alert import (
     add_alert,
@@ -1162,6 +1164,156 @@ def _render_underwater_section(ticker: str, close_series: pd.Series) -> None:
         )
 
 
+def _add_buy_overlay(fig: go.Figure, ticker: str, display_ohlc: pd.DataFrame) -> None:
+    """วางจุดซื้อจริง + เส้นต้นทุนเฉลี่ยจาก ledger ลงบนกราฟราคา (Roadmap A4).
+
+    ledger เป็น buy-only (CSV local, gitignored) — ไม่มีธุรกรรมก็แจ้งเฉย ๆ ไม่พัง
+    ต้นทุนเฉลี่ยคิดจากราคา USD ใน ledger ล้วน (ค่าธรรมเนียมบันทึกเป็นบาท จึงไม่รวม)
+    """
+    transactions = get_transactions(ticker)
+    if transactions.empty:
+        st.caption(f"ยังไม่มีธุรกรรมของ {ticker} ใน ledger — เพิ่มได้ที่หน้า Portfolio")
+        return
+
+    tx = transactions.copy()
+    tx["date"] = pd.to_datetime(tx["date"], errors="coerce")
+    tx["shares"] = pd.to_numeric(tx["shares"], errors="coerce")
+    tx["price_usd"] = pd.to_numeric(tx["price_usd"], errors="coerce")
+    tx = tx.dropna(subset=["date", "shares", "price_usd"])
+    tx = tx[(tx["shares"] > 0) & (tx["price_usd"] > 0)].sort_values("date")
+    if tx.empty:
+        st.caption(f"ธุรกรรมของ {ticker} ใน ledger ไม่มีแถวที่วาดได้ (date/shares/price ไม่ครบ)")
+        return
+
+    cumulative_shares = tx["shares"].cumsum()
+    average_cost = (tx["shares"] * tx["price_usd"]).cumsum() / cumulative_shares
+
+    # เส้นขั้นบันไดลากถึงแท่งสุดท้ายของกราฟ ให้เห็นต้นทุนปัจจุบันเทียบราคาได้ทันที
+    step_x = list(tx["date"]) + [display_ohlc.index[-1]]
+    step_y = list(average_cost) + [float(average_cost.iloc[-1])]
+    fig.add_trace(
+        go.Scatter(
+            x=step_x,
+            y=step_y,
+            mode="lines",
+            line=dict(color=THEME["accent"], width=2, dash="dot"),
+            line_shape="hv",
+            name="ต้นทุนเฉลี่ยของฉัน",
+            hoverinfo="x+y+name",
+        ),
+        row=1,
+        col=1,
+    )
+    hover_text = [
+        f"ซื้อ {shares:g} หุ้น @ ${price:,.2f}"
+        for shares, price in zip(tx["shares"], tx["price_usd"])
+    ]
+    fig.add_trace(
+        go.Scatter(
+            x=tx["date"],
+            y=tx["price_usd"],
+            mode="markers",
+            marker=dict(
+                symbol="circle", size=9, color=THEME["accent"], line=dict(color="#FFFFFF", width=1)
+            ),
+            name="จุดซื้อของฉัน",
+            text=hover_text,
+            hoverinfo="text",
+        ),
+        row=1,
+        col=1,
+    )
+    st.caption(
+        f"จุดซื้อ {len(tx)} ครั้ง · ต้นทุนเฉลี่ยปัจจุบัน ${float(average_cost.iloc[-1]):,.2f}/หุ้น "
+        "(จากราคา USD ใน ledger — ไม่รวมค่าธรรมเนียมที่บันทึกเป็นบาท)"
+    )
+
+
+def _render_trend_channel_section(ticker: str, close_series: pd.Series) -> None:
+    """Trend channel (Roadmap A2): ราคาปัจจุบันอยู่ส่วนไหนของช่องเทรนด์หลายปีตัวเอง.
+
+    สถิติพรรณนาเทียบเทรนด์ตัวเองในอดีต — ไม่ใช่การพยากรณ์ และไม่เข้าเลขคะแนน/จัดสรร
+    ใช้พิจารณาเฉพาะ "เงินเติมพิเศษ" ส่วนแผน DCA หลักซื้อตามตารางเสมอ
+    """
+    st.subheader(f"Trend Channel — {ticker} เทียบเทรนด์หลายปีของตัวเอง")
+    try:
+        channel = fit_trend_channel(close_series)
+    except ValueError as exc:
+        # ข้อมูลไม่พอ/ใช้ไม่ได้ = บอกตรง ๆ ไม่วาดแถบจากข้อมูลบาง ๆ (AUDIT.md C1)
+        st.error(f"{ticker}: {exc}")
+        return
+
+    trend = channel["trend"]
+    sigma = float(channel["sigma_log"])
+    current_sigma = float(channel["current_sigma"])
+    factor_1s = math.exp(sigma)
+    factor_2s = math.exp(2.0 * sigma)
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=trend.index, y=trend * factor_2s, mode="lines",
+            line=dict(width=0), name="+2σ", showlegend=False, hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trend.index, y=trend / factor_2s, mode="lines",
+            line=dict(width=0), fill="tonexty", fillcolor="rgba(56, 139, 253, 0.08)",
+            name="-2σ", showlegend=False, hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trend.index, y=trend * factor_1s, mode="lines",
+            line=dict(color=THEME["text_secondary"], width=1, dash="dot"), name="+1σ",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trend.index, y=trend / factor_1s, mode="lines",
+            line=dict(color=THEME["text_secondary"], width=1, dash="dot"), name="-1σ",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trend.index, y=trend, mode="lines",
+            line=dict(color=THEME["accent"], width=2, dash="dash"), name="เทรนด์ (log-linear)",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=close_series.index, y=close_series, mode="lines",
+            line=dict(color=THEME["text_primary"], width=1.5), name="ราคา",
+        )
+    )
+    fig.update_layout(
+        height=340,
+        yaxis_title="Price (USD)",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
+    )
+    st.plotly_chart(_apply_plotly_dark_theme(fig), use_container_width=True)
+
+    if current_sigma >= 1.5:
+        zone_text = "โซนบนของช่อง — แพงเชิงสถิติเทียบเทรนด์ตัวเอง เงินเติมพิเศษได้ความคุ้มต่ำกว่าค่าเฉลี่ย"
+        zone_color = THEME["negative"]
+    elif current_sigma <= -1.5:
+        zone_text = "โซนล่างของช่อง — ถูกเชิงสถิติเทียบเทรนด์ตัวเอง จังหวะของเงินเติมพิเศษ"
+        zone_color = THEME["positive"]
+    else:
+        zone_text = "อยู่กลางช่องเทรนด์"
+        zone_color = THEME["text_secondary"]
+    st.markdown(_chip_html(f"{current_sigma:+.1f}σ · {zone_text}", zone_color), unsafe_allow_html=True)
+
+    metric_col1, metric_col2 = st.columns(2)
+    metric_col1.metric("ตำแหน่งปัจจุบันในช่อง", f"{current_sigma:+.1f}σ")
+    metric_col2.metric("อัตราโตตามเทรนด์", f"{channel['annual_growth_pct']:.1f}%/ปี")
+    st.caption(
+        "แถบ = เทรนด์ log-linear ±1σ/±2σ จากช่วงข้อมูลที่โหลด — สถิติอดีต ไม่ใช่การพยากรณ์ "
+        "และไม่เข้าเลขคะแนน/จัดสรรของระบบ · แผน DCA หลักซื้อตามตารางเสมอ"
+    )
+
+
 def render_technical_signals_page(prices: pd.DataFrame) -> None:
     """หน้า Technical Signals: กราฟ Candlestick + RSI + การ์ดสรุปสัญญาณ."""
     st.header("Technical Signals")
@@ -1177,6 +1329,11 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         horizontal=True,
         key="technical_timeframe",
         help="สัญญาณทุกตัว (MA/RSI/จุดสะสม) คำนวณจากแท่งรายวันตามนิยามกลางเสมอ — กรอบเวลาเปลี่ยนแค่มุมมอง",
+    )
+    show_buys = st.checkbox(
+        "แสดงจุดซื้อของฉัน + เส้นต้นทุนเฉลี่ย (จาก ledger)",
+        value=True,
+        key="technical_show_buys",
     )
 
     with st.spinner("กำลังโหลดข้อมูลราคา..."):
@@ -1331,6 +1488,9 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
     fig.add_hrect(y0=70, y1=100, fillcolor="rgba(255, 0, 0, 0.12)", line_width=0, row=2, col=1)
     fig.add_hrect(y0=0, y1=30, fillcolor="rgba(0, 128, 0, 0.12)", line_width=0, row=2, col=1)
 
+    if show_buys:
+        _add_buy_overlay(fig, selected_ticker, display_ohlc)
+
     fig.update_layout(height=850, xaxis_rangeslider_visible=False, legend_title_text="Indicators")
     fig.update_yaxes(title_text="Price (USD)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
@@ -1342,6 +1502,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
     )
 
     _render_underwater_section(selected_ticker, prices[selected_ticker].dropna())
+
+    _render_trend_channel_section(selected_ticker, prices[selected_ticker].dropna())
 
     st.subheader("Signal Summary Cards")
     columns = st.columns(len(technical_tickers))
