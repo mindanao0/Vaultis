@@ -65,18 +65,23 @@
 > ยังมีคุณค่า (ภาษี/ต้นทุน/robustness เป็น moat จริง) แต่ทำหลังแกน ตามที่ผู้ใช้เลือก
 
 ## Phase 0 — ฐาน + พิสูจน์ (ทำก่อนสุด, de-risk ทั้ง roadmap)
-1. **Backtest A/B พิสูจน์ edge** — harness เทียบ DCA เป้าหมายปกติ vs DCA ที่ tilt (regime/FX) ย้อนหลัง
+1. ✅ **Backtest A/B พิสูจน์ edge** (harness เสร็จ+รันแล้ว 2026-07-17 — `portfolio/ab_backtest.py`) — เทียบ DCA เป้าหมายปกติ vs DCA ที่ tilt ย้อนหลัง
    - ใช้ซ้ำ: `portfolio/dca.py` `simulate_dca(weights,...)` + `portfolio/backtest.py` (Sharpe/max DD/เทียบ VOO)
    - หมายเหตุ: ทั้งคู่ใช้ fixed weights → ต้องย้ายการคำนวณ weight เข้าไปใน loop รายเดือนเพื่อรองรับ tilt ที่แปรตามเวลา (point-in-time เท่านั้น — ห้าม look-ahead)
    - **สองช่วงทดสอบ (มติข้อ 3):** ช่วง proxy (VOO/SCHD/QQQ/XLV/GLD) ตั้งแต่ 2011-10 + ช่วงข้อมูลจริงล้วนตั้งแต่ 2020-11; inception จริง: XLV 1998-12, VOO 2010-09, SCHD 2011-10, GLDM 2018-06, QQQM 2020-10
    - ค่าธรรมเนียมไม่กระทบผล A/B (0.15% ของงบเดือนเท่ากันทั้งสองแขน) → v1 ไม่คิด fee ทั้งคู่ และระบุไว้ใน docstring
    - **เป็นด่านกั้น:** ถ้า tilt ไม่ชนะ plain DCA → ทบทวน Edge 1/2 ก่อนลงมือ
-2. **แก้บั๊กค่าธรรมเนียมไม่ตรงกัน** — `portfolio/tracker.py:207` (เทรดแรกของเดือนฟรี — **ผิด**) vs `backend/services/rebalance_service.py:93` (คิดทุกครั้ง — **ถูกตามบัญชีจริง**, มติข้อ 2) → สูตรเดียว 0.15% ทุก transaction ใน module กลาง; **ห้าม rewrite ค่า fee ที่บันทึกแล้วใน ledger** (AUDIT M12 — เติมค่าประมาณเฉพาะแถวที่ไม่มีค่า)
-3. **แหล่งราคาสำรอง (J)** — เพิ่ม fallback (Stooq/Alpha Vantage) รอบ `data/fetcher.py` ให้ yfinance ล่มแล้วยังทำงาน (คง fail-loud เมื่อทุกแหล่งล่ม)
+   - **⛔ ผลรัน (2026-07-17, `python -m portfolio.ab_backtest`): ไม่ผ่านด่าน**
+     - proxy 2011-10→2026-07 (178 ด., ลงทุน 1.78M): plain 5.976M (CAGR 15.03%, Sharpe 1.11, DD −21.0%) | tilt 6.005M (15.12%, 1.10, −21.2%; SCHD กลาง 11 ด.แรก) | VOO เดี่ยว 5.918M (15.93%, 1.06, −23.9%) → tilt ชนะมูลค่า +0.49% แต่แพ้ Sharpe 0.01
+     - real 2020-11→2026-07 (69 ด., ลงทุน 690k): plain 1,100k (16.14%, 1.23, −19.4%) | tilt 1,097k (16.13%, 1.22, −19.4%; QQQM กลาง 9 ด.แรก) | VOO เดี่ยว 1,122k (17.15%, 1.14, −22.4%) → tilt แพ้ทั้งมูลค่า (−0.33%) และ Sharpe
+     - **อ่านผล:** score-tilt ≈ plain ทุกมิติ (ต่าง <0.5% ในช่วง 5–15 ปี = ระดับ noise) — tilt 0.6–1.4× บนเงินเติมรายเดือนเป็นคันโยกเล็ก ไม่มี edge ที่พิสูจน์ได้ แต่ก็ไม่ทำร้ายพอร์ต; ส่วนพอร์ต 5 ตัวชนะ VOO เดี่ยวเชิง risk-adjusted (Sharpe/DD ดีกว่า) ทั้งสองช่วง = การกระจายทำงานจริง
+     - **นัยต่อแผน:** Phase 1 (regime/FX tilt) ถูกด่านนี้ห้ามไว้จนกว่าจะทบทวน Edge 1/2; B2/B4 (ป้อน tilt) คุณค่าลดลงตามหลักฐานนี้ — ต้องผ่าน harness ก่อน merge ตามมติข้อ 4; แกนหลักหมวด A/B (B1/A1/A3 — งาน "วาด" ไม่มีเลขใหม่) **ไม่ถูก gate** เดินต่อได้เลย
+2. ✅ **แก้บั๊กค่าธรรมเนียมไม่ตรงกัน** (เสร็จ 2026-07-17 — `portfolio/fees.py` สูตรกลาง, tracker/rebalance ใช้ร่วม, เทสต์คุม M12) — `portfolio/tracker.py:207` (เทรดแรกของเดือนฟรี — **ผิด**) vs `backend/services/rebalance_service.py:93` (คิดทุกครั้ง — **ถูกตามบัญชีจริง**, มติข้อ 2) → สูตรเดียว 0.15% ทุก transaction ใน module กลาง; **ห้าม rewrite ค่า fee ที่บันทึกแล้วใน ledger** (AUDIT M12 — เติมค่าประมาณเฉพาะแถวที่ไม่มีค่า)
+3. ✅ **แหล่งราคาสำรอง (J)** (เสร็จ 2026-07-17 — `data/fallback.py` ต่อเข้า `get_current_prices` ใช้ทั้ง cron/dashboard/rebalance) — ให้ yfinance ล่มแล้วยังทำงาน (คง fail-loud เมื่อทุกแหล่งล่ม)
    - **นโยบาย:** fallback ใช้กับ "ราคาล่าสุด/สัญญาณวันนี้" เท่านั้น — **ห้ามผสมเข้า series ประวัติที่ใช้คำนวณ score** (Stooq ไม่ adjust ปันผล ≠ Adj Close → คะแนนเพี้ยนเงียบ ๆ)
-   - ลำดับ: yfinance → Stooq (ฟรี ไม่ใช้ key) → Alpha Vantage (optional ผ่าน env, free tier 25 req/วัน); ทุกค่าติด field `source` กำกับที่มา
+   - ลำดับ: yfinance → Stooq (ฟรี ไม่ใช้ key) → Alpha Vantage (optional ผ่าน env, free tier 25 req/วัน); ที่มาแจ้งผ่าน log warning แทน field `source` ต่อค่า — คง contract เดิม `dict[str, float]` ของ `get_current_prices` เพื่อไม่แตะ caller ทุกจุด
 
-## Phase 1 — moat edges (deterministic จากราคา/ค่าเงิน) — *gated ด้วย Phase 0*
+## Phase 1 — moat edges (deterministic จากราคา/ค่าเงิน) — *gated ด้วย Phase 0* **⛔ ด่านไม่ผ่าน (2026-07-17) — ทบทวน Edge 1/2 ก่อนลงมือ (ผลอยู่ใน Phase 0 ข้อ 1)**
 - **Edge 2: regime tilt** (per-ticker, bounded 0.8–1.2) — ไฟล์ใหม่ `analysis/regime.py`, ต่อ `calculate_allocation`
 - **Edge 1: FX timing** (สัญญาณระดับงบ) — ไฟล์ใหม่ `analysis/fx_timing.py`
 - *(สเปกละเอียดทั้งสองอยู่ท้ายเอกสาร)*
