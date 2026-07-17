@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..models import InvestmentGoal
 from ..schemas import GoalCreate
 
+from analysis.risk import portfolio_mu_sigma
 from portfolio.targets import RISK_PROFILES
 
 EXPECTED_RETURNS: dict[str, float] = {
@@ -17,6 +19,46 @@ EXPECTED_RETURNS: dict[str, float] = {
     "moderate": 0.09,
     "aggressive": 0.12,
 }
+DEFAULT_VOLATILITY = 0.15
+
+_real_assumptions_cache: tuple[float, dict[str, Any] | None] | None = None
+_REAL_ASSUMPTIONS_TTL_SEC = 600.0
+
+
+def real_portfolio_assumptions() -> dict[str, Any] | None:
+    """μ/σ ต่อปีจากพอร์ตจริง (น้ำหนักมูลค่าปัจจุบันใน ledger + ราคาย้อนหลัง 10 ปี).
+
+    Roadmap ข้อ 15: Monte Carlo ของเป้าหมายต้องผูกพอร์ตจริง ไม่ใช่ค่าคงที่ต่อโปรไฟล์
+    คืน ``None`` เมื่อไม่มีพอร์ต/ราคา — ผู้เรียก fallback ไป preset พร้อมระบุที่มาเสมอ
+    (cache 10 นาที — หน้า goals เรียกซ้ำต่อหลายเป้าหมาย)
+    """
+    global _real_assumptions_cache
+    now = time.monotonic()
+    if _real_assumptions_cache is not None and now - _real_assumptions_cache[0] < _REAL_ASSUMPTIONS_TTL_SEC:
+        cached = _real_assumptions_cache[1]
+        return dict(cached) if cached is not None else None
+
+    result: dict[str, Any] | None = None
+    try:
+        from data.fetcher import fetch_adjusted_close_data
+        from portfolio.tracker import get_portfolio_summary
+
+        holdings = get_portfolio_summary()
+        priced = holdings[holdings["Price OK"]] if not holdings.empty else holdings
+        if not priced.empty:
+            weights = {
+                str(row["Ticker"]): float(row["Current Value (THB)"])
+                for _, row in priced.iterrows()
+                if float(row["Current Value (THB)"] or 0) > 0
+            }
+            prices = fetch_adjusted_close_data(list(weights), years=10)
+            mu, sigma = portfolio_mu_sigma(prices, weights)
+            result = {"mu": mu, "sigma": sigma, "source": "พอร์ตจริงจาก ledger (ย้อนหลัง 10 ปี)"}
+    except Exception:
+        result = None
+
+    _real_assumptions_cache = (now, result)
+    return dict(result) if result is not None else None
 
 # ใช้ชุดเดียวกับ DCA/rebalance (portfolio/targets.py)
 ALLOCATION_MAP = RISK_PROFILES
@@ -125,7 +167,17 @@ def check_off_track(goal: InvestmentGoal, required_pmt: float) -> tuple[bool, st
 
 def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
     months = _months_remaining(goal.target_date)
-    expected_return = EXPECTED_RETURNS.get(goal.risk_profile, 0.09)
+
+    # ผูกสมมติฐานกับพอร์ตจริงก่อน (Roadmap ข้อ 15) — ไม่มีพอร์ต/ราคา ค่อยใช้ preset
+    real_assumptions = real_portfolio_assumptions()
+    if real_assumptions is not None:
+        expected_return = float(real_assumptions["mu"])
+        volatility = float(real_assumptions["sigma"])
+        assumptions_source = str(real_assumptions["source"])
+    else:
+        expected_return = EXPECTED_RETURNS.get(goal.risk_profile, 0.09)
+        volatility = DEFAULT_VOLATILITY
+        assumptions_source = f"preset โปรไฟล์ {goal.risk_profile} (ยังไม่มีพอร์ตจริง/ราคา)"
     monthly_rate = expected_return / 12
 
     required_pmt = calculate_pmt(
@@ -147,6 +199,7 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
         months=months,
         annual_return=expected_return,
         target=goal.target_amount_thb,
+        volatility=volatility,
     )
 
     off_track, correction = check_off_track(goal, required_pmt)
@@ -169,9 +222,11 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
         "on_track": not off_track,
         "course_correction": correction,
         "suggested_allocation": allocation,
+        "assumptions_source": assumptions_source,
         "assumptions_note": (
-            f"ประมาณการใช้ผลตอบแทน {expected_return*100:.0f}% ต่อปี และความผันผวน 15% "
-            "ซึ่งเป็นสมมติฐาน ไม่ใช่การรับประกัน"
+            f"ประมาณการใช้ผลตอบแทน {expected_return*100:.1f}% ต่อปี "
+            f"และความผันผวน {volatility*100:.1f}% (ที่มา: {assumptions_source}) — "
+            "อิงสถิติอดีต เป็นสมมติฐาน ไม่ใช่การรับประกัน"
         ),
     }
 

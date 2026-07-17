@@ -115,6 +115,31 @@ def drawdown_episodes(prices: pd.Series, min_depth: float = 0.10) -> list[dict]:
     return episodes
 
 
+def portfolio_mu_sigma(price_df: pd.DataFrame, weights: dict[str, float]) -> tuple[float, float]:
+    """μ/σ ต่อปีของพอร์ตตามน้ำหนักที่ให้ — ตัวป้อน Monte Carlo (Roadmap ข้อ 15).
+
+    ใช้ผลตอบแทนรายวันย้อนหลังของ ticker ที่มีทั้งน้ำหนัก > 0 และราคา
+    (น้ำหนัก normalize ภายใน จึงส่งเป็นมูลค่าถือครองดิบ ๆ ได้เลย)
+
+    ข้อมูล/น้ำหนักใช้ไม่ได้ → raise ValueError — ผู้เรียกค่อย fallback ไปค่า preset
+    อย่างโปร่งใส ห้ามเงียบ ๆ กลายเป็นเลขคงที่ (AUDIT.md C1)
+    """
+    tickers = [t for t, w in weights.items() if w > 0 and t in price_df.columns]
+    if not tickers:
+        raise ValueError("ไม่มี ticker ที่มีทั้งน้ำหนักและข้อมูลราคา")
+    daily_returns = calculate_daily_returns(price_df[tickers]).dropna()
+    if daily_returns.empty:
+        raise ValueError("ผลตอบแทนรายวันว่าง — คำนวณ μ/σ ไม่ได้")
+    normalized = pd.Series({t: float(weights[t]) for t in tickers})
+    normalized = normalized / normalized.sum()
+    portfolio_daily = (daily_returns * normalized).sum(axis=1)
+    mu = float(portfolio_daily.mean() * 252)
+    sigma = float(portfolio_daily.std() * np.sqrt(252))
+    if not np.isfinite(mu) or not np.isfinite(sigma) or sigma <= 0:
+        raise ValueError("μ/σ ที่ได้ไม่สมเหตุสมผล (ข้อมูลอาจสั้น/นิ่งเกินไป)")
+    return mu, sigma
+
+
 @cache_data_1h
 def calculate_risk_metrics(
     price_df: pd.DataFrame, risk_free_rate: float = DEFAULT_RISK_FREE_RATE

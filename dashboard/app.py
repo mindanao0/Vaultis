@@ -67,7 +67,11 @@ from portfolio.costs import (
     gross_up_net_dividend,
     net_dividend_yield,
 )
+from portfolio.benchmark import shadow_benchmark, xirr
+from portfolio.cashflow_rebalance import rebalance_with_new_money
 from portfolio.drip import simulate_drip
+from portfolio.fees import DIME_FEE_RATE
+from utils.fx import get_usdthb
 from portfolio.tracker import (
     TX_DIVIDEND,
     add_dividend,
@@ -2298,6 +2302,142 @@ def cached_dividend_yields(tickers: tuple[str, ...]) -> dict[str, float | None]:
     return {ticker: _dividend_yield(ticker) for ticker in tickers}
 
 
+def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
+    """ชนะ VOO ไหม + %/ปี money-weighted (Roadmap ข้อ 14) — เทียบเงินก้อนเดียวกัน วันเดียวกัน."""
+    st.divider()
+    st.subheader("ชนะ VOO ไหม (เงินก้อนเดียวกัน วันเดียวกัน)")
+
+    transactions = get_transactions()
+    buys = transactions[
+        (transactions["tx_type"] != TX_DIVIDEND)
+        & (pd.to_numeric(transactions["shares"], errors="coerce") > 0)
+    ]
+    if buys.empty:
+        st.caption("ยังไม่มีรายการซื้อใน ledger — ไม่มีอะไรให้เทียบ")
+        return
+
+    try:
+        benchmark_prices = cached_prices(sorted(set(get_tickers()) | {"VOO"}), years=10)
+    except PriceDataUnavailableError as exc:
+        st.error(f"ดึงราคาไม่สำเร็จ — เทียบ benchmark ไม่ได้: {exc}")
+        return
+    if "VOO" not in benchmark_prices.columns:
+        st.error("ไม่มีข้อมูลราคา VOO — เทียบ benchmark ไม่ได้")
+        return
+
+    try:
+        shadow = shadow_benchmark(buys, benchmark_prices["VOO"].dropna())
+    except ValueError as exc:
+        st.error(f"เทียบไม่ได้: {exc}")
+        return
+    if shadow["rounds"] == 0:
+        st.caption("ไม่มีไม้ซื้อที่เทียบราคา VOO ณ วันซื้อได้")
+        return
+
+    priced = holdings_df[holdings_df["Price OK"]]
+    actual_value_usd = float(priced["Current Value (USD)"].sum()) if not priced.empty else 0.0
+    invested_usd = float(shadow["invested_usd"])
+    shadow_value = float(shadow["benchmark_value_usd"])
+
+    bench_col1, bench_col2, bench_col3 = st.columns(3)
+    actual_pct = (actual_value_usd / invested_usd - 1.0) * 100.0 if invested_usd else 0.0
+    shadow_pct = (shadow_value / invested_usd - 1.0) * 100.0 if invested_usd else 0.0
+    bench_col1.metric("พอร์ตจริง (USD)", f"{actual_value_usd:,.2f}", delta=f"{actual_pct:+.2f}%")
+    bench_col2.metric("ถ้าซื้อ VOO ล้วน (USD)", f"{shadow_value:,.2f}", delta=f"{shadow_pct:+.2f}%")
+    bench_col3.metric("ส่วนต่าง", f"{actual_value_usd - shadow_value:+,.2f} USD")
+    if shadow["skipped"]:
+        st.warning(f"{shadow['skipped']} ไม้เทียบไม่ได้ (ไม่มีราคา VOO ณ วันซื้อ) — ตัดออกจากขา VOO เงา")
+
+    # %/ปีแบบ money-weighted จากกระแสเงินสดจริง (ซื้อเป็นลบ, ปันผล+มูลค่าปัจจุบันเป็นบวก)
+    flows: list[tuple[pd.Timestamp, float]] = [
+        (pd.to_datetime(row["date"]), -float(row["shares"]) * float(row["price_usd"]))
+        for _, row in buys.iterrows()
+    ]
+    for _, dividend_row in get_dividends().iterrows():
+        flows.append((pd.to_datetime(dividend_row["date"]), float(dividend_row["amount_usd"])))
+    flows.append((pd.Timestamp.today().normalize(), actual_value_usd))
+
+    portfolio_age_days = (pd.Timestamp.today() - buys["date"].min()).days
+    if portfolio_age_days < 90:
+        st.caption(
+            f"อายุพอร์ต {portfolio_age_days} วัน — น้อยเกินกว่าจะตีเป็น %ต่อปีอย่างมีความหมาย "
+            "(ตัวเลขรวมด้านบนคือของจริงทั้งหมดแล้ว)"
+        )
+        return
+    annual_rate = xirr(flows)
+    if annual_rate is None:
+        st.caption("คำนวณ %ต่อปี (XIRR) ไม่ได้จากกระแสเงินสดปัจจุบัน — ไม่แสดงตัวเลขแทน")
+        return
+    xirr_text = f"ผลตอบแทนจริง ~{annual_rate * 100.0:+.1f}%/ปี (money-weighted รวมปันผลที่บันทึก)"
+    thai_inflation = get_thai_inflation()
+    if thai_inflation is not None:
+        real_rate = annual_rate * 100.0 - float(thai_inflation["inflation_pct"])
+        xirr_text += (
+            f" · หักเงินเฟ้อไทย ~{thai_inflation['inflation_pct']:.1f}% "
+            f"→ real return ≈ {real_rate:+.1f}%/ปี"
+        )
+    else:
+        xirr_text += " · ไม่ทราบเงินเฟ้อไทยขณะนี้ — ไม่แสดง real return"
+    st.info(xirr_text)
+
+
+def _render_panic_coach_section(holdings_df: pd.DataFrame) -> None:
+    """โค้ชช่วงตลาดผันผวน + stress context (Roadmap ข้อ 13).
+
+    มูลค่าพอร์ตย้อนหลังประมาณด้วย "จำนวนหุ้นปัจจุบันคงที่" — ไม่ใช่เส้นทางพอร์ตจริง
+    ที่ทยอยซื้อ จึงใช้เป็นบริบทความผันผวน ไม่ใช่ตัวเลขผลตอบแทน
+    """
+    priced = holdings_df[holdings_df["Price OK"]] if not holdings_df.empty else holdings_df
+    if priced.empty:
+        return
+    st.divider()
+    st.subheader("โค้ชช่วงตลาดผันผวน (stress context)")
+    try:
+        history_prices = cached_prices(get_tickers(), years=10)
+    except PriceDataUnavailableError as exc:
+        st.error(f"ดึงราคาย้อนหลังไม่ได้: {exc}")
+        return
+
+    shares_map = {
+        str(row["Ticker"]): float(row["Shares"]) for _, row in priced.iterrows()
+    }
+    available = [t for t in shares_map if t in history_prices.columns]
+    if not available:
+        st.caption("ไม่มีราคาย้อนหลังของ ETF ที่ถืออยู่")
+        return
+    aligned = history_prices[available].dropna()
+    if aligned.empty:
+        st.caption("ช่วงเวลาที่ทุกตัวมีราคาพร้อมกันสั้นเกินไป")
+        return
+    value_series = (aligned * pd.Series({t: shares_map[t] for t in available})).sum(axis=1)
+
+    current_dd = float((underwater_series(value_series) * 100.0).iloc[-1])
+    episodes = drawdown_episodes(value_series, min_depth=0.10)
+    recovered = [e for e in episodes if e["months_to_recover"] is not None]
+
+    if current_dd > -5.0:
+        st.success(
+            f"พอร์ต (ตามหุ้นที่ถือปัจจุบัน) ห่างจากจุดสูงสุดเพียง {abs(current_dd):.1f}% — เดินตามแผนปกติ"
+        )
+    else:
+        message = f"ตอนนี้พอร์ตต่ำกว่าจุดสูงสุด {abs(current_dd):.1f}%"
+        if recovered:
+            deepest = min(float(e["depth_pct"]) for e in recovered)
+            median_months = float(
+                pd.Series([float(e["months_to_recover"]) for e in recovered]).median()
+            )
+            message += (
+                f" — ส่วนผสมพอร์ตนี้ในอดีตเคยลงลึกสุด {deepest:.1f}% "
+                f"และรอบที่ลึกเกิน 10% ฟื้นกลับทุกรอบ (median {median_months:.0f} เดือน)"
+            )
+        message += " · ตาราง DCA เดือนนี้คือการซื้อของถูกลงตามแผน ไม่ใช่เหตุให้หยุด"
+        st.info(message)
+    st.caption(
+        "ประมาณด้วยจำนวนหุ้นปัจจุบันคงที่ย้อนหลัง 10 ปี (สถิติอดีต ไม่ใช่การพยากรณ์ "
+        "และไม่ใช่เส้นทางพอร์ตจริงที่ทยอยซื้อ)"
+    )
+
+
 def _render_overlap_section() -> None:
     """ความทับซ้อน/การกระจายจริง (Roadmap ข้อ 10) — correlation คำนวณจริง + โครงสร้างเชิงบรรยาย."""
     st.divider()
@@ -2539,6 +2679,10 @@ def render_portfolio_page() -> None:
             st.plotly_chart(_apply_plotly_dark_theme(pie_fig), use_container_width=True)
 
     _render_overlap_section()
+
+    _render_benchmark_section(holdings_df)
+
+    _render_panic_coach_section(holdings_df)
 
     st.divider()
     st.subheader("ต้นทุนจริง & ภาษี (โดยประมาณ)")
@@ -2817,6 +2961,129 @@ def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
         st.markdown("ไม่อยู่ในแผนจัดสรรเดือนนี้ (ไม่มีน้ำหนักเป้าหมาย หรือข้อมูลไม่พร้อม)")
 
 
+def _render_rebalance_mode(budget_thb: float, scores_by_ticker: dict) -> bool:
+    """โหมด opt-in "ดึงพอร์ตเข้าเป้าด้วยเงินใหม่" (Roadmap ข้อ 12) — ไม่ขาย ไม่มีภาษี.
+
+    คืน True เมื่อแสดงแผนโหมดนี้แล้ว (ผู้เรียกข้ามแผน tilt ปกติ)
+    เงื่อนไขไม่ครบ (ไม่มีพอร์ต/ราคา) = แจ้งแล้วคืน False — ห้ามสลับโหมดเงียบ ๆ
+    """
+    if not st.toggle(
+        "โหมดดึงพอร์ตเข้าเป้า — เทงบเดือนนี้เข้าตัวที่ต่ำกว่าเป้า (ไม่ขาย ไม่มีภาษี)",
+        value=False,
+        key="scorecard_rebalance_mode",
+    ):
+        return False
+    try:
+        holdings = get_portfolio_summary()
+        priced = holdings[holdings["Price OK"]] if not holdings.empty else holdings
+        current_values = (
+            {str(row["Ticker"]): float(row["Current Value (THB)"]) for _, row in priced.iterrows()}
+            if not priced.empty
+            else {}
+        )
+        plan = rebalance_with_new_money(
+            current_values, get_target_weights(list(current_values)), float(budget_thb)
+        )
+    except Exception as exc:
+        st.warning(f"ใช้โหมดดึงเข้าเป้าไม่ได้: {exc} — แสดงแผน DCA ปกติแทน")
+        return False
+
+    st.caption(
+        "โหมดนี้แทนแผนคะแนน×tilt เฉพาะครั้งที่คุณเปิดเอง — แจกเงินใหม่เข้าตัวที่ต่ำกว่าเป้า "
+        "ไม่มีการขาย จึงไม่มีภาษี/ค่าคอมขาขาย (tax-smart rebalance)"
+    )
+    plan_df = pd.DataFrame(
+        [
+            {
+                "ETF": ticker,
+                "ตอนนี้": item["current_pct"],
+                "เป้าหมาย": item["target_pct"],
+                "เติมเดือนนี้ (บาท)": item["amount_thb"],
+                "หลังเติม": item["projected_pct"],
+            }
+            for ticker, item in plan.items()
+        ]
+    )
+    st.dataframe(
+        plan_df.style.format(
+            {
+                "ตอนนี้": "{:.1f}%",
+                "เป้าหมาย": "{:.1f}%",
+                "เติมเดือนนี้ (บาท)": "{:,.0f}",
+                "หลังเติม": "{:.1f}%",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    _render_execute_list(plan, scores_by_ticker)
+    return True
+
+
+def _render_execute_list(allocation: dict, scores_by_ticker: dict) -> None:
+    """รายการซื้อเดือนนี้พร้อมลงมือ (Roadmap ข้อ 11) — แปลงแผน THB เป็น USD/หุ้น/ค่าคอม.
+
+    เลขตั้งต้น (THB ต่อ ETF) มาจาก calculate_allocation ทั้งหมด — ที่เพิ่มคือการแปลงหน่วย
+    ด้วย FX สด (utils/fx แหล่งเดียว) และราคาอ้างอิงจาก score payload
+    จำนวนหุ้นเป็นค่าประมาณ ณ ราคาปิดล่าสุด — ราคาจริงตอนกดซื้อย่อมต่างเล็กน้อย
+    """
+    st.subheader("รายการซื้อเดือนนี้ (พร้อมลงมือ)")
+    fx = get_usdthb()
+    if not fx.is_live:
+        st.warning(
+            f"FX ใช้ค่าสำรอง {fx.rate:.2f} บาท/USD (ดึงค่าสดไม่ได้) — ตัวเลข USD/หุ้นด้านล่างเป็นประมาณการหยาบ"
+        )
+
+    order_rows: list[dict[str, object]] = []
+    order_lines: list[str] = []
+    total_fee_thb = 0.0
+    for ticker, item in allocation.items():
+        amount_thb = float(item.get("amount_thb") or 0)
+        fee_thb = amount_thb * DIME_FEE_RATE
+        total_fee_thb += fee_thb
+        amount_usd = amount_thb / fx.rate
+        price = scores_by_ticker.get(str(ticker), {}).get("price")
+        shares_est = (amount_usd / float(price)) if price else None
+        order_rows.append(
+            {
+                "ETF": ticker,
+                "จ่าย (บาท)": amount_thb,
+                "≈ USD": amount_usd,
+                "ราคาอ้างอิง": float(price) if price else None,
+                "≈ หุ้น": shares_est,
+                "ค่าคอม 0.15% (บาท)": fee_thb,
+            }
+        )
+        if shares_est is not None:
+            order_lines.append(
+                f"{ticker}: {amount_thb:,.0f} บาท ≈ {amount_usd:,.2f} USD ≈ {shares_est:.4f} หุ้น @ ${float(price):,.2f}"
+            )
+        else:
+            order_lines.append(f"{ticker}: {amount_thb:,.0f} บาท ≈ {amount_usd:,.2f} USD (ไม่มีราคาอ้างอิง)")
+
+    st.dataframe(
+        pd.DataFrame(order_rows).style.format(
+            {
+                "จ่าย (บาท)": "{:,.0f}",
+                "≈ USD": "{:,.2f}",
+                "ราคาอ้างอิง": "${:,.2f}",
+                "≈ หุ้น": "{:,.4f}",
+                "ค่าคอม 0.15% (บาท)": "{:,.2f}",
+            },
+            na_rep="N/A",
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.code("\n".join(order_lines), language=None)
+    st.caption(
+        f"คัดลอกรายการด้านบนไปใช้ตอนกดซื้อในแอปโบรกได้เลย (ใส่เป็นจำนวนเงิน) · "
+        f"FX {fx.rate:.2f} บาท/USD ({'สด' if fx.is_live else 'ค่าสำรอง'}) · "
+        f"ค่าคอมรวมโดยประมาณ {total_fee_thb:,.2f} บาท หักอัตโนมัติโดยโบรก — "
+        "จำนวนหุ้นเป็นประมาณการ ณ ราคาปิดล่าสุด ไม่ใช่ราคาที่จะได้จริง"
+    )
+
+
 def _render_drift_advisory() -> None:
     """เทียบพอร์ตจริงกับเป้าหมาย (Roadmap ข้อ 7) — advisory เท่านั้น ไม่แก้เลขจัดสรร.
 
@@ -2911,7 +3178,9 @@ def render_scorecard_page() -> None:
         missing = ", ".join(str(r.get("ticker")) for r in no_data_rows)
         st.warning(f"ไม่มีข้อมูล: {missing} — ไม่ถูกนำมาคิดคะแนน/จัดสรร งบส่วนนั้นกระจายให้ตัวที่เหลือ")
 
-    if allocation:
+    if allocation and _render_rebalance_mode(float(budget_thb), scores_by_ticker):
+        pass  # โหมดดึงเข้าเป้า render แผนของตัวเองแล้ว — ข้ามแผน tilt ปกติของเดือนนี้
+    elif allocation:
         _render_verdict_cards(allocation, float(budget_thb))
 
         table_col, donut_col = st.columns([1.25, 1])
@@ -2960,6 +3229,8 @@ def render_scorecard_page() -> None:
             )
             st.plotly_chart(_apply_plotly_dark_theme(donut), use_container_width=True)
             st.caption("× = ตัวคูณจากคะแนน — 1.00 คือตามเป้าพอดี, สูง/ต่ำกว่าคือซื้อมาก/น้อยกว่าเป้า")
+
+        _render_execute_list(allocation, scores_by_ticker)
     else:
         st.warning("จัดสรรไม่ได้ — ไม่มี ETF ที่ข้อมูลพร้อม หรืองบเป็นศูนย์")
 

@@ -100,15 +100,12 @@
 9. ✅ **Audit trail "ทำไมได้เท่านี้" (D)** (เสร็จ 2026-07-17 — expander ต่อ ETF ในหน้า Scorecard แตก 3 ชั้น: คะแนนดิบ 4 องค์ประกอบ → tilt (สูตร+ค่าจริงจาก calculate_allocation) → THB หลัง normalize/ปัดหลักร้อย — โชว์เลขที่โมเดลคืน ไม่คำนวณใหม่; ชั้น regime จะเพิ่มเมื่อ Phase 1 พ้น gate)
 10. ✅ **เตือน overlap + factor/sector exposure (F)** (เสร็จ 2026-07-17 — section "การกระจายจริง & ความทับซ้อน" ในหน้า Portfolio: heatmap correlation 10 ปี, เตือนคู่ ≥0.85, ชี้ตัวกระจายจริง ≤0.30, หมายเหตุโครงสร้าง VOO∩QQQM/SCHD/XLV/GLDM)
 
-## Phase 4 — ลงมือได้จริง & วินัย
-11. **"รายการซื้อเดือนนี้" พร้อม execute (G)** — แปลง allocation → จำนวนหุ้น/เงินจริง + fee+FX copy ไปวางในโบรก
-12. **Rebalance ด้วยเงินใหม่ tax-smart (H)** *(money-moving)* — เท DCA เข้าตัว underweight แทนการขาย (ไม่มีภาษี) — ต่อ `rebalance_service` (drift 5%) กับแผน DCA
-13. **โค้ชกันแพนิก + stress test (I)** — ตรวจ drawdown (`analysis/risk.py:52`) → บริบทประวัติศาสตร์ "2008/2020 ลง X% ฟื้น Y เดือน" + ติดตามการทำตามแผน
-14. **เทียบ benchmark ต่อเนื่อง (E)** — โชว์ "ชนะ VOO ไหม" กับพอร์ตจริง (`portfolio/backtest.py` เทียบ VOO อยู่แล้ว)
-15. **Monte Carlo ผูกพอร์ตจริง (C) — ⭐ เครื่องพยากรณ์หลักของระบบ** — ต่อ `goal_service.calculate_probability()`
-    (1000 sims มีอยู่แล้ว) เข้าพอร์ต+จังหวะ DCA จริง → "ด้วยจังหวะนี้ ถึงเป้าด้วยความน่าจะเป็น X%"
-    นี่คือ horizon ที่ถูกต้องของ DCA (สิบปี, เชิงความน่าจะเป็น) — เป็นตัวเน้น
-    (หมายเหตุ: `calculate_probability` ปัจจุบันใช้ normal dist + `EXPECTED_RETURNS` คงที่ต่อ risk profile → ต้องคำนวณ μ/σ จากน้ำหนักพอร์ตจริงแทน)
+## Phase 4 — ลงมือได้จริง & วินัย — **✅ เสร็จ 2026-07-17**
+11. ✅ **"รายการซื้อเดือนนี้" พร้อม execute (G)** (เสร็จ 2026-07-17 — section ใน Scorecard: THB→USD (FX แหล่งเดียว utils/fx โชว์สด/สำรอง), ≈จำนวนหุ้น ณ ราคาอ้างอิงจาก score payload, ค่าคอม 0.15%, บล็อกข้อความคัดลอกไปวางในโบรก)
+12. ✅ **Rebalance ด้วยเงินใหม่ tax-smart (H)** (เสร็จ 2026-07-17 — `portfolio/cashflow_rebalance.py`: แจกงบตาม gap เข้าตัวต่ำกว่าเป้า, gap หมดแล้วส่วนเกินกลับสู่ target weights, **ไม่มีการขาย**; เป็น toggle opt-in ต่อครั้งใน Scorecard แทนแผน tilt เฉพาะครั้งที่ผู้ใช้เปิดเอง — ไม่มีพอร์ต = ปฏิเสธชัด ๆ)
+13. ✅ **โค้ชกันแพนิก + stress test (I)** (เสร็จ 2026-07-17 — section ในหน้า Portfolio: underwater ของส่วนผสมพอร์ตปัจจุบัน (fixed-shares, ระบุชัดว่าเป็นการประมาณ) + สถิติรอบฟื้นในอดีต + ข้อความยึดแผน DCA)
+14. ✅ **เทียบ benchmark ต่อเนื่อง (E)** (เสร็จ 2026-07-17 — `portfolio/benchmark.py`: `shadow_benchmark` "เงินก้อนเดียวกัน วันเดียวกัน ซื้อ VOO ล้วน" + `xirr` %/ปี money-weighted รวมปันผลที่บันทึก; หน้า Portfolio โชว์เทียบ + real return หลังเงินเฟ้อไทยเมื่อรู้ CPI; พอร์ตอายุ < 90 วัน = ไม่ตีเป็น %/ปี)
+15. ✅ **Monte Carlo ผูกพอร์ตจริง (C) — ⭐** (เสร็จ 2026-07-17 — `analysis/risk.portfolio_mu_sigma` จากน้ำหนักมูลค่าจริง + `goal_service.real_portfolio_assumptions` (cache 10 นาที) ป้อน μ/σ เข้า `calculate_probability`; ไม่มีพอร์ต = fallback preset พร้อมระบุที่มาใน `assumptions_source`/`assumptions_note` เสมอ)
 
 ## Phase 5 — reach & AI ขั้นสูง (เสี่ยง/แพงสุด — ท้ายสุด)
 16. **แจ้งเตือน LINE (A)** — เพิ่มช่องทาง LINE Messaging API ข้าง Discord/Telegram (localization)
