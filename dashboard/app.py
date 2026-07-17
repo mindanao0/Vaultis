@@ -39,7 +39,7 @@ from analysis.financial_model import (
     run_full_analysis,
 )
 from analysis.ta_compat import ta
-from analysis.returns import calculate_period_returns
+from analysis.returns import calculate_period_returns, monthly_seasonality
 from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
 from analysis.trend_channel import fit_trend_channel
 from alerts.notifier import test_alert
@@ -65,7 +65,7 @@ from portfolio.tracker import (
     get_transactions,
 )
 from technical import signal_rules
-from technical.indicators import ma_cross_dates
+from technical.indicators import ma_cross_dates, weekly_dca_signal
 from utils.config import add_ticker, get_tickers, load_config, remove_ticker, save_config
 from utils.pdf_export import generate_monthly_report
 
@@ -1164,6 +1164,62 @@ def _render_underwater_section(ticker: str, close_series: pd.Series) -> None:
         )
 
 
+def _confluence_chip(daily_central: str, weekly_central: str) -> tuple[str, str]:
+    """สรุปว่าสัญญาณ Daily กับ Weekly ตรงกันไหม (Roadmap B3) — ชั้นความมั่นใจ ไม่ใช่สัญญาณใหม่."""
+    if signal_rules.NO_DATA in (daily_central, weekly_central):
+        return "เทียบ Daily/Weekly ไม่ได้ — ข้อมูลไม่พอ", THEME["text_secondary"]
+    up = {signal_rules.BULLISH, signal_rules.ACCUMULATE}
+    down = {signal_rules.DOWNTREND, signal_rules.DOWNTREND_WATCH}
+    if daily_central in up and weekly_central in up:
+        return "Daily+Weekly ขาขึ้นตรงกัน — มั่นใจสูง", THEME["positive"]
+    if daily_central in down and weekly_central in down:
+        return "Daily+Weekly ขาลงตรงกัน — มั่นใจสูง", THEME["negative"]
+    if daily_central == weekly_central:
+        return "Daily+Weekly ตรงกัน", THEME["text_secondary"]
+    return "Daily/Weekly ไม่ตรงกัน — ช่วงเปลี่ยนผ่าน สัญญาณอ่อน", THEME["text_secondary"]
+
+
+def _render_seasonality_section(ticker: str, close_series: pd.Series) -> None:
+    """Seasonality รายเดือน (Roadmap B5) — เชิงบรรยายเท่านั้น ห้ามเข้าเลขคะแนน/จัดสรร."""
+    st.subheader(f"Seasonality — {ticker} แยกตามเดือนปฏิทินในอดีต")
+    try:
+        stats = monthly_seasonality(close_series)
+    except ValueError as exc:
+        st.error(f"{ticker}: {exc}")
+        return
+
+    month_labels = [
+        "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+        "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค.",
+    ]
+    medians = stats["median_pct"]
+    bar_colors = [
+        THEME["positive"] if (pd.notna(v) and v >= 0) else THEME["negative"] for v in medians
+    ]
+    hover_text = []
+    for month in range(1, 13):
+        row = stats.loc[month]
+        if pd.isna(row["median_pct"]):
+            hover_text.append("ไม่มีข้อมูลเดือนนี้")
+        else:
+            hover_text.append(
+                f"median {row['median_pct']:+.1f}% · บวก {row['positive_rate_pct']:.0f}% ของปี "
+                f"· ตัวอย่าง {int(row['n_samples'])} ปี"
+            )
+    season_fig = go.Figure(
+        go.Bar(x=month_labels, y=medians, marker_color=bar_colors, text=hover_text, hoverinfo="x+text")
+    )
+    season_fig.update_layout(height=300, yaxis_title="median ผลตอบแทนเดือน (%)", showlegend=False)
+    st.plotly_chart(_apply_plotly_dark_theme(season_fig), use_container_width=True)
+
+    sample_counts = stats["n_samples"].dropna()
+    st.caption(
+        f"ตัวอย่างต่อเดือนมีแค่ ~{int(sample_counts.min())}–{int(sample_counts.max())} ปี — "
+        "น้อยมากเชิงสถิติ (noise สูง) ใช้เล่าเรื่องประกอบเท่านั้น "
+        "ห้ามใช้เลื่อน/ข้ามการซื้อ — ตาราง DCA เดินตามปกติ และค่านี้ไม่เข้าเลขคะแนน/จัดสรร"
+    )
+
+
 def _add_buy_overlay(fig: go.Figure, ticker: str, display_ohlc: pd.DataFrame) -> None:
     """วางจุดซื้อจริง + เส้นต้นทุนเฉลี่ยจาก ledger ลงบนกราฟราคา (Roadmap A4).
 
@@ -1505,6 +1561,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
 
     _render_trend_channel_section(selected_ticker, prices[selected_ticker].dropna())
 
+    _render_seasonality_section(selected_ticker, prices[selected_ticker].dropna())
+
     st.subheader("Signal Summary Cards")
     columns = st.columns(len(technical_tickers))
     for idx, ticker in enumerate(technical_tickers):
@@ -1526,6 +1584,10 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
         rsi_state = _rsi_status(rsi_value)
         signal = _overall_signal(current_price, ma50, ma200, rsi_value)
 
+        weekly = weekly_dca_signal(ticker_prices)
+        daily_central = signal_rules.dca_signal(current_price, ma50, ma200, rsi_value)
+        confluence_text, confluence_color = _confluence_chip(daily_central, weekly["signal"])
+
         with columns[idx]:
             with st.container(border=True):
                 st.markdown(f"**{ticker}**")
@@ -1533,6 +1595,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
                 st.markdown(f"MA50 / MA200: **{ma50_state} / {ma200_state}**")
                 st.markdown(f"RSI: **{rsi_value:.2f} ({rsi_state})**")
                 st.markdown(f"สัญญาณ: **{signal}**")
+                st.markdown(f"Weekly: **{signal_rules.thai_description(weekly['signal'])}**")
+                st.markdown(_chip_html(confluence_text, confluence_color), unsafe_allow_html=True)
 
 
 def _build_weight_sliders(

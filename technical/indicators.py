@@ -10,6 +10,7 @@ import pandas as pd
 from utils.cache import cache_data_1h
 
 from data.fetcher import fetch_adjusted_close_data
+from technical import signal_rules
 
 
 def _extract_adjusted_close(df: pd.DataFrame) -> pd.Series:
@@ -93,6 +94,50 @@ def ma_cross_dates(ma_fast: pd.Series, ma_slow: pd.Series) -> dict[str, list[pd.
     return {
         "golden": list(aligned.index[flipped & above]),
         "death": list(aligned.index[flipped & ~above]),
+    }
+
+
+WEEKLY_MA_FAST = 10   # MA10w ≈ MA50d บนแท่งสัปดาห์
+WEEKLY_MA_SLOW = 40   # MA40w ≈ MA200d บนแท่งสัปดาห์
+
+
+def weekly_dca_signal(daily_closes: pd.Series) -> dict[str, Any]:
+    """สัญญาณ DCA บนแท่งรายสัปดาห์ (Roadmap B3): RSI14 weekly + MA10w/MA40w.
+
+    MA10w/MA40w คือคู่เทียบเท่า MA50d/MA200d — ห้ามใช้ MA50/MA200 บนแท่ง week
+    ตรง ๆ (MA200w = ค่าเฉลี่ย ~4 ปี และ QQQM ประวัติไม่พอ)
+    ใช้เป็น "ชั้นความมั่นใจ" เทียบกับสัญญาณรายวัน — ไม่ใช่สัญญาณใหม่ ไม่เข้าเลขคะแนน
+
+    ข้อมูลไม่พอ (สัปดาห์ < MA ยาวสุด + 1) → ``signal = NO_DATA`` ไม่เดา (AUDIT.md C1)
+    """
+    no_data = {
+        "signal": signal_rules.NO_DATA,
+        "price": None,
+        "ma10w": None,
+        "ma40w": None,
+        "rsi14w": None,
+    }
+    closes = pd.to_numeric(daily_closes, errors="coerce").dropna()
+    if closes.empty:
+        return no_data
+    weekly = closes.resample("W-FRI").last().dropna()
+    if len(weekly) < WEEKLY_MA_SLOW + 1:
+        return no_data
+
+    ma_fast = weekly.rolling(WEEKLY_MA_FAST, min_periods=WEEKLY_MA_FAST).mean().iloc[-1]
+    ma_slow = weekly.rolling(WEEKLY_MA_SLOW, min_periods=WEEKLY_MA_SLOW).mean().iloc[-1]
+    rsi_series = calculate_rsi(weekly.to_frame("Adj Close"), period=14)["RSI"].dropna()
+    if rsi_series.empty or pd.isna(ma_fast) or pd.isna(ma_slow):
+        return no_data
+
+    price = float(weekly.iloc[-1])
+    rsi_weekly = float(rsi_series.iloc[-1])
+    return {
+        "signal": signal_rules.dca_signal(price, float(ma_fast), float(ma_slow), rsi_weekly),
+        "price": price,
+        "ma10w": float(ma_fast),
+        "ma40w": float(ma_slow),
+        "rsi14w": rsi_weekly,
     }
 
 
