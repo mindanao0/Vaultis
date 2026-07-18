@@ -26,7 +26,7 @@ python main.py --job monthly_advice
 pytest
 pytest tests/test_screener.py         # single file
 
-# Docker (Redis + backend)
+# Docker (backend)
 docker-compose up
 ```
 
@@ -104,7 +104,7 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 
 **Dependencies are pinned.** `requirements.txt` pins every package; CI reinstalls it on every scheduled run. Do not unpin or bump without running `pytest`.
 
-**Caching.** `utils/cache.py`'s `cache_data_1h` is currently a **no-op**. The dashboard caches prices with `@st.cache_data(ttl=3600)` (`cached_prices`). Backend request-path caching is still a known gap (see AUDIT.md H3).
+**Caching.** `utils/cache.py`'s `cache_data_1h` is a real in-process TTL memoizer (1h, thread-safe; keys are content hashes, DataFrame args supported). It **never caches failures**: exceptions, empty results (`None`/`{}`/empty frame), and dicts with `data_ok=False` are recomputed on every call (C1 — ความล้มเหลวต้องเกิดซ้ำ ไม่ค้างเป็นผลลัพธ์), and it always returns copies. Hot paths covered: `calculate_signal_score`/`dcf_valuation` cached per ticker (`/api/analysis/full` is ~10ms warm; a failing ticker is retried every request), `get_macro_data`, plus `backend/services/cache_service.TTLCache` (price history 1h, latest prices 5m, technical 15m, ETF info 6h). The dashboard adds `@st.cache_data(ttl=3600)` on top. Redis was removed from docker-compose — nothing ever called it. (AUDIT.md H3 closed 2026-07-18.)
 
 **JSONResponse for UTF-8.** All endpoints that may return Thai text use `JSONResponse(..., media_type="application/json; charset=utf-8")` instead of returning dicts directly.
 

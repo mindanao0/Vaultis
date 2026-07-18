@@ -397,4 +397,19 @@ PDF export มี checkbox แยก (ดีฟอลต์ปิด) และ 
 
 ---
 
+# บันทึกการแก้ไข — H3 ส่วนที่เหลือ (18 กรกฎาคม 2026)
+
+**สถานะ: H3 ปิดจบ** — เฟส 2 ปิดฝั่งราคาไปแล้ว (`TTLCache` ใน backend + `st.cache_data` ฝั่ง dashboard) แต่ `utils/cache.cache_data_1h` ยังเป็น no-op และ `/api/analysis/full`, `/api/analysis/dcf/{ticker}`, `/api/macro` ยังยิง yfinance/FRED ใหม่ทุก request
+
+| จุด | แก้อะไร |
+|---|---|
+| `utils/cache.py` | `cache_data_1h` เป็น TTL memoizer จริง (1 ชม., thread-safe, key จากเนื้อหา argument — รองรับ DataFrame แบบเดียวกับ `st.cache_data`) — **ไม่ cache**: exception, ค่าว่าง (`None`/`{}`/DataFrame ว่าง), dict ที่ `data_ok=False` — ความล้มเหลวต้องเกิดซ้ำ ไม่ค้างเป็นผลลัพธ์ (C1); คืนสำเนาเสมอ กัน caller แก้ผลลัพธ์แล้วทำ cache สกปรกข้ามคำขอ |
+| `/api/analysis/full` | `calculate_signal_score` cache ราย ticker — เดิม 1 request = ~20 ยิง yfinance + sleep 5 วิ (วัดจริง 12.1s) ตอนนี้ warm ~0.01s; ticker ที่พังได้ NO DATA สดทุกคำขอ (ลองใหม่เสมอ) ตัวที่ดีไม่ยิงซ้ำ; `time.sleep(1)` จ่ายเฉพาะรอบที่ยิงจริง; เปลี่ยนงบ (budget_thb) ไม่ trigger การยิงใหม่ — allocation คำนวณสดจาก score ที่ cache |
+| `/api/analysis/dcf/{ticker}` | `dcf_valuation` cache ราย ticker 1 ชม. (อุ่นร่วมกับ full analysis); GLDM ที่ทำ DCF ไม่ได้ยังตอบ 422 ตรง ๆ ตามเดิม — ValueError ไม่ถูก cache |
+| `/api/macro` | `get_macro_data` ได้ cache จริงจาก decorator เดิมโดยอัตโนมัติ (`{}` ตอนล้มเหลวไม่ถูก cache → ลองใหม่ทุกคำขอ) |
+| Redis | ถอดออกจาก docker-compose.yml — ไม่มีโค้ดเรียกใช้เลยตั้งแต่ต้น (ตามข้อเสนอในรายงาน "จะตัดหรือใช้จริงก็ได้") + แก้ docstring `etf_analysis.py` ที่อ้าง Redis ทั้งที่ใช้ in-process cache |
+| เทสต์ | `tests/test_cache.py` ใหม่ 17 ตัว + `tests/conftest.py` ล้าง cache อัตโนมัติทุกเทสต์กันสถานะรั่วข้ามเคส — รวมทั้งชุด 235 ผ่าน |
+
+---
+
 *รายงานตรวจสร้างจากการอ่านโค้ด ณ commit `5a33408`; การแก้เฟส 1-3 ทดสอบด้วย venv Python 3.12 + dependencies ที่ pin แล้ว + ข้อมูลตลาดจริง + ยิง API จากภายนอกเครื่อง*

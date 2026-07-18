@@ -12,6 +12,7 @@ import yfinance as yf
 
 from analysis.ta_compat import ta
 from technical import signal_rules
+from utils.cache import cache_data_1h
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -100,6 +101,7 @@ def calculate_cash_flow(ticker: str) -> dict[str, Any]:
     }
 
 
+@cache_data_1h
 def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
     t = yf.Ticker(ticker)
     info = t.info or {}
@@ -331,8 +333,13 @@ def score_from_prices(
     }
 
 
+@cache_data_1h
 def calculate_signal_score(ticker: str) -> dict[str, Any]:
-    """คะแนนกลาง + ข้อมูล DCF ประกอบ (DCF ไม่ถูกนับเป็นคะแนน — AUDIT.md C4)."""
+    """คะแนนกลาง + ข้อมูล DCF ประกอบ (DCF ไม่ถูกนับเป็นคะแนน — AUDIT.md C4).
+
+    ผลสำเร็จ cache 1 ชม. ราย ticker; ล้มเหลว = raise และไม่ถูก cache (AUDIT.md C1)
+    → ticker ที่ข้อมูลพังถูกลองใหม่ทุกคำขอ ตัวที่ดีไม่ต้องยิง yfinance ซ้ำ
+    """
     closes = _download_close(ticker, "2y")
     result = score_from_prices(ticker, closes, div_yield=_dividend_yield(ticker))
 
@@ -348,6 +355,7 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
     result["dcf_note"] = (
         "DCF เป็นข้อมูลประกอบ ไม่ถูกนับเป็นคะแนน (เป็น earnings-yield proxy ของ ETF ไม่ใช่ DCF กิจการ)"
     )
+    time.sleep(1)  # เว้นจังหวะเฉพาะรอบที่ยิง yfinance จริง กัน rate limit — cache hit ไม่ต้องรอ
     return result
 
 
@@ -457,6 +465,7 @@ def run_full_analysis(budget_thb: float = 5000) -> dict[str, Any]:
             results[ticker] = calculate_signal_score(ticker)
         except Exception as exc:
             # ข้อมูลพัง = ระบุชัดว่า NO DATA — ห้ามกลายเป็นคะแนน 0/สัญญาณ Avoid (AUDIT.md C1)
+            # ไม่ถูก cache → คำขอถัดไปได้ลองใหม่; sleep เพราะรอบนี้ยิง yfinance ไปแล้วจริง
             results[ticker] = {
                 "ticker": ticker,
                 "data_ok": False,
@@ -465,7 +474,7 @@ def run_full_analysis(budget_thb: float = 5000) -> dict[str, Any]:
                 "total_pct": None,
                 "signal": "NO DATA",
             }
-        time.sleep(1)
+            time.sleep(1)
 
     allocation = calculate_allocation(results, budget_thb)
 

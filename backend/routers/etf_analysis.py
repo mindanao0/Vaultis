@@ -1,4 +1,4 @@
-"""Per-symbol ETF analysis with Redis cache and Groq summary."""
+"""Per-symbol ETF analysis — in-process TTL cache + คำอธิบาย AI ผ่าน analysis.llm เมื่อร้องขอ."""
 
 from __future__ import annotations
 
