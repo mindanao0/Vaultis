@@ -12,7 +12,9 @@ from dotenv import load_dotenv
 from utils.config import load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+# override=False: env จริงมาก่อนไฟล์เสมอ — นโยบายเดียวกับ utils/config.py
+# (เดิมเป็น True ทำให้ .env ทับค่าที่ Docker/GitHub Actions ตั้งไว้แบบเงียบ ๆ)
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 
 
 def send_discord_webhook(

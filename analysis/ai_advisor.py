@@ -146,7 +146,7 @@ def get_ai_advice(
 
     ``user_initiated=True`` เฉพาะเมื่อผู้ใช้กดปุ่มเอง — ไม่งั้นจะ raise LLMDisabledError
     """
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)  # env จริงมาก่อนไฟล์
     user_content = _build_user_message(etf_scores, macro, portfolio, allocation, unallocated_thb)
     text = chat_text(
         VAULTIS_ADVISOR_SYSTEM_PROMPT,
@@ -253,7 +253,7 @@ def ai_suggest_alerts() -> dict[str, Any]:
     หมายเหตุ: ตั้งแต่ Phase 1 (AUDIT.md C3) ฟังก์ชันนี้ไม่เรียก LLM แล้ว —
     ระดับราคาและเหตุผลมาจากกฎ deterministic ทั้งหมด ผลลัพธ์เหมือนเดิมทุก field
     """
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)  # env จริงมาก่อนไฟล์
     target_tickers = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
     price_df = fetch_adjusted_close_data(target_tickers, years=10)
     payload = _build_price_alerts_payload(price_df, target_tickers)
@@ -307,7 +307,7 @@ def get_monthly_advice(
     from analysis.macro import get_macro_snapshot
     from portfolio.tracker import get_portfolio_summary
 
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)  # env จริงมาก่อนไฟล์
     try:
         if budget_thb <= 0:
             raise ValueError("budget_thb ต้องมากกว่า 0")
