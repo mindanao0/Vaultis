@@ -49,23 +49,22 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Check Price Alerts (ทุกวันทำการ)
-        # ตัวเช็ค alert จริง (alerts/price_alert.check_alerts) — เดิมไม่มี job ไหนรันเลย (AUDIT.md C6)
+      - name: Daily price summary (ทุกวันทำการ)
+        # `check_alerts()` ส่งสรุปราคา 5 ETF เข้า Discord ทุกครั้งที่รัน — ส่วนนี้ยังทำงานปกติ
+        #
+        # **แต่ CI มองไม่เห็น price alert ที่ผู้ใช้ตั้งไว้** เพราะ
+        # `alerts/data/price_alerts.json` เป็นข้อมูลส่วนตัวและถูก gitignore
+        # (repo นี้เป็น public — ข้อจำกัดเดียวกับ ledger ที่ AUDIT.md บันทึกไว้)
+        # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
+        #   ที่เห็นไฟล์จริงผ่าน volume
+        #
+        # เดิมมี step "Persist triggered alerts" commit ไฟล์นี้กลับเข้า repo เพื่อกัน
+        # alert เด้งซ้ำ — ถอดออกแล้วเพราะการทำแบบนั้นคือการเผยแพร่ ticker + ราคาเป้าหมาย
+        # ของผู้ใช้ลง public repo (มติผู้ใช้ 2026-07-28: ความเป็นส่วนตัวมาก่อน)
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py --job price_alert
-      - name: Persist triggered alerts
-        # บันทึกสถานะ triggered กลับเข้า repo — ไม่งั้น alert เดิมจะเด้งซ้ำทุกวัน
-        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
-        run: |
-          if ! git diff --quiet alerts/data/price_alerts.json; then
-            git config user.name "vaultis-scheduler"
-            git config user.email "actions@users.noreply.github.com"
-            git add alerts/data/price_alerts.json
-            git commit -m "chore: persist triggered price alerts [skip ci]"
-            git push
-          fi
       - name: Run Daily Price Check (ทุกวันทำการ)
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:

@@ -22,15 +22,20 @@ python main.py
 python main.py --job weekly_summary   # manual trigger
 python main.py --job monthly_advice
 
-# Tests
+# Tests — test tooling lives in requirements-dev.txt (pytest.ini needs pytest-asyncio)
+pip install -r requirements.txt -r requirements-dev.txt
 pytest
 pytest tests/test_screener.py         # single file
 
-# Docker (backend)
-docker-compose up
+# Docker — backend + dashboard + scheduler from one image
+cp .env.example .env                  # optional; compose runs without it
+docker compose up -d
+docker compose --profile dev run --rm tests
 ```
 
 No linter config is present. No build step required.
+
+**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
 
 ## Architecture
 
@@ -123,7 +128,12 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 | Goals / net worth / reports / config | **SQLite** `vaultis.db` | backend only |
 | Sentiment + screener history | **PostgreSQL** (`DATABASE_URL`, optional) | scheduled jobs |
 
-**The repo is public — the ledger and `vaultis.db` are gitignored and must stay that way.** A consequence: GitHub Actions cannot see the portfolio, so the monthly AI advisor runs without holdings context (it says so explicitly rather than pretending).
+**The repo is public — the ledger, `vaultis.db`, and `alerts/data/price_alerts.json` are gitignored and must stay that way.** Consequences, both stated explicitly rather than papered over:
+
+- GitHub Actions cannot see the portfolio, so the monthly AI advisor runs without holdings context.
+- GitHub Actions cannot see price alerts either (untracked 2026-07-28 — it used to be committed back by CI, which published the user's tickers and target prices). The daily Discord price summary still runs in CI; **per-alert checking only works from the local/Docker scheduler**, which reads the real file through a volume.
+
+`alerts/data/.gitkeep` and `portfolio/data/.gitkeep` are tracked on purpose: the directories must exist in a fresh clone, otherwise the Docker bind mounts create them as `root` and the container (running as the host uid) cannot write.
 
 **FX rate:** one source only — `utils/fx.py` `get_usdthb()`. It fetches live, sanity-checks the 20–50 band, caches for an hour, and reports `is_live=False` when it falls back to the config value. Never read `default_fx_rate` directly.
 

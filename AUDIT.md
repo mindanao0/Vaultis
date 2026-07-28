@@ -412,4 +412,171 @@ PDF export มี checkbox แยก (ดีฟอลต์ปิด) และ 
 
 ---
 
+# M15. คะแนนปันผลของ ETF ที่ yield ต่ำกว่า 1% (พบ + แก้ 28 กรกฎาคม 2026)
+
+**สถานะ: แก้แล้ว** — `_normalize_dividend_yield()` แยกออกมาเป็นฟังก์ชันบริสุทธิ์ หาร 100 ตรง ๆ
+ตาม semantics ของ `yfinance==0.2.61` ที่ pin ไว้ + ปฏิเสธค่า > 100% แทนการเดา;
+เทสต์ใหม่ `tests/test_dividend_score.py` (25 เคส) คุมไม่ให้การเดาหน่วยกลับมา
+
+`analysis/financial_model.py:260` เดา semantics ของ `dividendYield` จาก yfinance ด้วยกฎ
+`return value / 100.0 if value > 1.0 else value` — กฎนี้แยกไม่ออกระหว่าง "0.43 = 43%" กับ
+"0.43 = 0.43%" จึงพังกับทุก ETF ที่ yield **ต่ำกว่า 1%** (ตีเป็นสัดส่วนแล้วได้คะแนนปันผลเต็ม)
+
+หลักฐาน (yfinance 0.2.61 ที่ pin ไว้ คืนค่าเป็น**เปอร์เซ็นต์เสมอ** ทั้ง 5 ตัว):
+
+| Ticker | `dividendYield` ดิบ | ตีความได้ | คะแนนปันผล | ควรเป็น |
+|---|---|---|---|---|
+| VOO | 1.07 | 1.07% | 2 | 2 ✓ |
+| SCHD | 3.3 | 3.30% | 5 | 5 ✓ |
+| **QQQM** | **0.43** | **43%** ✗ | **10** | **2** |
+| XLV | 1.6 | 1.60% | 2 | 2 ✓ |
+| GLDM | 0.0 | 0% | 0 | 0 ✓ |
+
+**ผลกระทบ:** QQQM ได้ 70.0 = "Strong Buy" ทั้งที่ควรได้ 62.0 = "Buy" (เส้นแบ่งอยู่ที่ 70 พอดี);
+ตัวคูณ 1.16 แทนที่จะเป็น 1.10 — เงินจริงขยับตามขนาดงบ เพราะการปัดหลักร้อยกลืนส่วนต่างที่งบเล็ก:
+
+| งบ DCA | ส่วนต่างถ้าแก้ |
+|---|---|
+| 5,000 บาท | **0 บาท** (ปัดหลักร้อยกลืนหมด) |
+| 20,000 บาท | SCHD +100, QQQM −100 |
+| 50,000 บาท | QQQM −400 (VOO +200, SCHD +100, XLV +100) |
+
+**สาเหตุที่รอดมาได้:** `_dividend_yield` / `_dividend_score` ไม่มีเทสต์เลยสักตัวก่อนหน้านี้
+
+---
+
+# แหล่งข่าวราย ticker — รื้อใหม่ (28 กรกฎาคม 2026)
+
+**สถานะ: แก้แล้ว**
+
+| จุด | เดิม | ตอนนี้ |
+|---|---|---|
+| `news_fetcher.get_news` | ยัด RSS ข่าวเศรษฐกิจไทย (Settrade/Thairath) เข้าทุกสัญลักษณ์แบบไม่กรอง → ข่าวชุดเดียวกันเป็น "ข่าวของ" ทั้ง 5 ETF พร้อมกัน (และตอนตรวจทั้งสองฟีดคืน 0 รายการ) | ทุกแหล่งผูกกับสัญลักษณ์: Yahoo Finance RSS ราย ticker (ใหม่ ไม่ต้องใช้ key) + NewsAPI + Reddit + StockTwits |
+| แยกข่าว/โซเชียล | ไม่มี — โพสต์เชียร์หุ้นใน StockTwits นับเป็น "ข่าว" เท่ากับรายงานข่าว | ทุกรายการมี `kind` = `news`/`social` และข่าวจริงถูกจัดลำดับก่อนเสมอ ไม่ให้โซเชียลเบียดตกขอบ 30 รายการ |
+| ผลจริง (QQQM) | 20 รายการ StockTwits ล้วน | 20 ข่าวจริง + 10 โซเชียล |
+| `sentiment_analyzer` | สร้าง `Groq()` เองตรง ๆ → ไม่ log โทเคน/ค่าใช้จ่าย ไม่มี fallback ไป Claude หลุดจากด่านคุมค่าใช้จ่าย | เรียกผ่าน `analysis/llm.py` `chat_text()` ทางเดียว + ส่งต่อ `user_initiated` |
+| batch ที่พัง | `except Exception: pass` — เงียบสนิท ดูเหมือน "ข่าวน้อย" ทั้งที่เรียกโมเดลไม่สำเร็จ | log `WARNING` ต่อ batch; `LLMDisabledError` เลิกทั้งชุดทันที ไม่วนจ่ายซ้ำ |
+
+เทสต์ใหม่: `tests/test_news_sources.py` (12) + `tests/test_sentiment_llm_path.py` (9)
+
+---
+
+# ตรวจทั้งระบบ + แก้ (28 กรกฎาคม 2026)
+
+ตรวจด้วยของจริง: ยิงทุก endpoint ที่ backend ประกาศไว้, ไล่คลิกครบ 12 หน้าใน dashboard
+ผ่านเบราว์เซอร์จริง 5 รอบ, เรียกทุกโมดูลด้วยข้อมูลตลาดสด
+
+**สถานะ: M16-M19 แก้แล้วและยืนยันด้วย endpoint จริง · M20 ยังหาต้นตอไม่ได้**
+เทสต์ทั้งชุด **301 ผ่าน** (เดิม 235 — เพิ่ม 66 ตัวจากงานรอบนี้)
+
+| ข้อ | อาการ | สาเหตุ |
+|---|---|---|
+| **M16** | `GET /api/etf/returns` คืน **500** ทุกครั้ง — `Out of range float values are not JSON compliant: nan` | `RETURN_WINDOWS["10Y"] = 2520` แต่ `_prices_df()` ดึงมา **2,510 แถว** → `len(price_df) <= window` เป็นจริงเสมอ → แถว 10Y เป็น NaN ทั้งแถว **คำนวณไม่ได้โดยโครงสร้าง** แล้ว NaN ทำให้ทั้ง endpoint พัง ไม่ใช่แค่ช่อง 10Y เป็น null (`analysis/returns.py:63-69`) |
+| **M17** | `GET /api/sentiment/{symbol}` คืน **500 Internal Server Error** เปล่า ๆ | Supabase ต่อไม่ได้ (`ENOTFOUND`) แล้ว `routers/sentiment.py:59` ไม่จับ `OperationalError` — ฝั่ง dashboard จัดการเคสเดียวกันได้สวย (`get_latest_sentiment_summaries` คืน `None` → "ไม่มีข้อมูล") แต่ backend พังดิบ ควรเป็น 503 พร้อมข้อความ |
+| **M18** | `POST /api/dca/simulate` คืน **500** | `TypeError: Object of type Timestamp is not JSON serializable` — `market_analysis_service.simulate_dca` คืน pandas Timestamp ออกมา แล้ว `_json()` serialize ไม่ได้; `except (ValueError, RuntimeError)` ใน `routers/analysis.py:29` ไม่ครอบ `TypeError` |
+| **M19** | เงินเฟ้อไทยไม่เคยดึงได้เลย — log `ดึงเงินเฟ้อไทยจาก World Bank ไม่สำเร็จ: list index out of range` ทุกครั้ง | รหัส indicator เขียนติดกันเป็น `FPCPITOTLZG` แต่ World Bank ต้องการ **`FP.CPI.TOTL.ZG`** → API ตอบ 200 พร้อม `{"message": [{"id": "120", "key": "Invalid value"}]}` แล้ว `response.json()[1]` โยน IndexError (`analysis/macro.py:39`) ยืนยันแล้วว่ารหัสมีจุดใช้ได้: ปี 2025 = −0.13% · **fail-soft ถูกต้อง** (คืน None ไม่เดาเลข) แต่ฟีเจอร์ตายสนิท |
+| **M20** | Streamlit **segfault (exit 139) ทั้ง process** ระหว่างไล่หน้า — เกิด 2 ใน 5 รอบ ไม่ผูกกับหน้าใดหน้าหนึ่ง (รอบแรกตายหลัง DCF Analysis รอบสองตายที่ Scorecard ส่วนอีก 3 รอบผ่านครบ 12 หน้า) | ยังไม่ยืนยันต้นตอ — ผู้ต้องสงสัยที่เอกสารเองระบุไว้คือ `pyarrow==25.0.0` (คอมเมนต์ใน `requirements.txt:23-24` บอกว่าเคย segfault ใน AppTest) ของจริงหนักกว่าที่บันทึกไว้: มันฆ่า dashboard ทั้งตัวในเซสชันเบราว์เซอร์ปกติ ไม่ใช่แค่ตอนเทสต์ |
+
+## แก้แล้ว — M16 ถึง M19
+
+| ข้อ | แก้อะไร | ยืนยัน |
+|---|---|---|
+| **M16** | `backend/services/json_safe.py` (ใหม่) แปลง NaN/NaT → `null` และ Timestamp → ISO string ก่อนเข้า `JSONResponse` — **ห้ามแปลงเป็น 0** เพราะ 0 อ่านเป็นผลตอบแทนได้ (C1); เพิ่ม `_prices_df_for_returns()` ดึง 11 ปีเฉพาะเส้นทางผลตอบแทน จงใจไม่ขยาย `_prices_df` เพราะ risk/correlation อ่านจากตัวนั้น การขยายจะทำให้ตัวเลขความเสี่ยงเปลี่ยนเงียบ ๆ | `GET /api/etf/returns` **500 → 200**; 10Y คำนวณได้จริง (VOO 304.7%, SCHD 228.7%, XLV 160.8%) ส่วน QQQM/GLDM เป็น `null` ตามจริงเพราะเกิดหลังปี 2016 |
+| **M17** | `routers/sentiment.py` จับ `SQLAlchemyError` → 503 พร้อมข้อความไทยที่บอกด้วยว่าไม่กระทบคะแนน/แผน DCA | `GET /api/sentiment/VOO` **500 → 503**; เคส "ไม่มีข้อมูลในฐาน" ยังเป็น 404 เหมือนเดิม |
+| **M18** | `market_analysis_service` ใช้ `frame_to_records()` แทน `to_dict(orient="records")` ดิบ ๆ | `POST /api/dca/simulate` **500 → 200**; พบว่า `POST /api/backtest` พังท่าเดียวกันเพราะใช้โค้ดบรรทัดเดียวกัน แก้ไปพร้อมกัน |
+| **M19** | `analysis/macro.py` แก้รหัสเป็น `FP.CPI.TOTL.ZG` + ตรวจจับ envelope error ของ World Bank (ตอบ 200 พร้อม `{"message": …}`) แล้ว log ให้อ่านออก แทนที่จะเห็นแค่ `IndexError` | เงินเฟ้อไทยคืนค่าจริง: ปี 2025 = **−0.13%** |
+
+**M20 ยังไม่แก้** — ตัดผู้ต้องสงสัยออกไปได้บ้างแล้ว: `pyarrow` **ไม่ใช่ต้นตอ**
+(stress test 1,500 รอบบน DataFrame แบบที่ dashboard ใช้จริง ผ่านหมด) และเรียกซ้ำอีก
+96 page loads (4 เซสชัน × 3 รอบ × 8 หน้า) ก็ไม่เกิดอีก ทำได้แค่เปิด `faulthandler.enable()`
+ใน `dashboard/app.py` เพื่อให้ครั้งหน้ามี C-level traceback แทนที่ process จะหายเงียบ
+
+**เรื่องเล็กน้อย — แก้แล้วทั้งคู่**
+
+- `dashboard/app.py` อ่าน `os.getenv("DISCORD_WEBHOOK_URL")` ก่อน แตะ `st.secrets` เฉพาะตอน env ว่าง — หน้า Settings ไม่ขึ้นกล่อง "No secrets found…" อีก (ค่าจริงมาจาก `.env` และทำงานปกติอยู่แล้ว)
+- เพิ่ม `requirements-dev.txt` pin `pytest==9.1.1` / `pytest-asyncio==1.4.0` / `httpx==0.28.1` — เดิม `pytest.ini` ตั้ง `asyncio_mode = auto` แต่ไม่มีที่ไหนประกาศ pytest-asyncio ไว้เลย ติดตั้งตามไฟล์ที่ pin แล้วรัน `pytest` จะ fail 2 ไฟล์ ทั้งที่โค้ดปกติดี
+
+## เทสต์ที่เพิ่ม (66 ตัว)
+
+| ไฟล์ | คุมอะไร |
+|---|---|
+| `tests/test_dividend_score.py` (25) | M15 — ห้ามเดาหน่วย dividend yield อีก |
+| `tests/test_news_sources.py` (12) | แหล่งข่าวต้องผูกกับสัญลักษณ์ + ข่าวจริงมาก่อนโซเชียล |
+| `tests/test_sentiment_llm_path.py` (9) | sentiment ต้องเรียก LLM ผ่าน `analysis/llm.py` ทางเดียว |
+| `tests/test_api_failure_modes.py` (20) | M16-M19 — ความล้มเหลวบางส่วนห้ามลาก endpoint ทั้งตัวเป็น 500 |
+
+---
+
+# Docker: ย้ายเครื่องแล้วรันได้ทันที (28 กรกฎาคม 2026)
+
+**สถานะ: build + รันจริงผ่านแล้ว** — Docker 29.6.2 / Compose v5.3.1
+3 container healthy · `pytest` ใน container **315 ผ่าน** เท่ากับนอก container ·
+dashboard ครบ 12 หน้า render สะอาด · ข้อมูลรอด `restart` · image 530MB (แชร์ layer)
+
+## บั๊กที่เจอตอน build/รันจริง (แก้ครบแล้ว)
+
+| อาการ | สาเหตุ | แก้ |
+|---|---|---|
+| `pytest` ใน container ล่มตั้งแต่ conftest: `No module named 'utils'` | โปรเจกต์พึ่งผลข้างเคียงของ `python -m pytest` (คำสั่งนั้นใส่ cwd ลง `sys.path` ให้เอง) พอ CMD เรียก `pytest` ตรง ๆ root ไม่อยู่ใน path | `pythonpath = .` ใน `pytest.ini` — ตอนนี้ `pytest` เปล่า ๆ ก็รันได้ทั้งใน/นอก container |
+| `.pyc` ของเครื่อง host หลุดเข้า image จน traceback โชว์ path ของ host | `.dockerignore` เขียน `__pycache__/` เฉย ๆ ซึ่งแมตช์แค่ชั้นบนสุด ไม่แมตช์ `alerts/__pycache__` | ใส่ `**/` นำหน้าทุก pattern ที่ต้องแมตช์ทุกชั้น (`**/__pycache__`, `**/*.py[cod]`, `**/*.log` …) |
+| backend ล่มตอน import ทันทีที่รันเป็น non-root: `RuntimeError: cannot cache function 'set_seed_nb'` | `vectorbt` ใช้ `@njit(cache=True)` numba ต้องเขียน cache ลง site-packages ซึ่งเป็นของ root | ชี้ cache ไป `/tmp` (mode 1777 เขียนได้ทุก uid): `HOME`, `XDG_CACHE_HOME`, `NUMBA_CACHE_DIR`, `MPLCONFIGDIR` |
+| ไฟล์ที่ container สร้าง (ledger/alert/db) กลายเป็นของ `root` บน host → รันนอก Docker แก้ไม่ได้อีก | container รันเป็น root โดยดีฟอลต์ | `user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"` — ยืนยันแล้วว่าไฟล์ที่สร้างเป็นของ `da00:da00` |
+| SQLite เขียนไม่ได้เมื่อรันเป็น non-root | named volume ถูกสร้างเป็นของ root | เปลี่ยนเป็น bind mount `./.docker-data:/data` (เข้า `.gitignore`/`.dockerignore` แล้ว) แถมสำรองไฟล์จาก host ได้ตรง ๆ |
+| ตั้ง `VAULTIS_API_KEY` ใน shell แล้ว container ไม่เห็น | ไม่ได้ประกาศ pass-through ใน compose | เพิ่ม `VAULTIS_API_KEY: ${VAULTIS_API_KEY:-}` — ทดสอบครบ: ไม่มีคีย์ 401 / คีย์ผิด 401 / คีย์ถูก 200 |
+| scheduler จะ crash-loop ตลอดกาลถ้าไม่มี Discord webhook | `main.py` raise แล้วถูก except ตัวเองจับ → process จบ exit 0 → `restart: unless-stopped` วนไม่จบ | ข้ามเฉพาะงานที่ต้องใช้ Discord แต่ยังตรวจ price alert และอยู่ในลูปต่อ (เทสต์คุม 6 ตัว) |
+
+## พฤติกรรมที่ "ดูเหมือนบั๊ก" แต่ถูกต้อง — ต้องรู้ไว้
+
+รันด้วย Docker แล้ว route ที่ต้อง auth จะตอบ **503** ถ้าไม่ตั้ง `VAULTIS_API_KEY`
+เพราะใน container คำขอจาก host มาถึงเป็น IP ของ bridge (172.x) ไม่ใช่ 127.0.0.1
+ข้อยกเว้น "localhost ไม่ต้องใช้คีย์" (`backend/security.py:43`) จึงไม่มีผล — **นี่คือ
+fail-closed ที่ออกแบบไว้ ไม่ควรผ่อน** หน้า dashboard ไม่กระทบเลยเพราะเรียกโมดูล
+`analysis/` ตรง ๆ ใช้ `BACKEND_URL` แค่ WebSocket ราคา (ซึ่งเป็น route เปิด)
+บันทึกไว้ใน `.env.example` แล้ว
+
+## price alerts ออกจาก git แล้ว (มติผู้ใช้ 2026-07-28: ความเป็นส่วนตัวมาก่อน)
+
+`alerts/data/price_alerts.json` เคย **track โดยเจตนา** เพราะ workflow มี step
+"Persist triggered alerts" commit มันกลับเข้า repo ทุกวันทำการ (การแก้ AUDIT C6 — กัน alert
+เด้งซ้ำ) นั่นทำให้ไฟล์ที่ track อยู่เป็นช่องทางเดียวที่ CI รู้ว่าผู้ใช้ตั้ง alert อะไร
+แลกกับการเผยแพร่ ticker + ราคาเป้าหมายลง public repo
+
+| จุด | ทำอะไร |
+|---|---|
+| git | `git rm --cached` + เข้า `.gitignore` — โค้ดสร้างไฟล์เปล่าให้เองถ้าไม่มี (`price_alert.py:29-31`, ทดสอบแล้ว) |
+| workflow | ถอด step "Persist triggered alerts" ทิ้ง · เปลี่ยนชื่อ step ที่เหลือเป็น "Daily price summary" ตามที่มันทำจริง — `check_alerts()` ยังส่งสรุปราคา 5 ETF เข้า Discord ทุกครั้งที่รัน แค่ไม่เห็น alert รายตัว |
+| สิ่งที่เสียไป | **alert รายตัวไม่ทำงานบน GitHub Actions อีก** ต้องรันจาก scheduler ในเครื่อง/Docker ที่เห็นไฟล์จริงผ่าน volume (บันทึกใน CLAUDE.md แล้ว) |
+| ประวัติ git | ตรวจทั้ง 4 revision ที่เคยมี (`b371ee6`, `5a33408`, `4ad4e97`, `b067bbd`) — **เป็น `{"alerts":[]}` ล้วนทุกตัว ไม่มีข้อมูลจริงหลุดออกไป** จึงไม่ต้อง rewrite history |
+
+เพิ่ม `alerts/data/.gitkeep` และ `portfolio/data/.gitkeep` (track ไว้) เพราะ fresh clone
+ต้องมีโฟลเดอร์อยู่ก่อน ไม่งั้น docker bind mount จะสร้างให้เป็นของ `root` แล้ว container
+ที่รันเป็น uid ของ host จะเขียนไม่ได้
+
+## รายละเอียดการรื้อ
+
+**สถานะเดิม: เขียนครบแล้ว แต่ยังไม่ได้ build ทดสอบ**
+
+| จุด | เดิม | ตอนนี้ |
+|---|---|---|
+| **`.dockerignore`** | **ไม่มีเลย** → `COPY . .` อบ `.env` (มี webhook/API key ของจริง), `portfolio/data/transactions.csv`, `vaultis.db` เข้า image layer ทั้งหมด · ของพวกนี้ `gitignore` ไว้เพราะ repo เป็น public แต่ `.gitignore` **ไม่มีผลกับ docker build** · ซ้ำร้าย rebuild ทีไรข้อมูลย้อนกลับไปเป็นสำเนา ณ ตอน build | กันครบทั้งความลับ ข้อมูลส่วนตัว `.venv` `.git` และไฟล์ชั่วคราว |
+| **ครอบคลุม** | backend อย่างเดียว — dashboard/scheduler ต้องรันมือ | 3 service จาก image เดียว + service `tests` (profile `dev`) |
+| **Python** | 3.11-slim ทั้งที่เทสต์ยืนยันบน 3.12 | 3.12-slim ตรงกับที่ทดสอบ |
+| **ข้อมูลถาวร** | ไม่มี volume → ทุกอย่างหายเมื่อ rebuild | bind mount `portfolio/data`, `alerts/data`, `config.json` + named volume สำหรับ SQLite |
+| **path ของ SQLite** | `backend/database.py` hardcode `sqlite:///./vaultis.db` ผูกกับ working directory ตายตัว | ตั้งได้ด้วย `VAULTIS_DB_PATH` (ค่า default เท่าเดิม จึงไม่กระทบการรันบนเครื่องตัวเอง) + สร้างโฟลเดอร์ปลายทางให้เอง |
+| **พอร์ต** | `8000:8000` เปิดทุก interface | `127.0.0.1:8000` / `127.0.0.1:8501` — ledger ไม่ควรเปิดออกเน็ต |
+| **healthcheck** | ไม่มี | backend เช็ค `/health`, dashboard เช็ค `/_stcore/health`, scheduler ปิด (ไม่มีพอร์ต) |
+
+**ยังไม่ปลอดภัยเต็มร้อย:** `alerts/data/price_alerts.json` **ถูก track ใน git** (ตอนนี้ว่าง
+`{"alerts": []}` จึงยังไม่รั่ว) แต่เมื่อผู้ใช้สร้าง alert จริง ข้อมูลส่วนตัวจะเข้า commit ถัดไป
+ทันที — ควรย้ายเข้า `.gitignore` แบบเดียวกับ ledger แล้ว `git rm --cached`
+
+---
+
+**ส่วนที่ยืนยันว่าทำงานจริง:** FX สด · คะแนน/จัดสรร DCA ครบ 5 ตัว · macro FRED 6 ตัวชี้วัด ·
+ledger + holdings + history · price alerts + `/check` · screener (preset + custom) · forecast ·
+DCF · `/api/ai/advice` (ไม่เรียก LLM ตามนโยบาย) · goals · net worth · reports ·
+ทั้ง 27 โมดูลหลัก import ได้หมด · ทั้ง 12 หน้า dashboard render ผ่าน
+
+---
+
 *รายงานตรวจสร้างจากการอ่านโค้ด ณ commit `5a33408`; การแก้เฟส 1-3 ทดสอบด้วย venv Python 3.12 + dependencies ที่ pin แล้ว + ข้อมูลตลาดจริง + ยิง API จากภายนอกเครื่อง*

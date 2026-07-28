@@ -8,3 +8,8 @@ __pycache__/
 # ข้อมูลส่วนตัว/ฐานข้อมูล — ห้าม track (AUDIT.md H1)
 vaultis.db
 portfolio/data/transactions.csv
+
+# ข้อมูลรันไทม์ของ Docker (SQLite) — ห้าม track (AUDIT.md H1)
+.docker-data/
+# alert ส่วนตัว — ห้าม track (repo เป็น public); โค้ดสร้างไฟล์เปล่าให้เองถ้าไม่มี
+alerts/data/price_alerts.json
