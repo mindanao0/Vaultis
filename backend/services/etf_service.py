@@ -12,8 +12,14 @@ from technical import signal_rules
 from utils.config import get_tickers
 
 from .cache_service import PRICE_HISTORY_TTL, shared_cache
+from .json_safe import frame_to_dict
 
 _LATEST_PRICE_TTL = 5 * 60  # 5 นาที — ราคาล่าสุดไม่ต้องสดวินาทีต่อวินาที
+
+# หน้าต่างผลตอบแทนที่ยาวสุดคือ 10Y = 2,520 แถวเทรด แต่ข้อมูล 10 ปีให้มาแค่ ~2,510 แถว
+# → เงื่อนไข ``len(price_df) <= window`` เป็นจริงเสมอ แถว 10Y จึงเป็น NaN ทั้งแถว
+# ตั้งแต่เขียนมา (AUDIT.md M16) ต้องดึงยาวกว่าหน้าต่างจริงถึงจะคำนวณได้
+_RETURNS_HISTORY_YEARS = 11
 
 
 def _prices_df() -> pd.DataFrame:
@@ -27,6 +33,23 @@ def _prices_df() -> pd.DataFrame:
         key,
         PRICE_HISTORY_TTL,
         lambda: fetch_adjusted_close_data(tickers=tickers, years=10).ffill(),
+    )
+
+
+def _prices_df_for_returns() -> pd.DataFrame:
+    """ราคายาวพอสำหรับหน้าต่าง 10Y — แยก cache จาก ``_prices_df``.
+
+    จงใจไม่ขยายช่วงของ ``_prices_df`` เพราะ risk/correlation อ่านจากตัวนั้น
+    การขยายจะทำให้ตัวเลขความเสี่ยงเปลี่ยนเงียบ ๆ ทั้งที่ไม่มีใครขอให้เปลี่ยน
+    """
+    tickers = get_tickers()
+    key = f"prices_{_RETURNS_HISTORY_YEARS}y:" + ",".join(sorted(tickers))
+    return shared_cache.get_or_compute(
+        key,
+        PRICE_HISTORY_TTL,
+        lambda: fetch_adjusted_close_data(
+            tickers=tickers, years=_RETURNS_HISTORY_YEARS
+        ).ffill(),
     )
 
 
@@ -68,21 +91,25 @@ def get_etf_daily_eod_snapshot() -> dict[str, dict[str, float | str]]:
 
 
 def get_etf_returns() -> dict:
-    prices = _prices_df()
-    result = calculate_period_returns(prices)
-    return result.to_dict()
+    """ผลตอบแทนตามช่วงเวลา — ช่องที่ข้อมูลไม่พอเป็น ``null`` (ไม่ใช่ 0 และไม่ทำทั้ง endpoint พัง).
+
+    ETF ที่เกิดทีหลัง (QQQM ต.ค. 2020, GLDM 2018) จะได้ ``null`` ในช่วงยาว ๆ
+    ตามจริง — นั่นคือคำตอบที่ถูก ไม่ใช่ข้อผิดพลาด
+    """
+    result = calculate_period_returns(_prices_df_for_returns())
+    return frame_to_dict(result)
 
 
 def get_etf_risk() -> dict:
     prices = _prices_df()
     result = calculate_risk_metrics(prices)
-    return result.to_dict()
+    return frame_to_dict(result)
 
 
 def get_etf_correlation() -> dict:
     prices = _prices_df()
     result = calculate_correlation_matrix(prices)
-    return result.to_dict()
+    return frame_to_dict(result)
 
 
 def get_etf_technical() -> dict[str, dict[str, float | str | bool]]:

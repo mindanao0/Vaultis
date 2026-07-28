@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+import faulthandler
 import json
 import math
 import os
 import re
 import sys
 from pathlib import Path
+
+# dashboard เคยตายทั้ง process ด้วย SIGSEGV ระหว่างสลับหน้า (AUDIT.md M20) — เกิด 2 ใน 5 รอบ
+# ตอนตรวจ 2026-07-28 แล้วหลังจากนั้นเรียกซ้ำ 96 ครั้งก็ไม่เกิดอีก จึงยังหาต้นตอไม่ได้
+# (pyarrow 25.0.0 ซึ่งเป็นผู้ต้องสงสัยในคอมเมนต์ requirements.txt ผ่าน stress test 1,500 รอบ)
+# เปิด faulthandler ไว้เพื่อให้ครั้งหน้ามี C-level traceback ให้อ่าน แทนที่ process จะหายเงียบ
+faulthandler.enable()
 
 import pandas as pd
 import plotly.express as px
@@ -706,10 +713,14 @@ def render_settings_page() -> None:
 
     st.divider()
     st.subheader("4) Notification Settings")
-    try:
-        webhook_url = st.secrets["DISCORD_WEBHOOK_URL"]
-    except Exception:
-        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+    # อ่าน env ก่อนเสมอ — แตะ st.secrets ตอนไม่มี secrets.toml ทำให้ Streamlit
+    # ขึ้นกล่อง "No secrets found…" บนหน้า ทั้งที่ค่าจริงมาจาก .env และใช้งานได้ปกติ
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url.strip():
+        try:
+            webhook_url = str(st.secrets["DISCORD_WEBHOOK_URL"])
+        except Exception:
+            webhook_url = ""
 
     if webhook_url.strip():
         st.success("Discord Webhook: ตั้งค่าแล้ว")

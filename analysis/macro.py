@@ -20,7 +20,8 @@ from utils.cache import cache_data_1h
 logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+# override=False: env จริงมาก่อนไฟล์เสมอ — นโยบายเดียวกับ utils/config.py
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 
 _FRED_SERIES = {
     "fed_funds_rate": "FEDFUNDS",
@@ -36,8 +37,13 @@ _YF_SYMBOLS = {
 
 # --- เงินเฟ้อไทย (Roadmap Phase 2 ข้อ 6) ---
 # FRED series ของไทยหลายตัวถูก discontinue → ใช้ World Bank API (ฟรี ไม่ใช้ key, รายปี)
+# รหัส indicator ต้องมีจุดคั่น — เดิมเขียนติดกันเป็น "FPCPITOTLZG" ทำให้ World Bank
+# ตอบ 200 พร้อม {"message":[{"id":"120","key":"Invalid value"}]} (ไม่ใช่ HTTP error)
+# แล้ว response.json()[1] โยน IndexError → เงินเฟ้อไทยเป็น None ทุกครั้งตั้งแต่เขียนมา
+# (AUDIT.md M19) เทสต์เดิม mock response ทั้งก้อน จึงไม่มีวันจับ URL ผิดได้
+_WORLD_BANK_TH_CPI_INDICATOR = "FP.CPI.TOTL.ZG"
 _WORLD_BANK_TH_CPI_URL = (
-    "https://api.worldbank.org/v2/country/THA/indicator/FPCPITOTLZG"
+    f"https://api.worldbank.org/v2/country/THA/indicator/{_WORLD_BANK_TH_CPI_INDICATOR}"
     "?format=json&per_page=10&mrnev=1"  # mrnev=1 = ค่าล่าสุดที่ไม่ว่าง
 )
 _thai_cpi_cache: tuple[float, dict[str, Any] | None] | None = None  # (fetched_at, result)
@@ -61,7 +67,14 @@ def get_thai_inflation() -> dict[str, Any] | None:
     try:
         response = requests.get(_WORLD_BANK_TH_CPI_URL, timeout=10)
         response.raise_for_status()
-        rows = response.json()[1]
+        payload = response.json()
+        # World Bank ตอบ 200 พร้อม envelope error เมื่อ query ผิด — ต้องอ่านให้ออก
+        # ไม่งั้นจะเห็นแค่ IndexError ที่ไม่บอกอะไร (บทเรียนจาก M19)
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            api_error = payload[0].get("message")
+            if api_error:
+                raise ValueError(f"World Bank ปฏิเสธ query: {api_error}")
+        rows = payload[1]
         latest = rows[0]
         result = {
             "inflation_pct": float(latest["value"]),
@@ -147,7 +160,7 @@ def get_macro_snapshot() -> dict[str, float | bool | None]:
     แหล่ง fed_rate/vix/dxy ล้มเหลวคืน ``None`` สำหรับฟิลด์นั้น (ไม่ throw)
     ``vix_warning`` เป็น True เมื่อ VIX > 25; ถ้าไม่มีค่า VIX ใช้ False
     """
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=True)
+    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)  # env จริงมาก่อนไฟล์
     fed_rate = _fred_latest_fed_funds_rate()
     vix = _yfinance_last_close("^VIX")
     dxy = _yfinance_last_close("DX-Y.NYB")

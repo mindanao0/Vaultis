@@ -17,6 +17,7 @@ from portfolio.dca import simulate_monthly_dca
 from utils.config import get_tickers
 
 from .cache_service import PRICE_HISTORY_TTL, shared_cache
+from .json_safe import frame_to_records
 
 
 def _prices():
@@ -31,14 +32,14 @@ def run_backtest(weights: dict[str, float], initial_capital: float) -> list[dict
     result = run_portfolio_backtest(
         price_df=_prices(), weights=weights, initial_capital=initial_capital
     )
-    return result.reset_index().to_dict(orient="records")
+    return frame_to_records(result)
 
 
 def simulate_dca(weights: dict[str, float], monthly_investment: float) -> list[dict[str, Any]]:
     result = simulate_monthly_dca(
         price_df=_prices(), weights=weights, monthly_investment=monthly_investment
     )
-    return result.reset_index().to_dict(orient="records")
+    return frame_to_records(result)
 
 
 def macro_snapshot() -> dict[str, Any]:
