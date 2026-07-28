@@ -53,6 +53,8 @@ analysis/         Standalone analysis modules: returns, risk, correlation,
                   backtesting (vectorbt), forecasting (Prophet), AI advisor,
                   sentiment, macro (FRED), financial model scoring
   llm.py            **Single entry point for every LLM call** (Haiku 4.5 → Groq fallback)
+  news_fetcher.py   ข่าวราย ticker (Yahoo RSS + NewsAPI + Reddit + StockTwits) — `get_news()`
+                    คืนรายการอย่างเดียว, `get_news_with_status()` คืนสถานะรายแหล่งด้วย
   ta_compat.py      **Single indicator layer** (sma/rsi/macd/bbands) — pandas-ta is gone
   financial_model.py `score_from_prices()` = the one scoring function for the whole system
   trend_channel.py  log-linear trend ±σ (สถิติพรรณนา — ไม่เข้าเลขคะแนน/จัดสรร)
@@ -61,7 +63,7 @@ technical/
   signal_rules.py   **Single source of truth for buy/sell signals** — every subsystem imports this
   indicators.py     RSI, MA50/MA200 helpers
 
-dashboard/app.py  Streamlit single-file app. Multi-page via sidebar.
+dashboard/app.py  Streamlit single-file app. Multi-page via sidebar (13 pages).
                   Calls analysis/ modules directly OR BACKEND_URL for live data.
 
 portfolio/        Transaction CSV tracker (buy+dividend), DCA simulator, rebalance logic
@@ -102,6 +104,13 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 - `VAULTIS_LLM_AUTO=1` lifts the gate for automatic jobs (opt-in; the user pays every run).
 
 When adding a new LLM call, thread `user_initiated` from the entry point. Never default it to `True`.
+
+**ข่าวกับ sentiment เป็นคนละเส้นทางกัน — อย่ารวมกลับเป็นเส้นเดียว.**
+
+- **หน้า News (ฟรี)** — `render_news_page()` เรียก `get_news_with_status()` ตรง ๆ: ไม่ผ่าน LLM ไม่ผ่านฐานข้อมูล จึงใช้ได้เสมอแม้ `DATABASE_URL` ล่มและแม้ไม่มี API key สักตัว (Yahoo RSS + StockTwits ไม่ต้องใช้ key) แคช 30 นาทีด้วย `st.cache_data` — **ล้มเหลวไม่ถูกแคช** เพราะ `cached_news()` โยน `NewsSourcesUnavailable` เมื่อแหล่งข่าวจริงพังหมด (Streamlit ไม่เก็บผลของ call ที่ throw)
+- **sentiment (มีค่าใช้จ่าย)** — `run_sentiment_job()` → LLM ต่อบทความ → PostgreSQL → `/api/sentiment/{symbol}` + กล่องบริบทในหน้า AI Advisor ต้องมีครบทั้ง `VAULTIS_LLM_AUTO=1` และ `DATABASE_URL` ที่ต่อได้ ไม่งั้น job ข้ามตัวเองเงียบ ๆ ตามนโยบายคุมค่าใช้จ่าย
+- **`ดึงไม่สำเร็จ` ≠ `ไม่มีข่าว`** ทุก `fetch_*_status` คืนสถานะ `ok`/`error`/`off` (`off` = ไม่ได้ตั้ง key ซึ่งไม่ใช่ความล้มเหลว) หน้าจอต้องเตือนเมื่อ `error` ห้ามแสดงลิสต์ว่างเป็น "ไม่มีข่าว" (C1)
+- ข่าว/sentiment เป็น**บริบทข้าง ๆ เท่านั้น — ห้ามเข้าเลขคะแนนหรือการจัดสรร DCA** (invariant เดียวกับ `trend_channel.py`)
 
 **Indicators go through `analysis/ta_compat.py`.** `pandas-ta` was removed (dead upstream, breaks on numpy≥2). Warm-up periods stay `NaN` — never fill them with 0 or 100.
 

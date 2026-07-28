@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import faulthandler
 import json
 import math
@@ -45,6 +46,13 @@ from analysis.financial_model import (
     build_etf_scores,
     calculate_allocation,
     run_full_analysis,
+)
+from analysis.news_fetcher import (
+    KIND_NEWS,
+    KIND_SOCIAL,
+    STATUS_ERROR,
+    STATUS_OFF,
+    get_news_with_status,
 )
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns, monthly_seasonality
@@ -123,10 +131,12 @@ THEME = {
     "grid": "#21262D",
 }
 
+BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
+
 NAV_GROUPS = [
     ("Main", ["Overview", "Scorecard", "Portfolio"]),
     ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
-    ("AI & Alerts", ["AI Advisor", "Macro", "Price Alerts"]),
+    ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
     ("System", ["Settings"]),
 ]
 
@@ -354,6 +364,8 @@ def _render_custom_sidebar(default_page: str) -> str:
             st.session_state["page"] = "AI Advisor"
         if st.button("Macro", key="nav_macro", use_container_width=True):
             st.session_state["page"] = "Macro"
+        if st.button("News", key="nav_news", use_container_width=True):
+            st.session_state["page"] = "News"
         if st.button("Price Alerts", key="nav_price_alerts", use_container_width=True):
             st.session_state["page"] = "Price Alerts"
 
@@ -2056,12 +2068,121 @@ def show_result(result: dict) -> None:
         st.warning(f"ส่ง Discord ไม่สำเร็จ: {discord_result.get('error', 'unknown error')}")
 
 
+class NewsSourcesUnavailable(RuntimeError):
+    """แหล่งข่าวจริงล้มเหลวหมด — โยนออกเพื่อไม่ให้ st.cache_data เก็บความล้มเหลวไว้ทั้งชั่วโมง (AUDIT.md C1)."""
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_news(symbol: str) -> dict:
+    """ข่าวราย ticker (cache 30 นาที) — ไม่เรียก LLM ไม่แตะฐานข้อมูล จึงไม่มีค่าใช้จ่าย.
+
+    ถ้าแหล่งข่าวจริงล้มเหลวหมดจะ raise — Streamlit ไม่เก็บผลของ call ที่ throw
+    ความล้มเหลวจึงถูกลองใหม่รอบหน้า ไม่ค้างเป็น "ไม่มีข่าว" ไปอีก 30 นาที
+    """
+    result = get_news_with_status(symbol)
+    if result["all_news_sources_failed"] and not result["items"]:
+        details = "; ".join(
+            f"{s['name']}: {s['detail']}" for s in result["sources"] if s["status"] == STATUS_ERROR
+        )
+        raise NewsSourcesUnavailable(details or "ดึงข่าวไม่สำเร็จ")
+    return result
+
+
+def _format_news_time(published_at: str) -> str:
+    """แปลงเวลาเป็นเวลาไทย; อ่านไม่ออกคืน '-' (ไม่เดาเวลาให้ข่าว)."""
+    raw = str(published_at or "").strip()
+    if not raw:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return "-"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(BANGKOK_TZ).strftime("%d/%m/%Y %H:%M")
+
+
+def _news_link(item: dict) -> str:
+    """หัวข้อข่าวเป็นลิงก์ — กัน [ ] ในหัวข้อทำ markdown link พัง."""
+    title = " ".join(str(item.get("title") or "").split()) or "(ไม่มีหัวข้อ)"
+    title = title.replace("[", "(").replace("]", ")")
+    url = str(item.get("url") or "").strip()
+    return f"[{title}]({url})" if url else title
+
+
+def _render_news_source_status(sources: list[dict]) -> None:
+    """บอกตรง ๆ ว่าแหล่งไหนดึงไม่ได้ — 'ดึงไม่สำเร็จ' ต้องไม่ถูกอ่านเป็น 'ไม่มีข่าว'."""
+    failed = [s for s in sources if s["status"] == STATUS_ERROR]
+    if failed:
+        for s in failed:
+            st.warning(f"ดึงจาก {s['name']} ไม่สำเร็จ: {s['detail']} — รายการด้านล่างจึงไม่ครบ")
+    off = [s for s in sources if s["status"] == STATUS_OFF]
+    ok = [s for s in sources if s["status"] not in (STATUS_ERROR, STATUS_OFF)]
+    parts = [f"{s['name']} {s['count']}" for s in ok]
+    caption = "แหล่งที่ดึงได้: " + (" · ".join(parts) if parts else "ไม่มี")
+    if off:
+        caption += " | ปิดอยู่ (ไม่ได้ตั้ง key): " + ", ".join(s["name"] for s in off)
+    st.caption(caption)
+
+
+def _render_news_items(items: list[dict], empty_text: str) -> None:
+    if not items:
+        st.caption(empty_text)
+        return
+    for item in items:
+        source = str(item.get("source") or "-")
+        st.markdown(f"- {_news_link(item)}")
+        st.caption(f"　{source} · {_format_news_time(str(item.get('published_at') or ''))}")
+
+
+def render_news_page() -> None:
+    """ข่าวราย ETF — ดึงตรงจากแหล่ง ไม่ผ่าน AI และไม่ผ่านฐานข้อมูล."""
+    st.header("News")
+    st.caption(
+        "ข่าวราย ETF ดึงตรงจากแหล่ง — ไม่เรียก AI จึงไม่มีค่าใช้จ่าย และไม่ต้องรอ scheduled job · "
+        "ข่าวเป็นบริบทประกอบการอ่านสถานการณ์เท่านั้น **ไม่เข้าเลขคะแนนและไม่เข้าการจัดสรร DCA** (invariant ของระบบ)"
+    )
+
+    tickers = get_tickers()
+    if not tickers:
+        st.warning("ยังไม่ได้ตั้งรายการ ETF — เพิ่มได้ที่หน้า Settings")
+        return
+
+    symbol = st.radio("เลือก ETF", tickers, horizontal=True, key="news_symbol")
+    if st.button("โหลดข่าวใหม่", key="news_refresh"):
+        cached_news.clear()
+        st.rerun()
+
+    try:
+        with st.spinner(f"กำลังดึงข่าวของ {symbol}..."):
+            result = cached_news(symbol)
+    except NewsSourcesUnavailable as exc:
+        # ห้ามแสดง "ไม่มีข่าว" ในกรณีนี้เด็ดขาด — มันคือดึงไม่สำเร็จ ไม่ใช่ไม่มีข่าว
+        st.error(f"ดึงข่าวของ {symbol} ไม่สำเร็จทุกแหล่ง: {exc}")
+        st.info("ยังไม่ทราบว่ามีข่าวหรือไม่ — กด 'โหลดข่าวใหม่' อีกครั้งในอีกสักครู่")
+        return
+
+    _render_news_source_status(result["sources"])
+
+    items = result["items"]
+    news_items = [a for a in items if a.get("kind") == KIND_NEWS]
+    social_items = [a for a in items if a.get("kind") == KIND_SOCIAL]
+
+    st.subheader(f"ข่าว ({len(news_items)})")
+    _render_news_items(news_items, f"ไม่มีข่าวใหม่ของ {symbol} จากแหล่งที่ดึงได้")
+
+    st.subheader(f"โซเชียล ({len(social_items)})")
+    st.caption("โพสต์ของนักลงทุนรายย่อย — ไม่ใช่รายงานข่าว และไม่ผ่านการตรวจสอบ")
+    _render_news_items(social_items, "ไม่มีโพสต์ในช่วงนี้")
+
+
 def _render_sentiment_context_box() -> None:
     """ข่าว/sentiment เป็นบริบทข้าง ๆ (Roadmap ข้อ 8) — ห้ามเข้าเลขคะแนน/จัดสรร (invariant)."""
     summaries = get_latest_sentiment_summaries(get_tickers())
     if summaries is None:
         st.caption(
-            "บริบทข่าว/sentiment: ไม่มีข้อมูล (ไม่ได้ตั้ง DATABASE_URL หรือเชื่อมต่อไม่ได้) — ไม่กระทบคะแนนใด ๆ"
+            "บริบทข่าว/sentiment: ไม่มีข้อมูล (ไม่ได้ตั้ง DATABASE_URL หรือเชื่อมต่อไม่ได้) — ไม่กระทบคะแนนใด ๆ · "
+            "อ่านพาดหัวข่าวสด ๆ ได้ที่หน้า News (ไม่ต้องใช้ฐานข้อมูลและไม่มีค่าใช้จ่าย)"
         )
         return
     if not summaries:
@@ -3380,6 +3501,9 @@ def render_dashboard() -> None:
             return
         elif page == "Macro":
             render_macro_page()
+            return
+        elif page == "News":
+            render_news_page()
             return
         elif page == "Price Alerts":
             render_price_alerts_page()
