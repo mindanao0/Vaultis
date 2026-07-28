@@ -1,4 +1,15 @@
-"""ดึงข่าวจาก NewsAPI, RSS, Reddit และ StockTwits สำหรับสัญลักษณ์/แหล่งข่าว."""
+"""ดึงข่าว **ที่เกี่ยวกับสัญลักษณ์นั้นจริง ๆ** จาก Yahoo Finance, NewsAPI, Reddit และ StockTwits.
+
+เดิม ``get_news`` ยัดฟีด RSS ข่าวเศรษฐกิจไทย (Settrade/Thairath) เข้าไปทุกสัญลักษณ์
+โดยไม่กรอง — ข่าวหุ้นไทยชุดเดียวกันจึงกลายเป็น "ข่าวของ" VOO/SCHD/QQQM/XLV/GLDM
+พร้อมกันทั้งห้าตัว (และตอนตรวจ 2026-07-28 ทั้งสองฟีดคืน 0 รายการอยู่แล้ว)
+ตอนนี้ทุกแหล่งใน ``get_news`` ผูกกับสัญลักษณ์ที่ขอเสมอ
+
+แต่ละรายการมี ``kind``:
+- ``news``   — ข่าวจากสำนักข่าว (Yahoo Finance RSS, NewsAPI)
+- ``social`` — ความเห็นนักลงทุนรายย่อย (Reddit, StockTwits) **ไม่ใช่ข่าว**
+  แยกไว้เพื่อไม่ให้ผู้อ่านผลเข้าใจว่าโพสต์เชียร์หุ้นคือรายงานข่าว
+"""
 
 from __future__ import annotations
 
@@ -14,8 +25,12 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
-SETTRADE_RSS = "https://www.settrade.com/rss/news.xml"
-THAIRATH_RSS = "https://www.thairath.co.th/rss/news/money.xml"
+KIND_NEWS = "news"
+KIND_SOCIAL = "social"
+
+# ฟีดข่าวราย ticker ของ Yahoo — ไม่ต้องใช้ API key จึงเป็นแหล่ง "ข่าวจริง" ตัวเดียว
+# ที่ทำงานได้ทันทีโดยไม่ต้องตั้งค่าอะไรเพิ่ม
+YAHOO_RSS_TEMPLATE = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
 
 _NEWSAPI_URL = "https://newsapi.org/v2/everything"
 _STOCKTWITS_STREAM_URL = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
@@ -63,6 +78,7 @@ def fetch_newsapi(symbol: str, api_key: str) -> list[dict[str, Any]]:
                     "url": a.get("url") or "",
                     "published_at": a.get("publishedAt") or "",
                     "source": name or "NewsAPI",
+                    "kind": KIND_NEWS,
                 }
             )
         return out
@@ -110,6 +126,7 @@ def fetch_reddit(symbol: str) -> list[dict[str, Any]]:
                     "url": url,
                     "published_at": published_at,
                     "source": "reddit",
+                    "kind": KIND_SOCIAL,
                 }
             )
         return out
@@ -154,6 +171,7 @@ def fetch_stocktwits(symbol: str) -> list[dict[str, Any]]:
                     "url": f"https://stocktwits.com/message/{msg_id}",
                     "published_at": str(msg.get("created_at") or ""),
                     "source": "stocktwits",
+                    "kind": KIND_SOCIAL,
                 }
             )
         return out
@@ -161,7 +179,7 @@ def fetch_stocktwits(symbol: str) -> list[dict[str, Any]]:
         return []
 
 
-def fetch_rss(feed_url: str) -> list[dict[str, Any]]:
+def fetch_rss(feed_url: str, kind: str = KIND_NEWS) -> list[dict[str, Any]]:
     """Parse RSS ด้วย feedparser; ถ้าล้มเหลวคืน [] ไม่ throw."""
     url = (feed_url or "").strip()
     if not url:
@@ -196,11 +214,20 @@ def fetch_rss(feed_url: str) -> list[dict[str, Any]]:
                     "url": link,
                     "published_at": pub,
                     "source": src,
+                    "kind": kind,
                 }
             )
         return out
     except (requests.RequestException, TypeError, AttributeError, ValueError):
         return []
+
+
+def fetch_yahoo_rss(symbol: str) -> list[dict[str, Any]]:
+    """ข่าวราย ticker จาก Yahoo Finance; ล้มเหลวคืน [] ไม่ throw."""
+    sym = (symbol or "").strip()
+    if not sym:
+        return []
+    return fetch_rss(YAHOO_RSS_TEMPLATE.format(symbol=sym), kind=KIND_NEWS)
 
 
 def _parse_sort_key(published_at: str) -> datetime:
@@ -218,15 +245,22 @@ def _parse_sort_key(published_at: str) -> datetime:
         return datetime.min.replace(tzinfo=timezone.utc)
 
 
+_MAX_ARTICLES = 30
+
+
 def get_news(symbol: str) -> list[dict[str, Any]]:
-    """รวม NewsAPI + RSS + Reddit + StockTwits ลบซ้ำตาม url เรียงเวลาล่าสุดก่อน สูงสุด 30 รายการ."""
+    """รวมข่าว+โซเชียลของ ``symbol`` ลบซ้ำตาม url เรียงล่าสุดก่อน สูงสุด 30 รายการ.
+
+    ทุกแหล่งผูกกับสัญลักษณ์ที่ขอ — ไม่มีฟีดข่าวทั่วไปปนเข้ามาแล้ว (ดู docstring บนสุด)
+    ข่าวจริง (``kind="news"``) ถูกจัดลำดับก่อนโซเชียลเสมอ เพื่อไม่ให้โพสต์ StockTwits
+    ซึ่งมีปริมาณมากและใหม่กว่า เบียดข่าวจริงตกขอบ 30 รายการ
+    """
     load_dotenv(ROOT_DIR / ".env")
     api_key = os.getenv("NEWSAPI_KEY", "").strip()
 
     merged: list[dict[str, Any]] = []
+    merged.extend(fetch_yahoo_rss(symbol))
     merged.extend(fetch_newsapi(symbol, api_key))
-    merged.extend(fetch_rss(SETTRADE_RSS))
-    merged.extend(fetch_rss(THAIRATH_RSS))
     merged.extend(fetch_reddit(symbol))
     merged.extend(fetch_stocktwits(symbol))
 
@@ -239,5 +273,7 @@ def get_news(symbol: str) -> list[dict[str, Any]]:
         seen.add(u)
         unique.append(item)
 
+    # เรียงสองรอบ (sort ของ Python เสถียร): เวลาใหม่ก่อน แล้วดัน news ขึ้นเหนือ social
     unique.sort(key=lambda x: _parse_sort_key(str(x.get("published_at") or "")), reverse=True)
-    return unique[:30]
+    unique.sort(key=lambda x: 0 if str(x.get("kind") or KIND_NEWS) == KIND_NEWS else 1)
+    return unique[:_MAX_ARTICLES]

@@ -1,28 +1,33 @@
 # -*- coding: utf-8 -*-
-"""วิเคราะห์ sentiment ข่าวเป็นชุดผ่าน Groq."""
+"""วิเคราะห์ sentiment ข่าวเป็นชุด ผ่านชั้นกลาง ``analysis/llm.py``.
+
+เดิมไฟล์นี้สร้าง ``Groq()`` เองตรง ๆ ซึ่งขัด convention ของโปรเจกต์ (ข้อยกเว้นเดียว
+ที่อนุญาตให้เรียก client เองคือ slip OCR ที่ต้องใช้ vision) ผลคืองานนี้ไม่ log
+โทเคน/ค่าใช้จ่าย และไม่มี fallback ไป Claude — ตอนนี้ไปผ่าน ``chat_text`` ทางเดียว
+"""
 
 from __future__ import annotations
 
-import os
+import logging
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-from groq import Groq
-
+from analysis.llm import LLMDisabledError, chat_text
 from analysis.news_fetcher import get_news
 from analysis.sentiment_aggregator import aggregate_sentiment
 from analysis.sentiment_prompt import build_sentiment_prompt, parse_sentiment_response
 from db.sentiment_models import SentimentResult, SentimentSummary, SessionLocal
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
+logger = logging.getLogger(__name__)
 
 DEFAULT_SENTIMENT_SYMBOLS: list[str] = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
 _BATCH_SIZE = 10
-_GROQ_MODEL = "llama-3.3-70b-versatile"
+_SENTIMENT_SYSTEM = (
+    "You classify the sentiment of financial news headlines. "
+    "Return ONLY a JSON array — no preamble, no markdown fence."
+)
 
 
 def _chunks(items: list[dict], size: int) -> list[list[dict]]:
@@ -48,37 +53,40 @@ def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def analyze_batch(articles: list[dict], symbol: str) -> list[dict[str, Any]]:
-    """แบ่งข่าวทีละ 10 รายการ เรียก Groq วิเคราะห์ sentiment รวมผลเป็นหนึ่งรายการ."""
-    load_dotenv(ROOT_DIR / ".env")
-    api_key = os.getenv("GROQ_API_KEY", "").strip()
-    if not api_key:
-        return []
+def analyze_batch(
+    articles: list[dict], symbol: str, *, user_initiated: bool = False
+) -> list[dict[str, Any]]:
+    """แบ่งข่าวทีละ 10 รายการ ให้ LLM จัด sentiment แล้วรวมผล.
 
-    try:
-        client = Groq(api_key=api_key)
-    except (TypeError, ValueError):
-        return []
-
+    ``user_initiated`` ส่งต่อให้ ``chat_text`` ตรง ๆ — งานอัตโนมัติต้องปล่อยเป็น False
+    แล้วอาศัย ``VAULTIS_LLM_AUTO=1`` เป็นตัวเปิด (นโยบายคุมค่าใช้จ่ายใน CLAUDE.md)
+    """
     batches = _chunks(list(articles or []), _BATCH_SIZE)
     merged: list[dict[str, Any]] = []
 
     for i, batch in enumerate(batches):
         try:
-            prompt = build_sentiment_prompt(batch, symbol)
-            response = client.chat.completions.create(
-                model=_GROQ_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
+            raw_text = chat_text(
+                _SENTIMENT_SYSTEM,
+                build_sentiment_prompt(batch, symbol),
                 max_tokens=1000,
+                temperature=0.1,
+                user_initiated=user_initiated,
             )
-            raw_text = response.choices[0].message.content or ""
-            parsed = parse_sentiment_response(raw_text)
-            for row in parsed:
-                if isinstance(row, dict):
-                    merged.append(_normalize_row(row))
-        except Exception:
-            pass
+        except LLMDisabledError:
+            # LLM ปิดอยู่ = ไม่ใช่ error จริง แต่ทำต่อไม่ได้ → เลิกทั้งชุด ไม่วนจ่ายซ้ำ
+            logger.info("[%s] ข้าม sentiment — LLM ปิดอยู่เพื่อคุมค่าใช้จ่าย", symbol)
+            return merged
+        except Exception as exc:
+            # ห้ามกลืนเงียบ: batch ที่พังต้องเห็นใน log ไม่งั้น sentiment จะดูเหมือน
+            # "ข่าวน้อย" ทั้งที่จริงคือเรียกโมเดลไม่สำเร็จ
+            logger.warning("[%s] sentiment batch %d/%d ล้มเหลว: %s", symbol, i + 1, len(batches), exc)
+            raw_text = ""
+
+        for row in parse_sentiment_response(raw_text):
+            if isinstance(row, dict):
+                merged.append(_normalize_row(row))
+
         if i < len(batches) - 1:
             time.sleep(1)
 
