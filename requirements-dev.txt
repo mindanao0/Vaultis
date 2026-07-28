@@ -1,0 +1,12 @@
+# เครื่องมือสำหรับรันเทสต์เท่านั้น — ไม่ติดตั้งบน production (Render/Docker ใช้ requirements.txt)
+#
+# เดิมไม่มีไฟล์นี้: ติดตั้งตาม requirements.txt แล้วรัน `pytest` เปล่า ๆ จะ fail 2 ไฟล์
+# (test_etf_analysis, test_screener) เพราะ pytest.ini ตั้ง `asyncio_mode = auto`
+# แต่ pytest-asyncio ไม่เคยถูกประกาศไว้ที่ไหนเลย — ดูเหมือนโค้ดพังทั้งที่แค่ขาดเครื่องมือ
+#
+# วิธีใช้:  pip install -r requirements.txt -r requirements-dev.txt
+# pin ตามเวอร์ชันที่ยืนยันแล้วว่าเทสต์ทั้งชุดผ่าน (2026-07-28, Python 3.12)
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+httpx==0.28.1  # fastapi.testclient.TestClient ต้องใช้

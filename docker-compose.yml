@@ -1,10 +1,109 @@
+# Vaultis — 3 service จาก image เดียวกัน (Redis ถูกถอดออกตั้งแต่ AUDIT.md H3: ไม่มีโค้ดเรียกใช้)
+#
+#   docker compose up -d              รัน backend + dashboard + scheduler
+#   docker compose up -d backend      รันเฉพาะ API
+#   docker compose --profile dev run --rm tests    รันชุดเทสต์ในภาพ dev
+#
+# ข้อมูลจริงอยู่บน host ทั้งหมดผ่าน volume — rebuild image กี่ครั้งก็ไม่หาย
+# และ .dockerignore กันไม่ให้ ledger/.env/vaultis.db ถูกอบเข้า image layer
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  # รันเป็น user เดียวกับเจ้าของโฟลเดอร์บน host — ไม่งั้นไฟล์ที่ container สร้าง
+  # (ledger, alert, vaultis.db) จะกลายเป็นของ root แล้วรันนอก Docker แก้ไม่ได้อีก
+  # ถ้า uid/gid ไม่ใช่ 1000 ให้ตั้ง DOCKER_UID/DOCKER_GID ใน .env  (ดูด้วย `id -u; id -g`)
+  user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+  env_file:
+    # required: false เพื่อให้ "clone แล้ว up ได้เลย" — ไม่มี .env ก็ยังขึ้น
+    # (LLM ปิด, Discord เงียบ, ใช้ค่า default ใน config.json) ต้องใช้ Compose v2.24+
+    - path: .env
+      required: false
+  environment:
+    TZ: Asia/Bangkok
+    # dashboard และ jobs/daily_check.py อ่านตัวนี้ ค่า default ในโค้ดชี้ไป Render
+    # ซึ่งไม่ใช่สิ่งที่ต้องการเมื่อรันครบชุดในเครื่อง
+    BACKEND_URL: http://backend:8000
+    VAULTIS_DB_PATH: /data/vaultis.db
+    # ใน container คำขอจาก host มาถึงเป็น IP ของ bridge (172.x) ไม่ใช่ 127.0.0.1
+    # ข้อยกเว้น "localhost ไม่ต้องใช้คีย์" จึงไม่มีผล → route ที่แก้ข้อมูล/เรียก LLM
+    # จะตอบ 503 จนกว่าจะตั้งคีย์  ตั้งใน .env: VAULTIS_API_KEY=... แล้วส่ง header X-API-Key
+    # (dashboard ไม่ได้รับผลกระทบ — มันเรียกโมดูล analysis ตรง ๆ ใช้ BACKEND_URL แค่ WebSocket)
+    VAULTIS_API_KEY: ${VAULTIS_API_KEY:-}
+  volumes:
+    # สมุดบัญชี (CSV) — แหล่งเดียวของธุรกรรมตาม CLAUDE.md
+    - ./portfolio/data:/app/portfolio/data
+    # price alerts (JSON) — แหล่งเดียวของ alert
+    - ./alerts/data:/app/alerts/data
+    # SQLite: goals / net worth / reports
+    # ใช้ bind mount ไม่ใช่ named volume — named volume ถูกสร้างเป็นของ root
+    # พอ container รันเป็น uid 1000 จะเขียนไม่ได้ ("unable to open database file")
+    # และแบบนี้ยังสำรองไฟล์จาก host ได้ตรง ๆ ด้วย
+    - ./.docker-data:/data
+    # config.json ผู้ใช้แก้ได้จากหน้า Settings → ต้องเขียนกลับมาที่ host
+    - ./config.json:/app/config.json
+  restart: unless-stopped
+
 services:
-  # Redis ถูกถอดออก (AUDIT.md H3) — ไม่มีโค้ดเรียกใช้เลย; cache เป็น in-process TTL
-  # (utils/cache.py + backend/services/cache_service.py)
   backend:
-    build: .
+    <<: *app
+    container_name: vaultis-backend
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"   # ผูก localhost เท่านั้น — ledger ไม่ควรเปิดออกเน็ต
+    command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  dashboard:
+    <<: *app
+    container_name: vaultis-dashboard
+    ports:
+      - "127.0.0.1:8501:8501"
+    # ต้องเขียนทับ healthcheck ที่ติดมากับ image (มันเช็ค :8000 ของ backend)
+    # ไม่งั้น dashboard จะขึ้น unhealthy ตลอดทั้งที่ทำงานปกติ
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 40s
+      retries: 3
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # งานตามเวลา: weekly summary / monthly advice / DCA reminder / price alerts
+  # LLM ยังปิดตามนโยบาย เว้นแต่ตั้ง VAULTIS_LLM_AUTO=1 ใน .env (ผู้ใช้จ่ายเองทุกรอบ)
+  scheduler:
+    <<: *app
+    container_name: vaultis-scheduler
+    # ไม่เปิดพอร์ตอะไร → healthcheck ของ image ใช้ไม่ได้ ปิดทิ้ง
+    healthcheck:
+      disable: true
+    command: ["python", "main.py"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ไม่ขึ้นเองตอน `up` — เรียกด้วย --profile dev เท่านั้น
+  tests:
+    build:
+      context: .
+      target: dev
+    profiles: ["dev"]
     env_file:
-      - .env
-    restart: unless-stopped
+      - path: .env
+        required: false
+    environment:
+      TZ: Asia/Bangkok
+      VAULTIS_DB_PATH: /data/vaultis.db
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+    volumes:
+      - ./.docker-data:/data
+    command: ["pytest", "-q"]

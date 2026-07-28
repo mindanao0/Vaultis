@@ -1,0 +1,57 @@
+# Dockerfile ใช้ `COPY . .` — ทุกอย่างที่ไม่ถูกกันไว้ที่นี่จะถูกอบเข้า image layer
+# และติดไปทุกที่ที่ image ถูก push  ห้ามพลาดสองกลุ่มแรก
+#
+# repo นี้เป็น public: ของส่วนตัวถูกกันไว้ด้วย .gitignore อยู่แล้ว แต่ .gitignore
+# ไม่มีผลกับ docker build เลย — ต้องกันซ้ำที่นี่อีกชั้น (AUDIT.md H1)
+
+# รูปแบบ pattern: docker เทียบกับ path เต็มจาก context root — `__pycache__/` เฉย ๆ
+# แมตช์แค่ตัวที่อยู่ชั้นบนสุด ไม่แมตช์ `alerts/__pycache__` ต้องใช้ `**/` นำหน้าเสมอ
+# (ตรวจ build จริง 2026-07-28: เขียนแบบไม่มี ** แล้ว .pyc ของเครื่อง host หลุดเข้า image
+#  จน traceback ใน container โชว์ path ของเครื่อง host)
+
+# --- ความลับ: ห้ามเข้า image เด็ดขาด ---
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+
+# --- ข้อมูลส่วนตัว: ต้องมาจาก volume ตอนรัน ไม่ใช่อบมากับ image ---
+# อบมากับ image = rebuild ทีไร ข้อมูลย้อนกลับไปเป็นสำเนา ณ ตอน build ทับของจริง
+vaultis.db
+*.sqlite
+*.sqlite3
+portfolio/data/
+alerts/data/
+
+# --- environment ของเครื่อง host: ใช้ใน container ไม่ได้และหนักมาก ---
+.venv/
+venv/
+env/
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+
+# --- git / เครื่องมือ / เอกสาร: ไม่จำเป็นตอนรัน ---
+.git/
+.gitignore
+.github/
+.dockerignore
+Dockerfile
+docker-compose*.yml
+.claude/
+.claude.json
+cursorrules
+*.md
+!README.md
+
+# --- ของที่สร้างระหว่างพัฒนา ---
+**/.DS_Store
+**/*.log
+**/*.png
+**/*.pdf
+.streamlit/secrets.toml
+.docker-data/

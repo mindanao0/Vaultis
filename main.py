@@ -240,30 +240,44 @@ def run_scheduler() -> None:
         notifications = config["notifications"]
         dca_day = int(config["dca"]["day_of_month"])
         webhook_url = str(notifications.get("discord_webhook_url", "")).strip()
-        if not webhook_url:
-            raise ValueError("กรุณาตั้งค่า Discord Webhook URL ใน Settings")
 
-        # 1) วันที่ 1 ของทุกเดือน 08:00 -> AI Advisor (ผ่าน daily guard)
-        schedule.every().day.at("08:00").do(run_monthly_ai_advisor_if_first_day)
-        # 2) ทุกวัน 08:00 -> เช็คว่าพรุ่งนี้เป็นวัน DCA แล้วเตือนล่วงหน้า
-        if notifications.get("dca_reminder", True):
-            schedule.every().day.at("08:00").do(check_and_send_dca_reminder, webhook_url=webhook_url)
-        # 3) ทุกวันจันทร์ 08:00 -> Weekly Summary (RSI + Return)
-        if notifications.get("weekly_summary", True):
-            schedule.every().monday.at("08:00").do(generate_weekly_report_and_notify, webhook_url=webhook_url)
-        # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
-        if notifications.get("rsi_alert", True):
-            schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
-        # 5) ทุกวัน 09:00 และ 21:00 -> Price Alert
+        # ไม่มี webhook ≠ เหตุให้ทั้ง scheduler ตาย — เดิม raise ตรงนี้แล้วถูก except ด้านล่าง
+        # จับ ทำให้ process จบทันที พอรันใน container ที่ตั้ง restart: unless-stopped
+        # มันจะเกิด-ตาย-เกิดใหม่เป็นวงไม่รู้จบ (เจอตอนเตรียม Docker 2026-07-28)
+        # งานที่ไม่ต้องพึ่ง Discord (ตรวจ price alert) ยังมีประโยชน์และต้องเดินต่อได้
+        if not webhook_url:
+            print(
+                "[scheduler] ไม่ได้ตั้ง DISCORD_WEBHOOK_URL — ข้ามงานที่ต้องส่ง Discord "
+                "(AI advisor รายเดือน, เตือน DCA, weekly summary, technical alert) "
+                "แต่ยังตรวจ price alert ตามเวลาปกติ"
+            )
+
+        if webhook_url:
+            # 1) วันที่ 1 ของทุกเดือน 08:00 -> AI Advisor (ผ่าน daily guard)
+            schedule.every().day.at("08:00").do(run_monthly_ai_advisor_if_first_day)
+            # 2) ทุกวัน 08:00 -> เช็คว่าพรุ่งนี้เป็นวัน DCA แล้วเตือนล่วงหน้า
+            if notifications.get("dca_reminder", True):
+                schedule.every().day.at("08:00").do(check_and_send_dca_reminder, webhook_url=webhook_url)
+            # 3) ทุกวันจันทร์ 08:00 -> Weekly Summary (RSI + Return)
+            if notifications.get("weekly_summary", True):
+                schedule.every().monday.at("08:00").do(generate_weekly_report_and_notify, webhook_url=webhook_url)
+            # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
+            if notifications.get("rsi_alert", True):
+                schedule.every().day.at("09:00").do(generate_daily_technical_alerts, webhook_url=webhook_url)
+        # 5) ทุกวัน 09:00 และ 21:00 -> Price Alert (ไม่ต้องใช้ webhook)
         schedule.every().day.at("09:00").do(check_alerts)
         schedule.every().day.at("21:00").do(check_alerts)
 
         print(
             "Vaultis scheduler started: "
-            "monthly AI Advisor (day 1 08:00), "
-            f"DCA reminder check (daily 08:00, DCA day {dca_day}) = {notifications.get('dca_reminder', True)}, "
-            f"weekly summary (Mon 08:00) = {notifications.get('weekly_summary', True)}, "
-            f"daily technical alert check (09:00, RSI abnormal only) = {notifications.get('rsi_alert', True)}, "
+            f"discord = {bool(webhook_url)}, "
+            f"monthly AI Advisor (day 1 08:00) = {bool(webhook_url)}, "
+            f"DCA reminder check (daily 08:00, DCA day {dca_day}) = "
+            f"{bool(webhook_url) and notifications.get('dca_reminder', True)}, "
+            f"weekly summary (Mon 08:00) = "
+            f"{bool(webhook_url) and notifications.get('weekly_summary', True)}, "
+            f"daily technical alert check (09:00, RSI abnormal only) = "
+            f"{bool(webhook_url) and notifications.get('rsi_alert', True)}, "
             "price alert check (daily 09:00, 21:00) = True"
         )
 
