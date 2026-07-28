@@ -244,20 +244,38 @@ def _dividend_score(div_yield: float) -> int:
     return 0
 
 
+# yield เกินค่านี้ = ข้อมูลผิด ไม่ใช่ ETF จริง → ตัดคะแนนปันผลออกแทนการเดา (C1)
+_MAX_PLAUSIBLE_DIVIDEND_PCT = 100.0
+
+
+def _normalize_dividend_yield(raw: Any) -> float | None:
+    """แปลง ``dividendYield`` ของ yfinance (หน่วยเปอร์เซ็นต์) เป็นสัดส่วน — 3.3 → 0.033.
+
+    **ห้ามกลับไปเดาหน่วยเอง** (AUDIT.md M15): เดิมใช้ ``value / 100 if value > 1 else value``
+    ซึ่งแยก "0.43 = 43%" กับ "0.43 = 0.43%" ไม่ออก → ETF ที่ yield ต่ำกว่า 1% (QQQM)
+    ถูกอ่านเป็น 43% แล้วได้คะแนนปันผลเต็ม 10 แทนที่จะได้ 2 ทำให้คะแนนรวมข้ามเส้น
+    "Strong Buy" (70) ทั้งที่ควรเป็น "Buy"
+
+    ``yfinance==0.2.61`` ที่ pin ไว้คืนเปอร์เซ็นต์เสมอ (VOO=1.07, SCHD=3.3, QQQM=0.43)
+    ถ้าอัปเวอร์ชันต้องตรวจ semantics ใหม่แล้วแก้ที่ฟังก์ชันนี้จุดเดียว
+
+    คืน ``None`` เมื่อไม่มีข้อมูล/ค่าเพี้ยน → คะแนนปันผลถูกตัดออกจาก max ทั้งก้อน
+    """
+    if raw is None:
+        return None
+    value = _safe_float(raw, -1.0)
+    if value < 0 or value > _MAX_PLAUSIBLE_DIVIDEND_PCT:
+        return None
+    return value / 100.0
+
+
 def _dividend_yield(ticker: str) -> float | None:
     """ดึง dividend yield แบบสัดส่วน; ล้มเหลวคืน None (คะแนนปันผลจะถูกตัดออกจาก max)."""
     try:
         info = yf.Ticker(ticker).info or {}
     except Exception:
         return None
-    raw = info.get("dividendYield")
-    if raw is None:
-        return None
-    value = _safe_float(raw, -1.0)
-    if value < 0:
-        return None
-    # yfinance เปลี่ยน semantics ข้ามเวอร์ชัน: บางรุ่นคืน 0.035 บางรุ่นคืน 3.5
-    return value / 100.0 if value > 1.0 else value
+    return _normalize_dividend_yield(info.get("dividendYield"))
 
 
 def _signal_label(total_pct: float) -> str:
