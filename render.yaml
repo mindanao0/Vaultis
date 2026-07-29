@@ -7,6 +7,10 @@ services:
     envVars:
       - key: DISCORD_WEBHOOK_URL
         sync: false
+      # LLM ตัวหลักคือ Claude Haiku 4.5 (analysis/llm.py) — เดิมประกาศแต่ Groq
+      # backend บน Render จึงตกไปใช้ fallback ทุกครั้งโดยไม่มีใครตั้งใจ
+      - key: ANTHROPIC_API_KEY
+        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: GOOGLE_API_KEY

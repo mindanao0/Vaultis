@@ -15,11 +15,11 @@
 
 | หมวด | รายการ |
 |------|--------|
-| ภาษา / runtime | Python 3.11+ |
+| ภาษา / runtime | Python 3.12 (เท่ากับที่ Dockerfile / CI / ชุดเทสต์ยืนยัน — ดู `.python-version`) |
 | Web API | FastAPI, Uvicorn, Pydantic |
 | DB (แอปหลัก) | SQLite (`vaultis.db`) ผ่าน SQLAlchemy |
 | DB (เซนติเมนต์) | PostgreSQL เมื่อตั้ง `DATABASE_URL` |
-| Cache (ดีพลอย) | Redis ใน `docker-compose.yml` |
+| Cache | in-process TTL (`utils/cache.py`, `backend/services/cache_service.py`) — ไม่ใช้ Redis แล้ว |
 | ข้อมูลราคา | yfinance |
 | เทคนิคอล | pandas-ta, ta |
 | แดชบอร์ด | Streamlit, Plotly |
@@ -259,8 +259,9 @@ Vaultis/
 ## Deploy
 
 - **`render.yaml` / `Procfile`:** รัน `uvicorn backend.main:app` พร้อมตัวแปรสภาพแวดล้อมสำหรับคีย์ API
-- **`Dockerfile`:** ภาพ Python 3.11-slim, ติดตั้ง `requirements.txt`, CMD uvicorn
-- **`docker-compose.yml`:** Redis + backend พร้อม `REDIS_URL` (บริการบางส่วนอาจอ่าน Redis ผ่าน `cache_service`)
+- **`.python-version`:** เวอร์ชัน Python ของ Render (`runtime.txt` เดิมถูกลบ — Render ไม่อ่านไฟล์นั้น และไฟล์ถูกเซฟเป็น UTF-16 จนอ่านไม่ออกอยู่แล้ว)
+- **`Dockerfile`:** ภาพ Python 3.12-slim, ติดตั้ง `requirements.txt`, รันเป็น non-root
+- **`docker-compose.yml`:** backend + dashboard + scheduler จาก image เดียว (Redis ถูกถอดออกแล้ว — ไม่เคยมีอะไรเรียกใช้)
 
 ---
 
