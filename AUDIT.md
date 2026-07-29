@@ -612,6 +612,58 @@ fail-closed ที่ออกแบบไว้ ไม่ควรผ่อน*
 
 ---
 
+# ฐานข้อมูลกลับมามีจริง — Postgres ในเครื่องแทน Supabase ที่หายไป (29 กรกฎาคม 2026)
+
+**สถานะ: ยกขึ้นจริง ทดสอบครบเส้นทางแล้ว** — 4 container healthy · เขียน/อ่านผ่านโค้ดจริงได้ ·
+`/api/sentiment/{symbol}` เลิกเป็น 503 · เทสต์ทั้งชุด **340 ผ่าน**
+
+**มติผู้ใช้ 2026-07-29:** ใช้เครื่องตัวเองเป็นฐานข้อมูล ไม่เช่าคลาวด์ · **ยังไม่เปิด
+`VAULTIS_LLM_AUTO`** (job sentiment รายสัปดาห์จึงยังข้ามตัวเองตามเดิม — ตารางจะว่างจนกว่าจะสั่งรันเอง)
+
+## ทำไมเครื่องตัวเองถึงพอ
+
+ฐานนี้เก็บแค่ 2 อย่าง: sentiment (~155 แถว/สัปดาห์ ถ้าเปิด) กับประวัติ screener (~5-25 แถว/วัน)
+รวมไม่ถึงหลักสิบ MB ต่อปี — **ขนาดไม่เคยเป็นข้อจำกัด ข้อจำกัดคือใครต้องต่อถึงมัน**
+ผู้เขียนจริงมีแค่ backend/scheduler ที่รันในเครื่องอยู่แล้ว ส่วน GitHub Actions ไม่ได้เขียนอะไรเลย
+(sentiment job ปิดอยู่) การเปิดพอร์ต Postgres จากบ้านออกเน็ตให้ CI เขียนได้จึงไม่คุ้มความเสี่ยง
+
+## บั๊กที่เจอระหว่างทำ — ตาราง `screener_history` ไม่เคยมีโค้ดสร้างเลย
+
+DDL ของมันเป็น **คอมเมนต์** อยู่บนหัว `backend/screener/history_service.py` เฉย ๆ ไม่มีที่ไหน
+เรียกสร้าง แปลว่าต่อให้ Supabase ยังไม่ตาย ประวัติ screener ก็เขียนไม่ลงอยู่ดี เว้นแต่เคยพิมพ์
+SQL สร้างมือไว้ — และเมื่อเขียนไม่ลง `save_results` จับ `Exception` แล้ว print อย่างเดียว
+จึงเงียบสนิทมาตลอด → ย้าย DDL เป็นโค้ดจริง (`SCREENER_HISTORY_DDL` + `create_screener_history_table()`)
+แล้วให้ `scripts/init_db.py` สร้างทั้ง 3 ตารางในคำสั่งเดียว
+
+## สิ่งที่เปลี่ยน
+
+| จุด | รายละเอียด |
+|---|---|
+| `docker-compose.yml` | เพิ่ม service `postgres:17-alpine` + healthcheck `pg_isready` · backend/dashboard/scheduler `depends_on: service_healthy` · เปิดพอร์ตแค่ `127.0.0.1:5432` |
+| named volume `pgdata` | **ตั้งใจไม่ใช้ bind mount แบบ SQLite** — postgres รันเป็น uid ของตัวเองใน container ถ้า bind โฟลเดอร์ของ host uid เข้าไป `initdb` ล้มตั้งแต่ครั้งแรก สำรองด้วย `pg_dump` แทน |
+| `DATABASE_URL` | ตั้งใน `environment:` ของ compose (ชนะ `env_file`) → container คุยกับ `postgres:5432` ส่วน `.env` เก็บรูป `localhost:5432` ไว้ให้ตอนรันนอก Docker · service `tests` ล้างค่าเป็นค่าว่าง เพราะชุดเทสต์ต้องผ่านโดยไม่มีฐานข้อมูล |
+| `.env` เดิม | ชี้ Supabase ที่โปรเจกต์ถูกลบ (`FATAL (ENOTFOUND) tenant/user postgres.cptzighlfdghwbfzeyiu not found`) → เปลี่ยนเป็น Postgres ในเครื่อง |
+
+## ยืนยันด้วยของจริง
+
+| ตรวจอะไร | ผล |
+|---|---|
+| `scripts/init_db.py` | สร้างครบ 3 ตาราง (`sentiment_results`, `sentiment_summary`, `screener_history`) พร้อม index |
+| เขียน/อ่านผ่าน `ScreenerHistoryService` ตัวจริง | เขียนแถวทดสอบแล้วอ่านกลับได้ครบทุกคอลัมน์ (ลบแถวทดสอบออกแล้ว) |
+| `get_latest_sentiment_summaries()` (กล่องในหน้า AI Advisor) | คืนข้อมูลจริงจากฐาน ไม่ใช่ `None` อีก |
+| `GET /api/sentiment/VOO` | **200 พร้อมข้อมูล** (เดิม 503) · สัญลักษณ์ที่ยังไม่มีข้อมูล = 404 ตามดีไซน์ |
+| ใน container | `printenv DATABASE_URL` → `postgres:5432` · เห็นครบ 3 ตาราง |
+| 4 service พร้อมกัน | `postgres` / `backend` / `dashboard` healthy · `scheduler` รันอยู่ |
+| auth ยังปิดตายเหมือนเดิม | ผ่าน Docker: ไม่มีคีย์ = 401/503 · มีคีย์ = 404 (ฐานต่อได้ ไม่มีข้อมูล) — 503 ที่เห็นตอนแรกคือ auth ไม่ใช่ฐานข้อมูล |
+| screener ของจริงวันนี้ | 4 preset คืน 0 สัญญาณ (สภาพตลาด ไม่ใช่ความผิดพลาด) จึงไม่มีแถวเข้าฐาน |
+| เทสต์ใน container | 340 ผ่านเท่ากับนอก container — แต่ต้อง `docker compose build` ก่อน ไม่งั้นได้ 315 เพราะ image ยังเป็นโค้ดก่อนมีหน้า News (`COPY . .` ผูกกับตอน build) |
+
+**ยังเหลือ:** ตาราง sentiment จะว่างจนกว่าจะสั่งรัน job เอง —
+`VAULTIS_LLM_AUTO=1 python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"`
+(จ่ายเฉพาะรอบที่สั่ง ไม่ใช่ทุกสัปดาห์อัตโนมัติ)
+
+---
+
 **ส่วนที่ยืนยันว่าทำงานจริง:** FX สด · คะแนน/จัดสรร DCA ครบ 5 ตัว · macro FRED 6 ตัวชี้วัด ·
 ledger + holdings + history · price alerts + `/check` · screener (preset + custom) · forecast ·
 DCF · `/api/ai/advice` (ไม่เรียก LLM ตามนโยบาย) · goals · net worth · reports ·

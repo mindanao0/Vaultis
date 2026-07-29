@@ -1,12 +1,4 @@
-# CREATE TABLE IF NOT EXISTS screener_history (
-#   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-#   symbol VARCHAR(20),
-#   preset_name VARCHAR(50),
-#   matched_rules TEXT,
-#   price FLOAT,
-#   signal_strength FLOAT,
-#   created_at TIMESTAMP DEFAULT now()
-# );
+"""บันทึก/อ่านประวัติผล screener บน PostgreSQL (ไม่ตั้ง ``DATABASE_URL`` = ข้ามเงียบ ๆ)."""
 
 from __future__ import annotations
 
@@ -24,6 +16,37 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT_DIR / ".env")
 
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+
+# DDL เคยเป็นแค่คอมเมนต์บนหัวไฟล์ ไม่มีโค้ดไหนสร้างตารางให้เลย — ฐานใหม่ทุกใบจึงเก็บ
+# ประวัติไม่ได้ แล้วไปโผล่เป็น `save_results error: relation ... does not exist` ในล็อก
+# เท่านั้น (`scripts/init_db.py` เรียกฟังก์ชันด้านล่างแล้ว)
+SCREENER_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS screener_history (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    symbol VARCHAR(20),
+    preset_name VARCHAR(50),
+    matched_rules TEXT,
+    price FLOAT,
+    signal_strength FLOAT,
+    created_at TIMESTAMP DEFAULT now()
+)
+"""
+
+SCREENER_HISTORY_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS ix_screener_history_symbol_created_at
+    ON screener_history (symbol, created_at)
+"""
+
+
+def create_screener_history_table() -> None:
+    """สร้างตาราง screener_history; ไม่ตั้ง ``DATABASE_URL`` = โยนออกไปให้ผู้เรียกเห็น."""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not set in .env")
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    with engine.begin() as conn:
+        conn.execute(text(SCREENER_HISTORY_DDL))
+        conn.execute(text(SCREENER_HISTORY_INDEX_DDL))
+    engine.dispose()
 
 
 class ScreenerHistoryService:

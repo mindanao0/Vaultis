@@ -31,6 +31,10 @@ x-app: &app
     # จะตอบ 503 จนกว่าจะตั้งคีย์  ตั้งใน .env: VAULTIS_API_KEY=... แล้วส่ง header X-API-Key
     # (dashboard ไม่ได้รับผลกระทบ — มันเรียกโมดูล analysis ตรง ๆ ใช้ BACKEND_URL แค่ WebSocket)
     VAULTIS_API_KEY: ${VAULTIS_API_KEY:-}
+    # Postgres ในเครื่อง (sentiment + ประวัติ screener) — เขียนทับค่าใน .env เสมอ
+    # เพราะ .env ต้องเก็บ URL แบบ localhost ไว้ให้ตอนรันนอก Docker ส่วนใน network
+    # ของ compose ต้องเรียกด้วยชื่อ service  (compose: environment ชนะ env_file)
+    DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-vaultis}:${POSTGRES_PASSWORD:-vaultis}@postgres:5432/${POSTGRES_DB:-vaultis}
   volumes:
     # สมุดบัญชี (CSV) — แหล่งเดียวของธุรกรรมตาม CLAUDE.md
     - ./portfolio/data:/app/portfolio/data
@@ -46,12 +50,42 @@ x-app: &app
   restart: unless-stopped
 
 services:
+  # เก็บแค่ 2 อย่าง: ผลวิเคราะห์ sentiment กับประวัติ screener (หลักสิบ MB ต่อปี)
+  # ที่เหลือไม่ได้ใช้ตัวนี้ — ledger เป็น CSV, alert เป็น JSON, goals/reports เป็น SQLite
+  #
+  # ใช้ named volume ไม่ใช่ bind mount (ต่างจาก SQLite ด้านล่างโดยตั้งใจ): postgres
+  # รันเป็น uid ของตัวเองใน container ถ้า bind mount โฟลเดอร์ของ host uid 1000 เข้าไป
+  # initdb จะล้มตั้งแต่ครั้งแรก  สำรองข้อมูลด้วย pg_dump แทนการก็อปไฟล์:
+  #   docker compose exec postgres pg_dump -U vaultis vaultis > backup.sql
+  postgres:
+    image: postgres:17-alpine
+    container_name: vaultis-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vaultis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vaultis}
+      POSTGRES_DB: ${POSTGRES_DB:-vaultis}
+      TZ: Asia/Bangkok
+    ports:
+      - "127.0.0.1:5432:5432"   # เปิดให้เฉพาะเครื่องนี้ — ใช้ตอนรัน dashboard/backend นอก Docker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vaultis} -d ${POSTGRES_DB:-vaultis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   backend:
     <<: *app
     container_name: vaultis-backend
     ports:
       - "127.0.0.1:8000:8000"   # ผูก localhost เท่านั้น — ledger ไม่ควรเปิดออกเน็ต
     command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   dashboard:
     <<: *app
@@ -77,6 +111,8 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
 
   # งานตามเวลา: weekly summary / monthly advice / DCA reminder / price alerts
   # LLM ยังปิดตามนโยบาย เว้นแต่ตั้ง VAULTIS_LLM_AUTO=1 ใน .env (ผู้ใช้จ่ายเองทุกรอบ)
@@ -89,6 +125,8 @@ services:
     command: ["python", "main.py"]
     depends_on:
       backend:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   # ไม่ขึ้นเองตอน `up` — เรียกด้วย --profile dev เท่านั้น
@@ -103,7 +141,13 @@ services:
     environment:
       TZ: Asia/Bangkok
       VAULTIS_DB_PATH: /data/vaultis.db
+      # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
+      DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     volumes:
       - ./.docker-data:/data
     command: ["pytest", "-q"]
+
+volumes:
+  # ข้อมูล Postgres — rebuild image กี่ครั้งก็อยู่ ลบทิ้งได้ด้วย `docker compose down -v`
+  pgdata:

@@ -27,15 +27,17 @@ pip install -r requirements.txt -r requirements-dev.txt
 pytest
 pytest tests/test_screener.py         # single file
 
-# Docker — backend + dashboard + scheduler from one image
+# Docker — postgres + backend + dashboard + scheduler (3 services from one image)
 cp .env.example .env                  # optional; compose runs without it
 docker compose up -d
+python scripts/init_db.py             # ครั้งเดียวต่อฐานใหม่: สร้าง 3 ตารางบน Postgres
 docker compose --profile dev run --rm tests
+docker compose exec postgres pg_dump -U vaultis vaultis > backup.sql   # สำรอง Postgres
 ```
 
 No linter config is present. No build step required.
 
-**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
+**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Postgres is the one exception — it uses the named volume `pgdata`, not a bind mount**: the postgres image runs as its own uid inside the container and `initdb` fails on a directory owned by the host uid. Back it up with `pg_dump`, not by copying files. `DATABASE_URL` is set in `environment:` (not `env_file`) so containers reach it as `postgres:5432` while `.env` keeps the `localhost:5432` form for running outside Docker; the `tests` service clears it because the suite must pass with no database at all. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
 
 ## Architecture
 
@@ -135,7 +137,7 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 | Transactions | **CSV** `portfolio/data/transactions.csv` via `portfolio/tracker.py` (rows keyed by `tx_id`; `tx_type` = buy\|dividend — แถวปันผล**ไม่เข้า** cost basis/ลำดับเทรด, แถวเก่า/ค่าว่าง = buy เสมอ) | dashboard, backend (`portfolio_service` delegates here), AI advisor, PDF |
 | Price alerts | **JSON** `alerts/data/price_alerts.json` via `alerts/price_alert.py` | dashboard, backend (`alert_service` delegates), Discord cron |
 | Goals / net worth / reports / config | **SQLite** `vaultis.db` | backend only |
-| Sentiment + screener history | **PostgreSQL** (`DATABASE_URL`, optional) | scheduled jobs |
+| Sentiment + screener history | **PostgreSQL** (`DATABASE_URL`) — `docker compose` ยกให้ในเครื่อง (service `postgres`, named volume `pgdata`) สร้างตารางด้วย `python scripts/init_db.py` | backend (screener 07:00), sentiment job, dashboard |
 
 **The repo is public — the ledger, `vaultis.db`, and `alerts/data/price_alerts.json` are gitignored and must stay that way.** Consequences, both stated explicitly rather than papered over:
 
