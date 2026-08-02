@@ -1,0 +1,3 @@
+# โฟลเดอร์นี้ต้องมีอยู่ใน fresh clone — docker bind mount จะสร้างเป็นของ root ถ้าไม่มี
+# แล้ว container ที่รันเป็น uid ของ host จะเขียน /data/vaultis.db ไม่ได้ (backend crash-loop)
+# ไฟล์ข้อมูลจริงข้างในถูก gitignore ไว้ (ส่วนตัว)
