@@ -54,7 +54,7 @@ backend/          FastAPI REST + WebSocket server
 analysis/         Standalone analysis modules: returns, risk, correlation,
                   backtesting (vectorbt), forecasting (Prophet), AI advisor,
                   sentiment, macro (FRED), financial model scoring
-  llm.py            **Single entry point for every LLM call** (Haiku 4.5 → Groq fallback)
+  llm.py            **Single entry point for every LLM call** (Claude Sonnet 5 — ผู้ให้บริการเดียว)
   news_fetcher.py   ข่าวราย ticker (Yahoo RSS + NewsAPI + Reddit + StockTwits) — `get_news()`
                     คืนรายการอย่างเดียว, `get_news_with_status()` คืนสถานะรายแหล่งด้วย
   ta_compat.py      **Single indicator layer** (sma/rsi/macd/bbands) — pandas-ta is gone
@@ -97,7 +97,7 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 
 **AI explains, code computes.** All numbers — scores, DCA allocation, price-alert levels — are computed in Python. The LLM receives finished figures and only writes the explanation. Never parse numbers back out of model output.
 
-**LLM calls go through `analysis/llm.py`.** `chat_text()` prefers Claude Haiku 4.5 (`ANTHROPIC_API_KEY`) and falls back to Groq llama-3.3-70b (`GROQ_API_KEY`). It handles truncation (retries at 2× budget) and logs token usage + estimated cost. Do not instantiate `Groq()` or `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
+**LLM calls go through `analysis/llm.py`.** `chat_text()` calls Claude Sonnet 5 via `ANTHROPIC_API_KEY` — **single provider, no fallback** (Groq was removed 2026-08-02: silently degrading to a weaker model contradicts the project's fail-loud rule). A missing key or a failed call raises `RuntimeError` with a readable message; scores/signals are unaffected because they are computed in Python. It handles truncation (retries at 2× budget — note the truncated first attempt is still billed) and logs token usage + estimated cost from `_MODEL_PRICES_USD_PER_MTOK`, which **must be updated whenever `ANTHROPIC_MODEL` changes**. Do not instantiate `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
 
 **LLM is OFF unless the user explicitly asks for it.** `chat_text(..., user_initiated=True)` is required; without it the call raises `LLMDisabledError`. This is a cost guard, not an error path:
 
@@ -164,8 +164,7 @@ Required for full functionality:
 
 | Variable | Used by |
 |---|---|
-| `ANTHROPIC_API_KEY` | **Primary LLM** — AI Advisor, ETF summaries, reports, slip OCR (Claude Haiku 4.5) |
-| `GROQ_API_KEY` | LLM fallback when `ANTHROPIC_API_KEY` is unset (llama-3.3-70b-versatile) |
+| `ANTHROPIC_API_KEY` | **The only LLM** — AI Advisor, ETF summaries, reports, slip OCR (Claude Sonnet 5). No fallback: unset = AI buttons fail loudly, everything else still works |
 | `FRED_API_KEY` | Macro data endpoint |
 | `DISCORD_WEBHOOK_URL` | Scheduled job notifications (**env only — never in config.json**) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Screener alerts + monthly report |
@@ -180,7 +179,7 @@ Required for full functionality:
 | Prefix | File | Notes |
 |---|---|---|
 | `/api/etf` | `routers/etf.py` | Prices, snapshots, returns, risk, correlation, technical |
-| `/api/etf/{symbol}` | `routers/etf_analysis.py` | Per-symbol analysis with Groq summary |
+| `/api/etf/{symbol}` | `routers/etf_analysis.py` | Per-symbol analysis with Claude summary |
 | `/api/backtest` | `routers/backtest.py` | vectorbt RSI+MACD strategy |
 | `/api/forecast` | `routers/forecast.py` | Prophet forecaster, walk-forward backtester |
 | `/api/portfolio` | `routers/portfolio.py` | Transaction CRUD, portfolio summary |

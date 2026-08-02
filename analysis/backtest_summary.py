@@ -1,4 +1,4 @@
-"""AI summary generator for backtest results (Claude Haiku 4.5 → Groq fallback)."""
+"""AI summary generator for backtest results (Claude Sonnet 5 ผ่าน analysis/llm.py)."""
 
 from __future__ import annotations
 

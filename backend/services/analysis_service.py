@@ -1,4 +1,4 @@
-"""ETF overall signal rules and Groq-backed Thai summaries."""
+"""ETF overall signal rules and Claude-backed Thai summaries."""
 
 from __future__ import annotations
 
@@ -150,7 +150,7 @@ class AnalysisService:
         except Exception as exc:
             text = (
                 "ไม่สามารถเรียกบริการวิเคราะห์ AI ได้ในขณะนี้ "
-                f"(ตรวจสอบ ANTHROPIC_API_KEY / GROQ_API_KEY และการเชื่อมต่อ: {exc})"
+                f"(ตรวจสอบ ANTHROPIC_API_KEY และการเชื่อมต่อ: {exc})"
             )
 
         if _DISCLAIMER not in text:

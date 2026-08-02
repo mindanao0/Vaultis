@@ -1,4 +1,4 @@
-"""Integration smoke test: ETF scores → macro snapshot → Groq AI advice."""
+"""Integration smoke test: ETF scores → macro snapshot → Claude AI advice."""
 
 from __future__ import annotations
 

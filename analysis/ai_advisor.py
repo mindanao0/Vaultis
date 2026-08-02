@@ -2,7 +2,7 @@
 
 หลักการ (AUDIT.md C3): **ตัวเลขทุกตัวคำนวณในโค้ด** — คะแนนจาก financial_model,
 แผนจัดสรรงบจาก calculate_allocation, ระดับราคา alert จากกฎ technical ที่ตรวจสอบได้
-LLM (Claude Haiku 4.5 ผ่าน analysis/llm.py, มี Groq เป็น fallback) มีหน้าที่
+LLM (Claude Sonnet 5 ผ่าน analysis/llm.py — ผู้ให้บริการเดียว ไม่มี fallback) มีหน้าที่
 "อธิบายผลลัพธ์" เท่านั้น ห้ามคิดเลขหรือแต่งตัวเลขใหม่
 
 ETF ที่ข้อมูลไม่พร้อมจะถูกส่งเข้า prompt ในสถานะ NO DATA พร้อมคำสั่งห้ามตีความ
@@ -151,8 +151,10 @@ def get_ai_advice(
     text = chat_text(
         VAULTIS_ADVISOR_SYSTEM_PROMPT,
         user_content,
-        max_tokens=1500,
-        temperature=0.2,
+        # วัดจริง 2026-08-02: คำตอบไทยเต็มรูปแบบใช้ ~2,180 โทเคน ที่ 1,500 จึงชนเพดานทุกครั้ง
+        # แล้วเข้า retry 2× — ซึ่งเสียเงิน "สองรอบ" เพราะรอบแรกที่ถูกตัดก็ถูกเก็บเงินไปแล้ว
+        # (0.91 + 1.25 = 2.16 บาท/ครั้ง) ตั้งให้พอตั้งแต่รอบแรกถูกกว่าจ่ายค่า retry
+        max_tokens=2500,
         user_initiated=user_initiated,
     )
     if not text:

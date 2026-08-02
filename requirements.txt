@@ -41,5 +41,4 @@ praw==7.8.1
 fredapi==0.5.2
 reportlab==4.2.5
 
-groq==0.13.1
 anthropic==0.42.0

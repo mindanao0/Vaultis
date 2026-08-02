@@ -23,16 +23,15 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      # Secrets ที่ต้องมี: GROQ_API_KEY, ANTHROPIC_API_KEY (Haiku 4.5 สำหรับ AI Advisor),
+      # Secrets ที่ต้องมี: ANTHROPIC_API_KEY (Claude Sonnet 5 สำหรับ AI Advisor),
       # DISCORD_WEBHOOK_URL, FRED_API_KEY, NEWSAPI_KEY, DATABASE_URL
       - name: Run Sentiment Analysis
         if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
         env:
-          # llm.py เลือก Claude Haiku 4.5 ก่อนเสมอ แล้วค่อยตกไป Groq — step นี้เคยส่งแค่ Groq
+          # llm.py ใช้ Claude อย่างเดียว (ถอด Groq ออกแล้ว 2026-08-02)
           # ทำให้ job เดียวในระบบที่วิ่งคนละโมเดลกับที่อื่นโดยไม่มีใครตั้งใจ
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
@@ -42,7 +41,6 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job weekly_summary
@@ -50,7 +48,6 @@ jobs:
         if: github.event.schedule == '0 1 1 * *'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
@@ -74,7 +71,6 @@ jobs:
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
