@@ -96,14 +96,16 @@ def fetch_newsapi_status(symbol: str, api_key: str) -> tuple[list[dict[str, Any]
         out: list[dict[str, Any]] = []
         for a in data.get("articles") or []:
             src = a.get("source") or {}
-            name = src.get("name") if isinstance(src, dict) else None
+            # ห้ามใช้ชื่อ `name` ซ้ำกับชื่อแหล่ง — เคยทับกันจนสถานะรายงานเป็นสำนักข่าว
+            # ของบทความสุดท้าย ("Business Insider 20") แทน "NewsAPI 20" (C1: สถานะต้องตรงความจริง)
+            publisher = src.get("name") if isinstance(src, dict) else None
             out.append(
                 {
                     "title": a.get("title") or "",
                     "description": a.get("description") or "",
                     "url": a.get("url") or "",
                     "published_at": a.get("publishedAt") or "",
-                    "source": name or "NewsAPI",
+                    "source": publisher or "NewsAPI",
                     "kind": KIND_NEWS,
                 }
             )
@@ -314,10 +316,18 @@ def _parse_sort_key(published_at: str) -> datetime:
 
 
 _MAX_ARTICLES = 30
+# กันที่ไว้ให้โซเชียลไม่ให้ถูกข่าวจริงเบียดตกขอบจนหมด — พอเปิด NewsAPI ข่าวจริงมี 40 ชิ้น
+# ล้นเพดาน 30 แล้วกฎ "news ก่อน social" ทำให้ StockTwits หายจากหน้าจอทั้งหมด (social=0)
+# กันที่เท่าที่โซเชียล "มีจริง" เท่านั้น ไม่มีโซเชียล = ข่าวจริงได้ครบ 30 ไม่เสียช่องเปล่า
+_SOCIAL_RESERVED_SLOTS = 5
 
 
 def _merge_and_rank(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """ลบซ้ำตาม url แล้วจัดลำดับ: ข่าวจริงก่อนโซเชียล ภายในกลุ่มเรียงล่าสุดก่อน."""
+    """ลบซ้ำตาม url แล้วจัดลำดับ: ข่าวจริงก่อนโซเชียล ภายในกลุ่มเรียงล่าสุดก่อน.
+
+    เพดานรวม ``_MAX_ARTICLES`` โดยกันช่องให้โซเชียลไว้ ``_SOCIAL_RESERVED_SLOTS`` ช่อง
+    ฝั่งไหนมีของไม่ถึงโควตา อีกฝั่งได้ช่องที่เหลือไปใช้ต่อ — ไม่มีช่องว่างเปล่า
+    """
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for item in merged:
@@ -330,7 +340,14 @@ def _merge_and_rank(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # เรียงสองรอบ (sort ของ Python เสถียร): เวลาใหม่ก่อน แล้วดัน news ขึ้นเหนือ social
     unique.sort(key=lambda x: _parse_sort_key(str(x.get("published_at") or "")), reverse=True)
     unique.sort(key=lambda x: 0 if str(x.get("kind") or KIND_NEWS) == KIND_NEWS else 1)
-    return unique[:_MAX_ARTICLES]
+
+    news = [x for x in unique if str(x.get("kind") or KIND_NEWS) == KIND_NEWS]
+    social = [x for x in unique if str(x.get("kind") or KIND_NEWS) != KIND_NEWS]
+
+    reserved = min(_SOCIAL_RESERVED_SLOTS, len(social))
+    kept_news = news[: _MAX_ARTICLES - reserved]
+    kept_social = social[: _MAX_ARTICLES - len(kept_news)]
+    return kept_news + kept_social
 
 
 def get_news(symbol: str) -> list[dict[str, Any]]:

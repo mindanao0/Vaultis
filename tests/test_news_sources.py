@@ -122,6 +122,47 @@ class TestDedupAndCap:
         assert sum(1 for a in out if a["kind"] == "news") == 5
         assert [a["kind"] for a in out[:5]] == ["news"] * 5
 
+    def test_social_keeps_its_reserved_slots_when_news_overflows(
+        self, monkeypatch, _no_network
+    ):
+        """ข่าวจริงล้นเพดานต้องไม่กวาดโซเชียลหายเกลี้ยง (อาการที่เจอตอนเปิด NewsAPI)."""
+        monkeypatch.setattr(
+            nf, "fetch_yahoo_rss", lambda _s: [_article(f"n{i}", "news") for i in range(40)]
+        )
+        monkeypatch.setattr(
+            nf, "fetch_stocktwits", lambda _s: [_article(f"s{i}", "social") for i in range(20)]
+        )
+
+        out = nf.get_news("VOO")
+        assert len(out) == nf._MAX_ARTICLES
+        assert sum(1 for a in out if a["kind"] == "social") == nf._SOCIAL_RESERVED_SLOTS
+        # ข่าวจริงยังต้องมาก่อนโซเชียลเหมือนเดิม
+        assert [a["kind"] for a in out[:25]] == ["news"] * 25
+
+    def test_no_social_means_news_takes_every_slot(self, monkeypatch, _no_network):
+        """ไม่มีโซเชียลเลย = ห้ามกันช่องว่างเปล่าไว้ ข่าวจริงต้องได้ครบ 30."""
+        monkeypatch.setattr(
+            nf, "fetch_yahoo_rss", lambda _s: [_article(f"n{i}", "news") for i in range(40)]
+        )
+
+        out = nf.get_news("VOO")
+        assert len(out) == nf._MAX_ARTICLES
+        assert all(a["kind"] == "news" for a in out)
+
+    def test_social_below_quota_returns_leftover_to_news(self, monkeypatch, _no_network):
+        """โซเชียลมีไม่ถึงโควตา ช่องที่เหลือต้องตกเป็นของข่าวจริง."""
+        monkeypatch.setattr(
+            nf, "fetch_yahoo_rss", lambda _s: [_article(f"n{i}", "news") for i in range(40)]
+        )
+        monkeypatch.setattr(
+            nf, "fetch_stocktwits", lambda _s: [_article(f"s{i}", "social") for i in range(2)]
+        )
+
+        out = nf.get_news("VOO")
+        assert len(out) == nf._MAX_ARTICLES
+        assert sum(1 for a in out if a["kind"] == "social") == 2
+        assert sum(1 for a in out if a["kind"] == "news") == 28
+
 
 class TestKindLabels:
     def test_stocktwits_and_reddit_are_social_not_news(self, monkeypatch):
