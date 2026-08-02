@@ -31,6 +31,10 @@ def _offline(monkeypatch):
         nf, "fetch_yahoo_rss_status", lambda _s: ([], nf._source_status("Yahoo Finance", nf.KIND_NEWS, nf.STATUS_OFF))
     )
     monkeypatch.setattr(
+        nf, "fetch_google_news_status",
+        lambda _s: ([], nf._source_status("Google News", nf.KIND_NEWS, nf.STATUS_OFF)),
+    )
+    monkeypatch.setattr(
         nf, "fetch_newsapi_status", lambda _s, _k: ([], nf._source_status("NewsAPI", nf.KIND_NEWS, nf.STATUS_OFF))
     )
     monkeypatch.setattr(

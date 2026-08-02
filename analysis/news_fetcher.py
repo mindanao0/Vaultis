@@ -1,4 +1,4 @@
-"""ดึงข่าว **ที่เกี่ยวกับสัญลักษณ์นั้นจริง ๆ** จาก Yahoo Finance, NewsAPI, Reddit และ StockTwits.
+"""ดึงข่าว **ที่เกี่ยวกับสัญลักษณ์นั้นจริง ๆ** จาก Yahoo Finance, Google News, NewsAPI, Reddit และ StockTwits.
 
 เดิม ``get_news`` ยัดฟีด RSS ข่าวเศรษฐกิจไทย (Settrade/Thairath) เข้าไปทุกสัญลักษณ์
 โดยไม่กรอง — ข่าวหุ้นไทยชุดเดียวกันจึงกลายเป็น "ข่าวของ" VOO/SCHD/QQQM/XLV/GLDM
@@ -6,7 +6,7 @@
 ตอนนี้ทุกแหล่งใน ``get_news`` ผูกกับสัญลักษณ์ที่ขอเสมอ
 
 แต่ละรายการมี ``kind``:
-- ``news``   — ข่าวจากสำนักข่าว (Yahoo Finance RSS, NewsAPI)
+- ``news``   — ข่าวจากสำนักข่าว (Yahoo Finance RSS, Google News RSS, NewsAPI)
 - ``social`` — ความเห็นนักลงทุนรายย่อย (Reddit, StockTwits) **ไม่ใช่ข่าว**
   แยกไว้เพื่อไม่ให้ผู้อ่านผลเข้าใจว่าโพสต์เชียร์หุ้นคือรายงานข่าว
 
@@ -26,6 +26,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 import feedparser
 import praw
@@ -40,6 +41,10 @@ KIND_SOCIAL = "social"
 # ฟีดข่าวราย ticker ของ Yahoo — ไม่ต้องใช้ API key จึงเป็นแหล่ง "ข่าวจริง" ตัวเดียว
 # ที่ทำงานได้ทันทีโดยไม่ต้องตั้งค่าอะไรเพิ่ม
 YAHOO_RSS_TEMPLATE = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+# Google News: ฟรี ไม่ต้องใช้ key — ค้นด้วย "<SYM> ETF" (ดู fetch_google_news_status)
+GOOGLE_NEWS_RSS_TEMPLATE = (
+    "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+)
 
 _NEWSAPI_URL = "https://newsapi.org/v2/everything"
 _STOCKTWITS_STREAM_URL = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
@@ -300,6 +305,30 @@ def fetch_yahoo_rss(symbol: str) -> list[dict[str, Any]]:
     return fetch_yahoo_rss_status(symbol)[0]
 
 
+def fetch_google_news_status(symbol: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """ข่าวราย ticker จาก Google News; คืน ``(รายการ, สถานะ)`` ไม่ throw.
+
+    ไม่ต้องใช้ API key และไม่ต้องขออนุมัติใคร ต่อคำค้นด้วย ``"<SYM> ETF"`` เพื่อกัน
+    ตัวย่อไปชนคำทั่วไป (เช่น VOO/XLV) — วัดแล้วหัวข้อที่เอ่ยถึงสัญลักษณ์จริง
+    ~74/101 (VOO) และ ~28/72 (GLDM) ซึ่งเป็นตัวเลขที่ต่ำกว่าความจริงเพราะบางหัวข้อ
+    พูดถึงกองโดยไม่พิมพ์ตัวย่อ
+    """
+    name = "Google News"
+    sym = (symbol or "").strip()
+    if not sym:
+        return [], _source_status(name, KIND_NEWS, STATUS_OFF, 0, "ไม่ได้ระบุสัญลักษณ์")
+    return fetch_rss_status(
+        GOOGLE_NEWS_RSS_TEMPLATE.format(query=quote_plus(f"{sym} ETF")),
+        kind=KIND_NEWS,
+        source_name=name,
+    )
+
+
+def fetch_google_news(symbol: str) -> list[dict[str, Any]]:
+    """ข่าวราย ticker จาก Google News; ล้มเหลวคืน [] ไม่ throw."""
+    return fetch_google_news_status(symbol)[0]
+
+
 def _parse_sort_key(published_at: str) -> datetime:
     if not published_at:
         return datetime.min.replace(tzinfo=timezone.utc)
@@ -362,6 +391,7 @@ def get_news(symbol: str) -> list[dict[str, Any]]:
 
     merged: list[dict[str, Any]] = []
     merged.extend(fetch_yahoo_rss(symbol))
+    merged.extend(fetch_google_news(symbol))
     merged.extend(fetch_newsapi(symbol, api_key))
     merged.extend(fetch_reddit(symbol))
     merged.extend(fetch_stocktwits(symbol))
@@ -385,6 +415,7 @@ def get_news_with_status(symbol: str) -> dict[str, Any]:
     sources: list[dict[str, Any]] = []
     for items, status in (
         fetch_yahoo_rss_status(symbol),
+        fetch_google_news_status(symbol),
         fetch_newsapi_status(symbol, api_key),
         fetch_reddit_status(symbol),
         fetch_stocktwits_status(symbol),

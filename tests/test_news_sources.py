@@ -25,6 +25,7 @@ def _article(url: str, kind: str, published_at: str = "") -> dict:
 def _no_network(monkeypatch):
     """ตัดทุกแหล่งเป็นค่าว่าง แล้วให้แต่ละเทสต์เปิดเฉพาะแหล่งที่สนใจ."""
     monkeypatch.setattr(nf, "fetch_yahoo_rss", lambda _s: [])
+    monkeypatch.setattr(nf, "fetch_google_news", lambda _s: [])
     monkeypatch.setattr(nf, "fetch_newsapi", lambda _s, _k: [])
     monkeypatch.setattr(nf, "fetch_reddit", lambda _s: [])
     monkeypatch.setattr(nf, "fetch_stocktwits", lambda _s: [])
@@ -34,13 +35,20 @@ class TestSourcesAreSymbolScoped:
     def test_every_source_receives_the_requested_symbol(self, monkeypatch, _no_network):
         seen: list[str] = []
         monkeypatch.setattr(nf, "fetch_yahoo_rss", lambda s: seen.append(f"yahoo:{s}") or [])
+        monkeypatch.setattr(nf, "fetch_google_news", lambda s: seen.append(f"google:{s}") or [])
         monkeypatch.setattr(nf, "fetch_newsapi", lambda s, _k: seen.append(f"newsapi:{s}") or [])
         monkeypatch.setattr(nf, "fetch_reddit", lambda s: seen.append(f"reddit:{s}") or [])
         monkeypatch.setattr(nf, "fetch_stocktwits", lambda s: seen.append(f"stocktwits:{s}") or [])
 
         nf.get_news("QQQM")
 
-        assert seen == ["yahoo:QQQM", "newsapi:QQQM", "reddit:QQQM", "stocktwits:QQQM"]
+        assert seen == [
+            "yahoo:QQQM",
+            "google:QQQM",
+            "newsapi:QQQM",
+            "reddit:QQQM",
+            "stocktwits:QQQM",
+        ]
 
     def test_no_general_thai_rss_feeds_remain(self):
         """ฟีดข่าวทั่วไปต้องไม่กลับเข้ามาใน path ราย ticker อีก."""
@@ -53,6 +61,27 @@ class TestSourcesAreSymbolScoped:
     def test_empty_symbol_yields_no_yahoo_call(self):
         assert nf.fetch_yahoo_rss("") == []
         assert nf.fetch_yahoo_rss("   ") == []
+
+    def test_google_news_query_is_symbol_scoped_and_url_encoded(self, monkeypatch):
+        """คำค้นต้องผูกกับสัญลักษณ์และ encode ช่องว่าง ไม่งั้น URL พังหรือได้ข่าวมั่ว."""
+        got: dict[str, str] = {}
+
+        def _spy(url, kind=nf.KIND_NEWS, source_name="RSS"):
+            got["url"], got["kind"], got["name"] = url, kind, source_name
+            return [], nf._source_status(source_name, kind, nf.STATUS_OK, 0)
+
+        monkeypatch.setattr(nf, "fetch_rss_status", _spy)
+        nf.fetch_google_news_status("QQQM")
+
+        assert "q=QQQM+ETF" in got["url"], got["url"]
+        assert got["kind"] == nf.KIND_NEWS, "Google News เป็นข่าวจริง ไม่ใช่โซเชียล"
+        assert got["name"] == "Google News"
+
+    def test_google_news_empty_symbol_is_off_not_error(self):
+        """ไม่ระบุสัญลักษณ์ = off (ไม่ใช่ความล้มเหลว) และต้องไม่ยิงเน็ต."""
+        items, status = nf.fetch_google_news_status("  ")
+        assert items == []
+        assert status["status"] == nf.STATUS_OFF
 
 
 class TestNewsRankedAboveSocial:
