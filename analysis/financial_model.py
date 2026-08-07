@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from analysis.returns import RETURN_WINDOWS, period_return_pct
 from analysis.ta_compat import ta
 from technical import signal_rules
 from utils.cache import cache_data_1h
@@ -22,6 +23,13 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _round_or_none(value: float, digits: int) -> float | None:
+    """ปัดเศษ แต่ถ้าค่าเป็น ``NaN`` คืน ``None`` — "คำนวณไม่ได้" ต้องไม่กลายเป็นตัวเลข (C1)."""
+    if value is None or pd.isna(value):
+        return None
+    return round(float(value), digits)
 
 
 def _close_series(hist: pd.DataFrame, ticker: str) -> pd.Series:
@@ -91,7 +99,9 @@ def calculate_cash_flow(ticker: str) -> dict[str, Any]:
     info = t.info or {}
     close = _download_close(ticker, "5y")
     annual_last = close.resample("YE").last()
-    annual_returns = annual_last.pct_change().dropna()
+    # fill_method=None (B11): ปีที่ไม่มีราคาเลยต้องเป็น NaN แล้วถูก dropna ทิ้ง
+    # ไม่ใช่ ffill จนกลายเป็นผลตอบแทน 0.00% ที่ไปถ่วง 5y_avg_return / 5y_return_std
+    annual_returns = annual_last.pct_change(fill_method=None).dropna()
     return {
         "dividend_per_share": info.get("dividendRate", 0) or 0,
         "5y_avg_return": _safe_float(annual_returns.mean(), 0.0),
@@ -116,7 +126,7 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
         current_price = _safe_float(close.iloc[-1], 0.0)
 
     annual_last = close.resample("YE").last()
-    annual_returns = annual_last.pct_change().dropna()
+    annual_returns = annual_last.pct_change(fill_method=None).dropna()  # B11
     tail_mean = _safe_float(annual_returns.tail(3).mean(), 0.0) if len(annual_returns) else 0.0
     growth_rate_high = min(tail_mean, 0.12)
     growth_rate_high = max(growth_rate_high, 0.04)
@@ -223,14 +233,25 @@ def _timing_score(price: float, ma200: float, rsi: float) -> int:
     return 20 if rsi < 50 else 10
 
 
-def _momentum_score(return_1m_pct: float, return_3m_pct: float) -> int:
-    """โมเมนตัม (0-20)."""
+def _momentum_score(return_1m_pct: float, return_3m_pct: float) -> tuple[int | None, int]:
+    """โมเมนตัม (0-20) พร้อมเพดานที่ใช้ได้จริง — คืน ``(คะแนน, เพดาน)``.
+
+    หน้าต่างที่คำนวณไม่ได้ (``NaN``) ถูกตัดออกจาก**ทั้งคะแนนและเพดาน**
+    แบบเดียวกับคะแนนปันผลที่หายไป — ไม่ใช่นับเป็น "ไม่บวก" ซึ่งเท่ากับเดา (C1)
+    คืน ``(None, 0)`` เมื่อไม่มีหน้าต่างไหนใช้ได้เลย
+    """
+    half = MOMENTUM_MAX // 2
     score = 0
-    if return_1m_pct > 0:
-        score += 10
-    if return_3m_pct > 0:
-        score += 10
-    return score
+    max_pts = 0
+    for value in (return_1m_pct, return_3m_pct):
+        if value is None or pd.isna(value):
+            continue
+        max_pts += half
+        if value > 0:
+            score += half
+    if max_pts == 0:
+        return None, 0
+    return score, max_pts
 
 
 def _dividend_score(div_yield: float) -> int:
@@ -310,21 +331,27 @@ def score_from_prices(
     if any(pd.isna(v) for v in (price, ma50, ma200, rsi)):
         raise ValueError(f"{ticker}: คำนวณตัวชี้วัด MA/RSI ไม่ได้")
 
-    returns = closes.pct_change()
-    return_1m = _safe_float(returns.tail(21).sum() * 100, 0.0)
-    return_3m = _safe_float(returns.tail(63).sum() * 100, 0.0)
+    # ผลตอบแทนทบต้นของช่วง ไม่ใช่ผลรวมรายวัน (FIX_PLAN ข้อ 1.5)
+    # หน้าต่างและสูตรมาจาก analysis/returns.py แหล่งเดียวกับตาราง Returns (C7)
+    return_1m = period_return_pct(closes, RETURN_WINDOWS["1M"])
+    return_3m = period_return_pct(closes, RETURN_WINDOWS["3M"])
 
     trend_s = _trend_score(price, ma50, ma200)
     timing_s = _timing_score(price, ma200, rsi)
-    mom_s = _momentum_score(return_1m, return_3m)
+    mom_s, mom_max = _momentum_score(return_1m, return_3m)
 
-    max_score = TREND_MAX + TIMING_MAX + MOMENTUM_MAX
+    max_score = TREND_MAX + TIMING_MAX + mom_max
     div_s = 0
     if div_yield is not None:
         div_s = _dividend_score(div_yield)
         max_score += DIVIDEND_MAX
 
-    total = trend_s + timing_s + mom_s + div_s
+    # โมเมนตัมที่คำนวณไม่ได้ (``mom_s is None``) บวก 0 เข้าผลรวมได้ **เพราะ
+    # ``mom_max`` เป็น 0 ไปแล้ว ตัวหารจึงหดตามพร้อมกัน** — ไม่ใช่เพราะ 0 คือคำตอบ
+    # เขียนเป็น ``if ... is not None`` ไม่ใช่ ``or 0``: ``or`` กลืน 0 ที่เป็นคะแนนจริง
+    # (มีข้อมูลแต่ติดลบทั้งสองหน้าต่าง) เข้ากับ None ที่แปลว่าไม่มีข้อมูล — แยกไม่ออก
+    # และเป็นสำนวนเดียวกับที่ทำให้ ``or 0.0`` ดัก NaN ไม่ได้ในข้อ 1.6
+    total = trend_s + timing_s + (mom_s if mom_s is not None else 0) + div_s
     total_pct = round(total * 100.0 / max_score, 1)
     central = signal_rules.dca_signal(price, ma50, ma200, rsi)
 
@@ -335,11 +362,14 @@ def score_from_prices(
         "ma50": round(ma50, 2),
         "ma200": round(ma200, 2),
         "rsi": round(rsi, 2),
-        "return_1m_pct": round(return_1m, 2),
-        "return_3m_pct": round(return_3m, 2),
+        # NaN = คำนวณไม่ได้ → คืน None ("ไม่มีข้อมูล") ไม่ใช่ 0 ซึ่งอ่านเป็น "ไม่ขึ้นไม่ลง"
+        "return_1m_pct": _round_or_none(return_1m, 2),
+        "return_3m_pct": _round_or_none(return_3m, 2),
         "trend_score": trend_s,
         "timing_score": timing_s,
         "momentum_score": mom_s,
+        "momentum_available": mom_s is not None,
+        "momentum_max": mom_max,
         "dividend_score": div_s,
         "dividend_available": div_yield is not None,
         "total_score": total,
@@ -410,11 +440,18 @@ def calculate_allocation(
     ถูกกระจายให้ตัวที่เหลือโดยอัตโนมัติ (ห้ามเดาราคา/คะแนนแทน — AUDIT.md C1)
 
     เศษเงินจากการปัดหลักร้อยถูกแจกด้วยวิธี largest-remainder เพื่อให้ใช้งบครบ
+
+    งบน้อยกว่าหนึ่งก้อน (``ALLOCATION_UNIT_THB``) → ``ValueError``: เดิมคืน ``{}``
+    ซึ่งหน้าตาเหมือน "ไม่มี ETF ที่มีข้อมูล" ทำให้ปลายทางรายงานสาเหตุผิดเป็น
+    "ดึงข้อมูลไม่ได้" ทั้งที่ข้อมูลครบทุกตัว (AUDIT_2026-08-06 D3.10)
     """
     from portfolio.targets import get_target_weights
 
-    if budget_thb <= 0:
-        return {}
+    if budget_thb < ALLOCATION_UNIT_THB:
+        raise ValueError(
+            f"งบ {budget_thb:,.0f} บาท น้อยกว่าหน่วยจัดสรรขั้นต่ำ {ALLOCATION_UNIT_THB} บาท "
+            "— จัดสรรไม่ได้ (ไม่เกี่ยวกับความพร้อมของข้อมูล)"
+        )
 
     def _pct(v: dict[str, Any]) -> float:
         return _safe_float(v.get("total_pct"), -1.0)

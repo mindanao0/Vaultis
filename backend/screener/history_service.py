@@ -20,6 +20,11 @@ DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 # DDL เคยเป็นแค่คอมเมนต์บนหัวไฟล์ ไม่มีโค้ดไหนสร้างตารางให้เลย — ฐานใหม่ทุกใบจึงเก็บ
 # ประวัติไม่ได้ แล้วไปโผล่เป็น `save_results error: relation ... does not exist` ในล็อก
 # เท่านั้น (`scripts/init_db.py` เรียกฟังก์ชันด้านล่างแล้ว)
+# ``created_at`` ต้องเป็น TIMESTAMPTZ — เดิมเป็น ``TIMESTAMP`` (timestamp without time
+# zone) แล้วเก็บผลของ ``NOW()`` ในคอนเทนเนอร์ที่ตั้ง ``TZ=Asia/Bangkok`` ⇒ ค่าที่
+# driver คืนกลับมาเป็น datetime ไร้ tz ที่จริง ๆ แล้วเป็นเวลาไทย ผู้อ่านนำไปเทียบกับ
+# cutoff แบบ aware ไม่ได้ (``TypeError: can't compare offset-naive and offset-aware``)
+# ⇒ รายงานรายเดือนตายทั้งงานทันทีที่มีสัญญาณแรก (AUDIT_2026-08-06 H3)
 SCREENER_HISTORY_DDL = """
 CREATE TABLE IF NOT EXISTS screener_history (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -28,7 +33,7 @@ CREATE TABLE IF NOT EXISTS screener_history (
     matched_rules TEXT,
     price FLOAT,
     signal_strength FLOAT,
-    created_at TIMESTAMP DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now()
 )
 """
 
@@ -37,14 +42,45 @@ CREATE INDEX IF NOT EXISTS ix_screener_history_symbol_created_at
     ON screener_history (symbol, created_at)
 """
 
+# timezone ที่ค่าเก่า (คอลัมน์ไร้ tz) ถูกบันทึกไว้จริง — คอนเทนเนอร์ postgres ตั้ง
+# ``TZ: Asia/Bangkok`` ใน docker-compose.yml จึงต้องตีความค่าเก่าเป็นเวลาไทย
+# ผู้อ่านที่ยังเจอ datetime ไร้ tz (ฐานเก่าที่ยังไม่ได้ migrate) ใช้ค่านี้เช่นกัน
+LEGACY_NAIVE_TZ = "Asia/Bangkok"
+
+SCREENER_HISTORY_TZ_MIGRATION_DDL = f"""
+ALTER TABLE screener_history
+    ALTER COLUMN created_at TYPE TIMESTAMPTZ
+    USING created_at AT TIME ZONE '{LEGACY_NAIVE_TZ}'
+"""
+
+_CREATED_AT_TYPE_SQL = """
+SELECT data_type FROM information_schema.columns
+WHERE table_name = 'screener_history' AND column_name = 'created_at'
+"""
+
+# ไม่ได้ตั้ง DATABASE_URL = ระบบไม่ได้เปิดใช้ประวัติ ไม่ใช่ความล้มเหลว
+# (CLAUDE.md: ``DATABASE_URL`` เป็น optional) แต่ก็ไม่ใช่ "ไม่มีสัญญาณ" เช่นกัน
+HISTORY_OFF_REASON = "ไม่ได้ตั้ง DATABASE_URL — ระบบไม่ได้เก็บประวัติ screener ไว้"
+
 
 def create_screener_history_table() -> None:
-    """สร้างตาราง screener_history; ไม่ตั้ง ``DATABASE_URL`` = โยนออกไปให้ผู้เรียกเห็น."""
+    """สร้างตาราง screener_history; ไม่ตั้ง ``DATABASE_URL`` = โยนออกไปให้ผู้เรียกเห็น.
+
+    ตารางที่สร้างไว้ก่อนหน้านี้จะถูก migrate ``created_at`` เป็น ``TIMESTAMPTZ``
+    โดยตีความค่าเดิมเป็นเวลาไทย (ตรงกับ ``TZ`` ของคอนเทนเนอร์ที่เขียนค่าเหล่านั้น)
+    """
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set in .env")
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     with engine.begin() as conn:
         conn.execute(text(SCREENER_HISTORY_DDL))
+        current_type = conn.execute(text(_CREATED_AT_TYPE_SQL)).scalar()
+        if current_type == "timestamp without time zone":
+            print(
+                "[screener_history] migrate created_at → TIMESTAMPTZ "
+                f"(ตีความค่าเดิมเป็น {LEGACY_NAIVE_TZ})"
+            )
+            conn.execute(text(SCREENER_HISTORY_TZ_MIGRATION_DDL))
         conn.execute(text(SCREENER_HISTORY_INDEX_DDL))
     engine.dispose()
 
@@ -85,9 +121,19 @@ class ScreenerHistoryService:
         except Exception as e:
             print(f"[screener_history] save_results error: {e}")
 
-    async def get_history(self, symbol: str = None, limit: int = 50) -> list[dict]:
+    async def get_history_with_status(
+        self, symbol: str = None, limit: int = 50
+    ) -> tuple[list[dict], dict]:
+        """ประวัติ + สถานะของแหล่งข้อมูล.
+
+        คืน ``(rows, {"status": "ok"|"error"|"off", "detail": str})``
+        — ``off`` = ไม่ได้ตั้ง ``DATABASE_URL`` (ไม่ใช่ความล้มเหลว แต่ก็ไม่ใช่
+        "ไม่มีสัญญาณ") · ``error`` = ต่อฐานไม่ได้/คิวรีพัง ซึ่ง **ห้าม**ถูกอ่านเป็น
+        ลิสต์ว่างธรรมดา ไม่งั้นรายงานรายเดือนจะพิมพ์ "0 รายการ" ทั้งที่ยังไม่รู้เลย
+        ว่ามีกี่รายการ (AUDIT_2026-08-06 M-R3 · กฎ "ดึงไม่สำเร็จ ≠ ไม่มีข้อมูล")
+        """
         if self.engine is None:
-            return []
+            return [], {"status": "off", "detail": HISTORY_OFF_REASON}
 
         try:
             query = """
@@ -103,7 +149,14 @@ class ScreenerHistoryService:
             with self.engine.begin() as conn:
                 rows = conn.execute(text(query), params).mappings().all()
 
-            return [dict(row) for row in rows]
+            return [dict(row) for row in rows], {"status": "ok", "detail": ""}
         except Exception as e:
             print(f"[screener_history] get_history error: {e}")
-            return []
+            return [], {"status": "error", "detail": str(e)}
+
+    async def get_history(self, symbol: str = None, limit: int = 50) -> list[dict]:
+        """เฉพาะรายการ — ผู้เรียกที่ต้องแยก "ดึงไม่สำเร็จ" ออกจาก "ไม่มีข้อมูล"
+        ให้ใช้ :meth:`get_history_with_status` (สำนวนเดียวกับ ``analysis/news_fetcher``)
+        """
+        rows, _status = await self.get_history_with_status(symbol=symbol, limit=limit)
+        return rows

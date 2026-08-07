@@ -15,5 +15,10 @@ portfolio/data/transactions.csv
 # vaultis.db ไม่ได้ → backend crash-loop "unable to open database file"
 .docker-data/*
 !.docker-data/.gitkeep
-# alert ส่วนตัว — ห้าม track (repo เป็น public); โค้ดสร้างไฟล์เปล่าให้เองถ้าไม่มี
+# alert ส่วนตัว — ห้าม track (repo เป็น public)
+# .bak/.lock/.tmp คือไฟล์ข้างเคียงของการบันทึกแบบ atomic ใน alerts/price_alert.py
+# (.bak มีเนื้อ alert ของผู้ใช้เต็ม ๆ — หลุดไม่ได้เท่ากับตัวไฟล์หลัก)
 alerts/data/price_alerts.json
+alerts/data/price_alerts.json.bak
+alerts/data/price_alerts.json.lock
+alerts/data/price_alerts.json.tmp.*

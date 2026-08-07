@@ -45,7 +45,14 @@ class PriceAlertRead(PriceAlertBase):
         from_attributes = True
 
 
-class BacktestRequest(BaseModel):
+class PortfolioBacktestRequest(BaseModel):
+    """คำขอ backtest แบบน้ำหนักพอร์ต (POST /api/analysis/backtest).
+
+    เดิมชื่อ ``BacktestRequest`` ซึ่งชนกับ ``backend/models/backtest_models.BacktestRequest``
+    (กลยุทธ์ RSI+MACD ของ /api/backtest) ทำให้ openapi ต้องตั้งชื่อ component เป็น
+    ``backend__schemas__BacktestRequest`` และคนอ่าน /docs แยกสองอันนี้ไม่ออก
+    """
+
     initial_capital: float = Field(default=10000, gt=0)
     weights: dict[str, float]
 

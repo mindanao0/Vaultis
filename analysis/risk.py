@@ -14,11 +14,18 @@ DEFAULT_RISK_FREE_RATE = 0.02
 
 
 def calculate_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
-    """คำนวณผลตอบแทนรายวันจากราคา Adjusted Close."""
+    """คำนวณผลตอบแทนรายวันจากราคา Adjusted Close.
+
+    ``fill_method=None`` บังคับไว้ (AUDIT_2026-08-06 B11) — ค่าเริ่มต้นของ pandas คือ
+    ``'pad'`` ซึ่ง **forward-fill ราคาก่อนคำนวณ** วันที่ ETF ตัวหนึ่งไม่มีแท่งจึงกลายเป็น
+    ผลตอบแทน 0.00% พอดีแล้วไหลเข้า Volatility/Sharpe/Correlation = กุตัวเลขบนเส้นทางราคา
+    วันที่ไม่มีข้อมูลต้องคง ``NaN`` ไว้ให้ ``dropna``/``skipna`` จัดการต่ออย่างซื่อสัตย์
+    (ผู้เรียกที่*ตั้งใจ*จะเติมช่องว่างต้อง ``ffill`` เองที่จุดใช้งาน เช่น ``etf_service``)
+    """
     try:
         if price_df.empty:
             raise ValueError("price_df ว่าง ไม่สามารถคำนวณผลตอบแทนรายวันได้")
-        return price_df.sort_index().pct_change().dropna(how="all")
+        return price_df.sort_index().pct_change(fill_method=None).dropna(how="all")
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณผลตอบแทนรายวัน: {exc}") from exc
 

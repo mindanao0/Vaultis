@@ -23,7 +23,7 @@
 | ข้อมูลราคา | yfinance |
 | เทคนิคอล | pandas-ta, ta |
 | แดชบอร์ด | Streamlit, Plotly |
-| AI | Groq API, Google GenAI (ตามการใช้งานในโมดูล) |
+| AI | Claude Sonnet 5 ผ่าน `ANTHROPIC_API_KEY` — ผู้ให้บริการเดียว ไม่มี fallback (ทุกการเรียกผ่าน `analysis/llm.py`) |
 | มาโคร | FRED API (`fredapi`) |
 | งานตามเวลา | APScheduler (ใน backend), `schedule` (ใน `main.py`), GitHub Actions |
 | ทดสอบ | `pytest` (โฟลเดอร์ `tests/`) |
@@ -89,7 +89,8 @@ Vaultis/
 
 ### `backend/schemas.py`
 
-- Pydantic models: ธุรกรรม, price alert, คำขอ backtest/DCA, AI advice, generic/sentiment response
+- Pydantic models: ธุรกรรม, price alert, `PortfolioBacktestRequest` (คำขอ backtest แบบน้ำหนักพอร์ต) / DCA, AI advice, generic/sentiment response
+- คำขอ backtest ของกลยุทธ์ RSI+MACD อยู่คนละที่: `backend/models/backtest_models.py`
 
 ### `backend/models/`
 
@@ -101,14 +102,14 @@ Vaultis/
 | ไฟล์ | บทบาทโดยย่อ |
 |------|----------------|
 | `etf.py` | `/api/etf/*` — ราคา, snapshot รายวัน, ผลตอบแทน, ความเสี่ยง, correlation, technical |
-| `analysis.py` | `/api/backtest`, `/api/dca/simulate`, `/api/macro`, DCF, `/api/analysis/full` |
+| `analysis.py` | `/api/analysis/backtest` (backtest แบบน้ำหนักพอร์ต), `/api/dca/simulate`, `/api/macro`, DCF, `/api/analysis/full` |
 | `portfolio.py` | `/api/portfolio` — สรุป, holdings, history, เพิ่ม/ลบธุรกรรม |
 | `alerts.py` | `/api/alerts` — CRUD price alerts + `/check` |
 | `ai.py` | `/api/ai/advice`, history, suggest-alerts |
 | `sentiment.py` | `/api/sentiment/{symbol}` |
 | `screener.py` | `/api/screener/run`, presets, custom |
 | `forecast.py` | `/api/forecast/{symbol}` |
-| `backtest.py` | `/api/backtest` (response model เฉพาะ) |
+| `backtest.py` | `/api/backtest` — กลยุทธ์ RSI+MACD ด้วย vectorbt (`?include_ai=true`, `run_optimization` → `best_params`) |
 | `etf_analysis.py` | `/api/etf/compare`, `/api/etf/{symbol}` |
 | `websocket.py` | WebSocket `/ws/prices` |
 | `__init__.py` | แพ็กเกจ router |
@@ -149,7 +150,7 @@ Vaultis/
 | `correlation.py` | เมทริกซ์ความสัมพันธ์ |
 | `macro.py` | สแนปชอตมาโคร (เชื่อม FRED ฯลฯ) |
 | `financial_model.py` | คะแนน ETF, DCF, การจัดสรร — ใช้ร่วมกับ AI Advisor |
-| `ai_advisor.py` | คำแนะนำผ่าน Groq ตาม prompt ระบบ Vaultis + ส่ง Discord ได้ |
+| `ai_advisor.py` | คำแนะนำผ่าน `analysis/llm.py` (Claude) ตาม prompt ระบบ Vaultis + ส่ง Discord ได้ |
 | `forecast_chart.py`, `forecaster.py` | พยากรณ์/กราฟ (เช่น Prophet ตาม dependency) |
 | `backtester.py`, `backtest_engine.py`, `backtest_summary.py` | กรอบแบ็กเทสต์และสรุปผล |
 | `ta_compat.py` | ความเข้ากันได้กับ pandas-ta |
@@ -226,9 +227,13 @@ Vaultis/
 
 ## การทดสอบ (`tests/`)
 
-- `test_backtest.py`, `test_forecast.py`, `test_etf_analysis.py`, `test_pipeline.py`, `test_screener.py` — ครอบคลุม pipeline หลักของโปรเจกต์
+- `test_backtest.py`, `test_forecast.py`, `test_etf_analysis.py`, `test_screener.py` — pipeline หลักบนข้อมูลจริง **ต้องต่อเน็ต** จึงติดมาร์ก `network` และถูกกันออกจากการรันปกติ
+- `test_route_uniqueness.py` — กันคู่ `(path, method)` ซ้ำทั้งแอป (route ที่ชนกันจะเข้าไม่ถึงเงียบ ๆ แต่ `/docs` ยังโฆษณาไว้)
+- `test_offline_collection.py` — ตรึงว่าชุดเทสต์ collect และรันได้โดยไม่ต้องมีเน็ต
+- `pipeline_smoke.py` — **ไม่ใช่เทสต์** (ตั้งใจไม่ให้ชื่อขึ้นต้นด้วย `test_`) เรียก `get_ai_advice()` = เสียเงินจริง รันด้วยมือเท่านั้น: `python tests/pipeline_smoke.py`
 
-รันโดยทั่วไป: `pytest` จาก root (ตรวจสอบว่า environment พร้อมสำหรับเทสต์ที่เรียก API ภายนอก)
+รันโดยทั่วไป: `pytest` จาก root — ผลลัพธ์ไม่ขึ้นกับเน็ตหรือเซิร์ฟเวอร์ภายนอก
+เรียกเทสต์ที่พึ่งเน็ตกลับมาเมื่อจงใจ: `pytest -m network` (ทั้งหมด: `pytest -m "network or not network"`)
 
 ---
 
@@ -245,7 +250,7 @@ Vaultis/
 
 ### `.env` / `.env.example`
 
-ตัวแปรที่เกี่ยวข้องกับโปรเจกต์รวมถึง: `DISCORD_WEBHOOK_URL`, `GOOGLE_API_KEY`, `FRED_API_KEY`, `GROQ_API_KEY`, `DCA_*`, `BACKEND_URL`, `DATABASE_URL`, คีย์ Reddit/NewsAPI ตาม workflow เซนติเมนต์
+ตัวแปรที่เกี่ยวข้องกับโปรเจกต์รวมถึง: `ANTHROPIC_API_KEY` (คีย์ LLM ตัวเดียวของระบบ), `VAULTIS_LLM_AUTO`, `DISCORD_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, `FRED_API_KEY`, `NEWSAPI_KEY`, คีย์ Reddit, `BACKEND_URL`, `DATABASE_URL`, `VAULTIS_API_KEY`, `VAULTIS_ALLOWED_ORIGINS` — รายการเต็มพร้อมคำอธิบายอยู่ใน `.env.example`
 
 ---
 
@@ -280,7 +285,7 @@ Vaultis/
 
 1. **ราคา/ย้อนหลัง:** yfinance → `data/fetcher.py` / บริการ backend → API หรือ Streamlit  
 2. **พอร์ต:** ธุรกรรมใน SQLite → `portfolio_service` / แดชบอร์ด  
-3. **คำแนะนำ:** โมเดลการเงิน + Groq → `ai_advisor` → Discord หรือ API  
+3. **คำแนะนำ:** โมเดลการเงิน (ตัวเลขทั้งหมดคำนวณใน Python) + Claude ผ่าน `analysis/llm.py` → `ai_advisor` → Discord หรือ API  
 4. **แจ้งเตือน:** `main.py` / GitHub Actions / APScheduler screener → Discord หรือ Telegram (สกรีนเนอร์)
 
 ---

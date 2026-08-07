@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 
 from backend.screener.engine import ScreenerEngine
@@ -11,7 +13,11 @@ from backend.screener.models import (
 from backend.screener.notifier import ScreenerNotifier
 from backend.screener.presets import PRESETS, get_preset
 
-router = APIRouter(prefix="/api", tags=["Screener"])
+from ..responses import UTF8JSONResponse
+
+# default_response_class: คำอธิบายพรีเซ็ต/สรุปผลเป็นภาษาไทย ต้องประกาศ charset
+# ให้ตรงตามที่ CLAUDE.md กำหนด — AUDIT_2026-08-06 D3.2
+router = APIRouter(prefix="/api", tags=["Screener"], default_response_class=UTF8JSONResponse)
 
 _engine = ScreenerEngine()
 _history = ScreenerHistoryService()
@@ -22,7 +28,9 @@ _notifier = ScreenerNotifier()
 async def run_screener(payload: ScreenerRunRequest):
     try:
         preset = get_preset(payload.preset)
-        results = _engine.run(payload.symbols, preset)
+        # yfinance เป็น sync I/O — ต้องออกจาก event loop ไม่งั้น API ทั้งตัวค้าง
+        # ระหว่างสแกน (AUDIT_2026-08-06 ข้อ B6.1 — กฎเดียวกับ routers/websocket.py)
+        results = await asyncio.to_thread(_engine.run, payload.symbols, preset)
         if results:
             await _history.save_results(results, payload.preset)
         ai_summary = await _notifier.build_ai_summary(results, payload.preset)
@@ -30,6 +38,8 @@ async def run_screener(payload: ScreenerRunRequest):
             "results": [r.__dict__ for r in results],
             "ai_summary": ai_summary,
             "total_signals": len(results),
+            # สัญลักษณ์ที่ตรวจไม่ได้ — "ดึงไม่สำเร็จ" ≠ "ไม่มีสัญญาณ" (C1)
+            "errors": list(getattr(results, "errors", [])),
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -63,7 +73,11 @@ async def run_custom_screener(payload: CustomScreenerRequest):
             logic=(payload.logic or "AND").upper(),
             description="Custom screener preset",
         )
-        results = _engine.run(payload.symbols, preset)
-        return {"results": [r.__dict__ for r in results], "total_signals": len(results)}
+        results = await asyncio.to_thread(_engine.run, payload.symbols, preset)
+        return {
+            "results": [r.__dict__ for r in results],
+            "total_signals": len(results),
+            "errors": list(getattr(results, "errors", [])),
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"custom screener failed: {exc}") from exc

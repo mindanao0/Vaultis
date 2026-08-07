@@ -86,17 +86,29 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     merged["portfolio"]["risk_profile"] = (
         profile if profile in {"conservative", "moderate", "aggressive"} else "moderate"
     )
-    raw_targets = merged["portfolio"].get("target_weights") or {}
-    normalized_targets: dict[str, float] = {}
-    if isinstance(raw_targets, dict):
+    # AUDIT_2026-08-06 B10 — ที่นี่ทำได้แค่ "ทำให้คีย์เป็นตัวพิมพ์ใหญ่" เท่านั้น
+    # ห้ามตัดค่าทิ้ง: เดิมโค้ดข้ามค่าที่ไม่ใช่ตัวเลขและค่าที่ <= 0 ไปเงียบ ๆ ทำให้
+    # ``{"GLDM": 0}`` (ตั้งใจไม่ถือ) กับ ``{"VOO": -0.35}`` (พิมพ์ผิด) หายไปทั้งคู่
+    # แล้ว portfolio/targets.py คืน preset แทนโดยผู้ใช้ไม่รู้ตัว
+    # การตรวจความถูกต้องอยู่ที่ ``portfolio/targets.py`` ที่เดียว (โยน
+    # InvalidTargetWeights พร้อมข้อความไทย) — ``_normalize_config`` ห้าม raise
+    # เพราะ ``load_config()`` ครอบด้วย except แล้วจะกลืนเป็น DEFAULT_CONFIG
+    raw_targets = merged["portfolio"].get("target_weights")
+    if raw_targets is None or raw_targets == {}:
+        merged["portfolio"]["target_weights"] = {}
+    elif isinstance(raw_targets, dict):
+        preserved: dict[str, Any] = {}
         for key, value in raw_targets.items():
-            try:
-                weight = float(value)
-            except (TypeError, ValueError):
+            symbol = str(key).strip().upper()
+            if isinstance(value, bool):
+                preserved[symbol] = value  # bool ไม่ใช่น้ำหนัก — ให้ targets.py โวย
                 continue
-            if weight > 0:
-                normalized_targets[str(key).strip().upper()] = weight
-    merged["portfolio"]["target_weights"] = normalized_targets
+            try:
+                preserved[symbol] = float(value)
+            except (TypeError, ValueError):
+                preserved[symbol] = value  # เก็บของดิบไว้ให้ targets.py รายงานว่าผิดชนิด
+        merged["portfolio"]["target_weights"] = preserved
+    # ชนิดอื่น (list / str / ตัวเลข) ปล่อยผ่านทั้งก้อน ให้ targets.py เป็นคนบอกว่าผิดรูป
 
     default_page = str(merged["display"].get("default_page", "Overview")).strip() or "Overview"
     merged["display"]["default_page"] = default_page

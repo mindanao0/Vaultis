@@ -99,14 +99,16 @@ class TestLedgerRoundTrip:
 
         # อ่านผ่าน tracker (ช่องทางที่ dashboard/AI advisor ใช้) ต้องเห็นรายการเดียวกัน
         assert len(tracker.get_transactions()) == 1
-        assert len(portfolio_service.get_history()) == 1
+        # C2: get_history()/get_holdings() คืน dict ที่พก skipped_rows มาด้วยแล้ว
+        # (เดิมคืน list เปล่า ๆ ซึ่งทิ้ง .attrs ของ DataFrame = ตัดแถวเงียบ ๆ)
+        assert len(portfolio_service.get_history()["transactions"]) == 1
 
-        holdings = portfolio_service.get_holdings()
+        holdings = portfolio_service.get_holdings()["holdings"]
         assert holdings[0]["ticker"] == "VOO"
         assert holdings[0]["price_ok"] is True
 
         assert portfolio_service.delete_transaction(created["tx_id"]) is True
-        assert portfolio_service.get_history() == []
+        assert portfolio_service.get_history()["transactions"] == []
         assert portfolio_service.delete_transaction("ไม่มีอยู่จริง") is False
 
     def test_recorded_fee_is_not_overwritten(self, tmp_path, monkeypatch):
@@ -166,6 +168,12 @@ class TestDebtService:
         Debt(name="บัตรเครดิต", balance=50000, interest_rate=18.0, min_payment=2000),
         Debt(name="สินเชื่อรถ", balance=200000, interest_rate=5.0, min_payment=5000),
     ]
+    # H4: BASE มี min_payment คลุมดอกเบี้ยทุกงวด จึงเป็นเคสที่บั๊ก "นับเฉพาะดอกเบี้ยที่จ่ายไหว"
+    # ซ่อนตัวได้พอดี — ต้องมีชุดที่ min_payment < ดอกเบี้ยรายเดือนด้วย (3,000 < 200,000×26%/12)
+    NEG_AMORT = [
+        Debt(name="สินเชื่อบุคคล", balance=20000, interest_rate=8.0, min_payment=1000),
+        Debt(name="บัตรเครดิต", balance=200000, interest_rate=26.0, min_payment=3000),
+    ]
 
     def test_budget_below_minimums_is_rejected(self):
         """M10: เดิมจ่ายเกินงบเงียบ ๆ แล้วรายงานว่าหนี้หมด."""
@@ -180,6 +188,17 @@ class TestDebtService:
     def test_avalanche_pays_less_interest_than_snowball(self):
         cmp = debt_service.compare_methods(self.BASE, monthly_budget=10000)
         assert cmp.avalanche.total_interest <= cmp.snowball.total_interest
+
+    def test_avalanche_still_wins_under_negative_amortization(self):
+        """H4: เดิม invariant นี้ผ่านเพราะ BASE เลือกเคสที่ min คลุมดอกเบี้ยพอดี.
+
+        กับหนี้บัตรจริงที่ขั้นต่ำต่ำกว่าดอกเบี้ย ระบบเดิมรายงาน avalanche 208,772.50 >
+        snowball 207,920.76 (interest_saved = −851.74 = "snowball ถูกกว่า") ทั้งที่เงินสด
+        ที่จ่ายจริงบอกว่า snowball แพงกว่า 8,638.16 บาท
+        """
+        cmp = debt_service.compare_methods(self.NEG_AMORT, monthly_budget=6000)
+        assert cmp.avalanche.total_interest <= cmp.snowball.total_interest
+        assert cmp.interest_saved > 0
 
 
 class TestGoalService:

@@ -24,20 +24,26 @@ python main.py --job monthly_advice
 
 # Tests — test tooling lives in requirements-dev.txt (pytest.ini needs pytest-asyncio)
 pip install -r requirements.txt -r requirements-dev.txt
-pytest
-pytest tests/test_screener.py         # single file
+pytest                                # เทสต์ที่ต้องต่อเน็ตถูกกันออกอัตโนมัติ
+pytest tests/test_money_math.py       # single file
+pytest -m network                     # 4 ไฟล์ที่ยิง yfinance/Prophet จริง (ต้องมีเน็ต)
+pytest -m "network or not network"    # ทั้งหมด
 
 # Docker — postgres + backend + dashboard + scheduler (3 services from one image)
 cp .env.example .env                  # optional; compose runs without it
 docker compose up -d
 python scripts/init_db.py             # ครั้งเดียวต่อฐานใหม่: สร้าง 3 ตารางบน Postgres
-docker compose --profile dev run --rm tests
+# เทสต์ใน Docker — ต้อง mount repo ทับ /app เสมอ ไม่งั้นได้ "ผ่าน" จากโค้ดที่อบไว้ใน image
+docker compose --profile dev run --rm -v "$PWD:/app" tests
+docker compose --profile dev run --rm -v "$PWD:/app" tests pytest -q tests/test_money_math.py
 docker compose exec postgres pg_dump -U vaultis vaultis > backup.sql   # สำรอง Postgres
 ```
 
 No linter config is present. No build step required.
 
-**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Postgres is the one exception — it uses the named volume `pgdata`, not a bind mount**: the postgres image runs as its own uid inside the container and `initdb` fails on a directory owned by the host uid. Back it up with `pg_dump`, not by copying files. `DATABASE_URL` is set in `environment:` (not `env_file`) so containers reach it as `postgres:5432` while `.env` keeps the `localhost:5432` form for running outside Docker; the `tests` service clears it because the suite must pass with no database at all. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
+**The default test run must not need the internet.** `pytest.ini` sets `addopts = -m "not network"`, and the four suites that hit live yfinance/Prophet (`test_etf_analysis`, `test_screener`, `test_backtest`, `test_forecast`) carry `pytestmark = pytest.mark.network`. Before this, `test_etf_analysis.py` and `test_screener.py` called `asyncio.run(test())` at module level, so collection itself downloaded prices — offline the whole suite died with `Interrupted: 2 errors during collection` and not one test ran, while online the pass count depended on Yahoo's uptime (AUDIT_2026-08-06 §0-B). Never call a test body at module scope, and mark any new test that reaches the network. `tests/pipeline_smoke.py` is deliberately not named `test_*` — it calls `get_ai_advice()` and costs real money; run it by hand only. `tests/test_offline_collection.py` fails if any of this regresses.
+
+**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Postgres is the one exception — it uses the named volume `pgdata`, not a bind mount**: the postgres image runs as its own uid inside the container and `initdb` fails on a directory owned by the host uid. Back it up with `pg_dump`, not by copying files. `DATABASE_URL` is set in `environment:` (not `env_file`) so containers reach it as `postgres:5432` while `.env` keeps the `localhost:5432` form for running outside Docker; the `tests` service clears it because the suite must pass with no database at all. **The `tests` service must never see the real data.** It mounts no host volume and sets `VAULTIS_DB_PATH=/tmp/test_vaultis.db`, so SQLite lives inside the container and dies with `--rm`. It used to mount `./.docker-data:/data` while inheriting the image's `VAULTIS_DB_PATH=/data/vaultis.db`, so anything the suite ran that touched `SessionLocal` wrote straight through to the user's real goals/net-worth/reports database — and it did (AUDIT_2026-08-06 §0.1). `tests/test_db_isolation.py` fails if that mount or an in-`/data` path comes back. Note the run command mounts the repo at `/app`: that is the working tree, so the ledger CSV and `alerts/data/*.json` are writable during a test run — tests must stub those paths, never write the real files. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
 
 ## Architecture
 
@@ -97,7 +103,7 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 
 **AI explains, code computes.** All numbers — scores, DCA allocation, price-alert levels — are computed in Python. The LLM receives finished figures and only writes the explanation. Never parse numbers back out of model output.
 
-**LLM calls go through `analysis/llm.py`.** `chat_text()` calls Claude Sonnet 5 via `ANTHROPIC_API_KEY` — **single provider, no fallback** (Groq was removed 2026-08-02: silently degrading to a weaker model contradicts the project's fail-loud rule). A missing key or a failed call raises `RuntimeError` with a readable message; scores/signals are unaffected because they are computed in Python. It handles truncation (retries at 2× budget — note the truncated first attempt is still billed) and logs token usage + estimated cost from `_MODEL_PRICES_USD_PER_MTOK`, which **must be updated whenever `ANTHROPIC_MODEL` changes**. Do not instantiate `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision.
+**LLM calls go through `analysis/llm.py`.** `chat_text()` calls Claude Sonnet 5 via `ANTHROPIC_API_KEY` — **single provider, no fallback** (Groq was removed 2026-08-02: silently degrading to a weaker model contradicts the project's fail-loud rule). A missing key or a failed call raises `RuntimeError` with a readable message; scores/signals are unaffected because they are computed in Python. It handles truncation (retries at 2× budget — note the truncated first attempt is still billed) and logs token usage + estimated cost from `_MODEL_PRICES_USD_PER_MTOK`, which **must be updated whenever `ANTHROPIC_MODEL` changes**. Do not instantiate `anthropic.Anthropic()` elsewhere — the one exception is slip OCR (`routers/transactions.py`), which needs vision: it hardcodes `claude-haiku-4-5` and, because it bypasses `chat_text()`, it does **not** go through `_log_cost()` — its spend never shows up in the token/cost log.
 
 **LLM is OFF unless the user explicitly asks for it.** `chat_text(..., user_initiated=True)` is required; without it the call raises `LLMDisabledError`. This is a cost guard, not an error path:
 
@@ -118,7 +124,7 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 
 **Secrets are env-only.** `DISCORD_WEBHOOK_URL` and API keys live in `.env` / GitHub Secrets. `load_config()` overlays env over `config.json`, and `save_config()` refuses to write the webhook to disk (`config.json` is tracked in git).
 
-**Dependencies are pinned.** `requirements.txt` pins every package; CI reinstalls it on every scheduled run. Do not unpin or bump without running `pytest`.
+**Dependencies are pinned.** `requirements.txt` pins the **full transitive closure** (129 packages), not just the ~28 the code imports directly; `requirements-dev.txt` does the same for the test tooling. This became literally true on 2026-08-07 — before that it pinned 28 of 134 and the numeric libraries (`scipy`, `numba`, `llvmlite`, `starlette`, `urllib3`) floated, so two installs of the same commit could produce different numbers. CI reinstalls from these files on every scheduled run. Adding a dependency means adding **its** transitive deps too; `tests/test_docs_and_deps.py` goes red if anything installed is left unpinned. Do not unpin or bump without running `pytest`.
 
 **Caching.** `utils/cache.py`'s `cache_data_1h` is a real in-process TTL memoizer (1h, thread-safe; keys are content hashes, DataFrame args supported). It **never caches failures**: exceptions, empty results (`None`/`{}`/empty frame), and dicts with `data_ok=False` are recomputed on every call (C1 — ความล้มเหลวต้องเกิดซ้ำ ไม่ค้างเป็นผลลัพธ์), and it always returns copies. Hot paths covered: `calculate_signal_score`/`dcf_valuation` cached per ticker (`/api/analysis/full` is ~10ms warm; a failing ticker is retried every request), `get_macro_data`, plus `backend/services/cache_service.TTLCache` (price history 1h, latest prices 5m, technical 15m, ETF info 6h). The dashboard adds `@st.cache_data(ttl=3600)` on top. Redis was removed from docker-compose — nothing ever called it. (AUDIT.md H3 closed 2026-07-18.)
 
@@ -164,7 +170,7 @@ Required for full functionality:
 
 | Variable | Used by |
 |---|---|
-| `ANTHROPIC_API_KEY` | **The only LLM** — AI Advisor, ETF summaries, reports, slip OCR (Claude Sonnet 5). No fallback: unset = AI buttons fail loudly, everything else still works |
+| `ANTHROPIC_API_KEY` | **The only LLM** — AI Advisor, ETF summaries, reports (Claude Sonnet 5) + slip OCR (`claude-haiku-4-5`, hardcoded in `routers/transactions.py`). No fallback: unset = AI buttons fail loudly, everything else still works |
 | `FRED_API_KEY` | Macro data endpoint |
 | `DISCORD_WEBHOOK_URL` | Scheduled job notifications (**env only — never in config.json**) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Screener alerts + monthly report |

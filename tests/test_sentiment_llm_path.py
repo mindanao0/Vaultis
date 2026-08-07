@@ -3,6 +3,11 @@
 
 เดิมไฟล์ sentiment_analyzer สร้าง ``Groq()`` เองตรง ๆ → ไม่ log โทเคน/ค่าใช้จ่าย
 ไม่มี fallback ไป Claude และหลุดจากด่านคุมค่าใช้จ่ายที่ ``chat_text`` ถืออยู่
+
+หมายเหตุ 2026-08-07 (AUDIT §B2.1): ``analyze_batch`` คืน ``BatchAnalysis``
+(``rows`` + ``failed_batches`` + ``total_batches``) แทนลิสต์เปล่า ๆ แล้ว เพราะผู้เรียก
+ต้องแยก "ข่าวน้อย" ออกจาก "เรียกโมเดลไม่สำเร็จ" ให้ได้ — เทสต์ในไฟล์นี้จึงอ่าน
+``.rows`` แทนการเทียบกับลิสต์ตรง ๆ (พฤติกรรมที่ตรวจยังเป็นเรื่องเดิมทุกข้อ)
 """
 
 from __future__ import annotations
@@ -36,11 +41,12 @@ class TestGoesThroughChatText:
 
         monkeypatch.setattr(sa, "chat_text", _fake)
 
-        rows = sa.analyze_batch(_ARTICLES, "QQQM")
+        result = sa.analyze_batch(_ARTICLES, "QQQM")
 
         # 12 ข่าว ÷ batch 10 = 2 รอบ
         assert len(calls) == 2
-        assert len(rows) == 2
+        assert len(result.rows) == 2
+        assert (result.failed_batches, result.total_batches) == (0, 2)
         assert all(c["user_initiated"] is False for c in calls)
         assert all("QQQM" in c["user"] for c in calls)
 
@@ -62,7 +68,7 @@ class TestCostGuardStillApplies:
 
         monkeypatch.setattr(sa, "chat_text", _blocked)
 
-        assert sa.analyze_batch(_ARTICLES, "VOO") == []
+        assert sa.analyze_batch(_ARTICLES, "VOO").rows == []
 
     def test_disabled_llm_stops_after_first_batch(self, monkeypatch):
         """ปิดอยู่แล้วต้องเลิกทั้งชุด ไม่วนเรียกซ้ำทุก batch."""
@@ -87,9 +93,10 @@ class TestFailuresAreNotSilent:
         monkeypatch.setattr(sa.time, "sleep", lambda _s: None)
 
         with caplog.at_level("WARNING"):
-            rows = sa.analyze_batch(_ARTICLES, "VOO")
+            result = sa.analyze_batch(_ARTICLES, "VOO")
 
-        assert rows == []
+        assert result.rows == []
+        assert result.failed_batches == 2
         assert any("provider 500" in r.getMessage() for r in caplog.records)
 
     def test_partial_failure_keeps_successful_batches(self, monkeypatch):
@@ -104,17 +111,17 @@ class TestFailuresAreNotSilent:
         monkeypatch.setattr(sa, "chat_text", _flaky)
         monkeypatch.setattr(sa.time, "sleep", lambda _s: None)
 
-        assert len(sa.analyze_batch(_ARTICLES, "VOO")) == 1
+        assert len(sa.analyze_batch(_ARTICLES, "VOO").rows) == 1
 
 
 class TestUnparsableReplyIsDropped:
     def test_garbage_reply_yields_no_rows(self, monkeypatch):
         monkeypatch.setattr(sa, "chat_text", lambda s, u, **kw: "ไม่ใช่ JSON เลย")
-        assert sa.analyze_batch(_ARTICLES[:2], "VOO") == []
+        assert sa.analyze_batch(_ARTICLES[:2], "VOO").rows == []
 
     def test_no_articles_makes_no_llm_call(self, monkeypatch):
         def _explode(*a, **k):
             raise AssertionError("ไม่ควรเรียก LLM เมื่อไม่มีข่าว")
 
         monkeypatch.setattr(sa, "chat_text", _explode)
-        assert sa.analyze_batch([], "VOO") == []
+        assert sa.analyze_batch([], "VOO").rows == []

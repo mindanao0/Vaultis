@@ -9,4 +9,8 @@
 
 pytest==9.1.1
 pytest-asyncio==1.4.0
-httpx==0.28.1  # fastapi.testclient.TestClient ต้องใช้
+httpx==0.28.1  # fastapi.testclient.TestClient ต้องใช้ (anthropic ก็ลากมาอยู่แล้ว เวอร์ชันต้องตรงกัน)
+
+# transitive ของ pytest — เดิมลอย (AUDIT_2026-08-06 ข้อ D4.1)
+iniconfig==2.3.0
+pluggy==1.6.0

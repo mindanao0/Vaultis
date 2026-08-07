@@ -35,7 +35,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
+from analysis.llm import ANTHROPIC_MODEL
 from analysis.financial_model import (
+    ALLOCATION_UNIT_THB,
     DIVIDEND_MAX,
     MOMENTUM_MAX,
     TILT_MAX,
@@ -61,6 +63,7 @@ from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_
 from analysis.trend_channel import fit_trend_channel
 from alerts.notifier import test_alert
 from alerts.price_alert import (
+    AlertStoreUnavailable,
     add_alert,
     add_or_update_alert,
     check_alerts,
@@ -72,8 +75,14 @@ from alerts.price_alert import (
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from db.sentiment_models import get_latest_sentiment_summaries
 from portfolio.backtest import run_portfolio_backtest
-from portfolio.dca import simulate_monthly_dca
-from portfolio.targets import RISK_PROFILES, get_risk_profile, get_target_weights
+from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
+from portfolio.targets import (
+    RISK_PROFILES,
+    InvalidTargetWeights,
+    get_risk_profile,
+    get_target_weights,
+    get_target_weights_with_status,
+)
 from portfolio.costs import (
     US_DIVIDEND_WITHHOLDING,
     estimate_annual_dividend_tax_thb,
@@ -86,7 +95,12 @@ from portfolio.benchmark import shadow_benchmark, xirr
 from portfolio.cashflow_rebalance import rebalance_with_new_money
 from portfolio.drip import simulate_drip
 from portfolio.fees import DIME_FEE_RATE
-from utils.fx import get_usdthb
+from utils.fx import (
+    DEFAULT_FALLBACK_RATE as FX_DEFAULT_FALLBACK_RATE,
+    MAX_RATE as FX_MAX_RATE,
+    MIN_RATE as FX_MIN_RATE,
+    get_usdthb,
+)
 from portfolio.tracker import (
     TX_DIVIDEND,
     add_dividend,
@@ -437,35 +451,64 @@ def _render_realtime_price_ticker_bar() -> None:
     <span id="price-QQQM">QQQM ?</span>
     <span id="price-XLV">XLV ?</span>
     <span id="price-GLDM">GLDM ?</span>
+    <span id="ws-updated" style="margin-left:auto; color:#8B949E;">ยังไม่ได้รับข้อมูล</span>
 </div>
 <script>
 (function () {{
     const wsUrl = {ws_url};
+    const TICKERS = ["VOO","SCHD","QQQM","XLV","GLDM"];
     const ws = new WebSocket(wsUrl);
     ws.onmessage = function (event) {{
         const raw = typeof event.data === "string"
             ? event.data
             : new TextDecoder("utf-8").decode(event.data);
         const data = JSON.parse(raw);
-        console.log(data);
-        if (data.type === "price_update") {{
-            Object.entries(data.data).forEach(([ticker, info]) => {{
-                const el = document.getElementById("price-" + ticker);
-                if (el) {{
-                    const color = info.change_pct >= 0 ? "#3FB950" : "#F85149";
-                    const sign = info.change_pct >= 0 ? "+" : "";
-                    el.innerHTML = ticker + " $" + info.price +
-                        ' <span style="color:' + color + '">' +
-                        sign + info.change_pct + "%</span>";
-                }}
-            }});
+        if (data.type !== "price_update") {{
+            return;
+        }}
+        const prices = data.data || {{}};
+        const unavailable = data.unavailable || [];
+        Object.entries(prices).forEach(([ticker, info]) => {{
+            const el = document.getElementById("price-" + ticker);
+            if (el) {{
+                const color = info.change_pct >= 0 ? "#3FB950" : "#F85149";
+                const sign = info.change_pct >= 0 ? "+" : "";
+                el.style.opacity = "1";
+                el.innerHTML = ticker + " $" + info.price +
+                    ' <span style="color:' + color + '">' +
+                    sign + info.change_pct + "%</span>";
+            }}
+        }});
+        // ตัวที่ดึงไม่ได้ต้องล้างราคาเก่าทิ้ง ไม่ใช่ปล่อยค้างไว้จนดูเหมือนราคาไม่เปลี่ยน
+        // (AUDIT_2026-08-06 B7 — "ดึงไม่สำเร็จ" ≠ "ราคาเท่าเดิม")
+        unavailable.forEach(function (ticker) {{
+            const el = document.getElementById("price-" + ticker);
+            if (el) {{
+                el.style.opacity = "0.55";
+                el.innerHTML = ticker + ' <span style="color:#8B949E">⚠️ ดึงไม่ได้</span>';
+            }}
+        }});
+        const stamp = document.getElementById("ws-updated");
+        if (stamp) {{
+            const when = data.ts ? new Date(data.ts) : null;
+            const shown = (when && !isNaN(when.getTime()))
+                ? when.toLocaleTimeString("th-TH")
+                : (data.ts || "-");
+            stamp.textContent = "อัปเดตล่าสุด " + shown;
         }}
     }};
     ws.onerror = function () {{
-        ["VOO","SCHD","QQQM","XLV","GLDM"].forEach(function (t) {{
+        TICKERS.forEach(function (t) {{
             const el = document.getElementById("price-" + t);
-            if (el) el.textContent = t + " (WS error)";
+            if (el) {{
+                el.style.opacity = "0.55";
+                el.innerHTML = t + ' <span style="color:#8B949E">⚠️ ดึงไม่ได้ (WS error)</span>';
+            }}
         }});
+    }};
+    ws.onclose = function () {{
+        const stamp = document.getElementById("ws-updated");
+        if (stamp) stamp.textContent += " · การเชื่อมต่อหลุด";
     }};
 }})();
 </script>
@@ -571,7 +614,7 @@ def _render_pdf_export_panel(section_key: str, prepare_label: str, download_labe
     )
 
     include_ai = st.checkbox(
-        "ใส่บทวิเคราะห์ AI ในรายงาน (มีค่าใช้จ่าย ~0.10–0.30 บาท)",
+        f"ใส่บทวิเคราะห์ AI ในรายงาน (เรียก {ANTHROPIC_MODEL} — มีค่าใช้จ่ายตามจำนวนโทเคนจริง)",
         value=False,
         key=f"{section_key}_pdf_ai",
     )
@@ -596,6 +639,21 @@ def _render_pdf_export_panel(section_key: str, prepare_label: str, download_labe
         )
 
 
+def _to_number(value: object) -> float | None:
+    """แปลงเป็น ``float`` ที่ใช้งานได้จริง — อ่านไม่ออก/NaN/inf คืน ``None``.
+
+    ห้ามใช้สำนวน ``float(x) or 0.0`` บนเส้นทางเงิน: ``NaN`` เป็น truthy สำนวนนั้น
+    จึงดักไม่ได้ และ ``0.0`` อ่านได้ว่า "เท่าทุนพอดี" ซึ่งคนละความหมายกับ "ไม่รู้"
+    """
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
 def _is_valid_etf_ticker(ticker: str) -> bool:
     """ตรวจว่า ticker มีอยู่จริงโดยลองดึงข้อมูล 1 วันจาก yfinance."""
     cleaned_ticker = str(ticker).strip().upper()
@@ -615,6 +673,94 @@ def _is_valid_etf_ticker(ticker: str) -> bool:
         return not close_series.empty
     except Exception:
         return False
+
+
+def _render_target_weights_table(current_tickers: list[str], preset: dict[str, float]) -> None:
+    """ตารางเป้าหมาย preset เทียบกับที่ใช้จริง + คำเตือนเมื่อค่าที่ผู้ใช้ตั้งถูกปรับ.
+
+    ``get_target_weights_with_status()`` คืน ``notes`` ภาษาไทยมาให้แล้วเมื่อค่าที่ตั้งไว้
+    ถูกตีความ/ปรับ (เขียนเป็นเปอร์เซ็นต์, ผลรวมไม่เท่า 1.0, ตั้งให้ ticker ที่ไม่ได้ติดตาม)
+    ถ้าหน้าจอแสดงแต่เลขที่ปรับแล้ว ผู้ใช้จะไม่มีทางรู้ว่าค่าที่ตัวเองตั้งไม่ได้ถูกใช้
+    · คอนฟิกผิดรูปต้องเป็นข้อความไทย ไม่ใช่ traceback (AUDIT_2026-08-06 B10)
+    """
+    try:
+        status = get_target_weights_with_status(current_tickers)
+    except InvalidTargetWeights as exc:
+        st.error(
+            f"`portfolio.target_weights` ใน config.json ใช้ไม่ได้: {exc} — "
+            "ระบบไม่เดาค่าแทน แก้ไฟล์ให้ถูกต้องแล้วรีเฟรชหน้านี้"
+        )
+        return
+
+    effective_targets = status.weights
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "ETF": t,
+                    "เป้าหมายตาม preset": f"{preset.get(t, 0) * 100:.0f}%",
+                    "เป้าหมายที่ใช้จริง": f"{effective_targets.get(t, 0) * 100:.1f}%",
+                    "ที่มา": {"custom": "ตั้งเอง", "preset": "preset"}.get(
+                        status.source.get(t, ""), "ไม่รู้จัก"
+                    ),
+                }
+                for t in current_tickers
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    for note in status.notes:
+        st.warning(note)
+    st.caption(
+        'ถ้าต้องการกำหนดเอง ให้แก้ `portfolio.target_weights` ใน config.json '
+        '(เช่น {"VOO": 0.4, "GLDM": 0.05}) — เว้นว่างไว้จะใช้ preset ด้านบน'
+    )
+
+
+def _render_fallback_fx_input(stored_value: object) -> float:
+    """ช่อง "อัตราแลกเปลี่ยนสำรอง" — ช่วงต้องผูกกับ ``utils/fx.py`` แหล่งเดียว.
+
+    เดิมช่องนี้ ``min_value=1.0`` และ **ไม่มี** ``max_value`` เลย ทั้งที่ปลายทาง
+    ``utils.fx._config_fallback()`` รับเฉพาะ :data:`FX_MIN_RATE`–:data:`FX_MAX_RATE`
+    กรอก 1.5 หรือ 900 จึงบันทึกลง ``config.json`` ได้ตามปกติ แล้ววันที่ดึงอัตราสดไม่ได้
+    ทุกตัวเลข "บาท" ทั้งระบบก็ดับพร้อมกันด้วย ``FxRateUnavailable`` โดยหน้าจอที่ทำให้เกิด
+    ไม่เคยเตือนอะไรเลย — หน้าที่ตั้งค่าต้องกันไว้ตั้งแต่ต้นทาง ไม่ใช่ให้ไปดังตอนใช้จริง
+
+    ค่าที่ **บันทึกไว้แล้ว** นอกช่วง/อ่านไม่ออก ห้ามทำให้หน้าจอพัง (Streamlit จะ error
+    ถ้า ``value`` อยู่นอก ``min_value..max_value``) → เตือนพร้อมบอกค่าเดิมที่เจอ
+    แล้วหนีบให้อยู่ในช่วงเป็นค่าตั้งต้นของช่อง — ผู้ใช้ยังเห็นว่าของเดิมคืออะไร
+    """
+    rate = _to_number(stored_value)
+    if rate is None:
+        st.warning(
+            f"ค่าสำรองใน config.json (`display.default_fx_rate` = {stored_value!r}) อ่านเป็นตัวเลขไม่ได้ "
+            f"— ช่องด้านล่างตั้งต้นให้ที่ {FX_DEFAULT_FALLBACK_RATE:.2f} บาท/USD กดบันทึกเพื่อยืนยันค่าที่ถูกต้อง"
+        )
+        rate = float(FX_DEFAULT_FALLBACK_RATE)
+    elif not (FX_MIN_RATE <= rate <= FX_MAX_RATE):
+        clamped = min(max(rate, FX_MIN_RATE), FX_MAX_RATE)
+        st.warning(
+            f"ค่าสำรองที่บันทึกไว้ {rate:g} บาท/USD อยู่นอกช่วง {FX_MIN_RATE:.0f}–{FX_MAX_RATE:.0f} "
+            "ที่ระบบยอมรับ — วันที่ดึงอัตราสดไม่ได้ ทุกตัวเลขบาทจะคำนวณไม่ได้ทั้งหน้าจอ "
+            f"ช่องด้านล่างจึงตั้งต้นให้ที่ {clamped:.2f} กดบันทึกเพื่อแก้ค่าเดิม"
+        )
+        rate = float(clamped)
+
+    return float(
+        st.number_input(
+            "อัตราแลกเปลี่ยนสำรอง (ใช้เมื่อดึงค่าสดไม่ได้)",
+            min_value=float(FX_MIN_RATE),
+            max_value=float(FX_MAX_RATE),
+            value=float(rate),
+            step=0.1,
+            format="%.4f",
+            help=(
+                f"ช่วงที่ใช้ได้ {FX_MIN_RATE:.0f}–{FX_MAX_RATE:.0f} บาท/USD "
+                "(ช่วงเดียวกับที่ utils/fx.py ใช้ตรวจอัตราสด) — ค่านอกช่วงถือว่าข้อมูลผิด ไม่ใช่ค่าจริง"
+            ),
+        )
+    )
 
 
 def render_settings_page() -> None:
@@ -702,26 +848,7 @@ def render_settings_page() -> None:
         index=profile_options.index(current_profile),
         format_func=lambda p: f"{profile_labels.get(p, p)} ({p})",
     )
-    preset = RISK_PROFILES[selected_profile]
-    effective_targets = get_target_weights(current_tickers)
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "ETF": t,
-                    "เป้าหมายตาม preset": f"{preset.get(t, 0) * 100:.0f}%",
-                    "เป้าหมายที่ใช้จริง": f"{effective_targets.get(t, 0) * 100:.1f}%",
-                }
-                for t in current_tickers
-            ]
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption(
-        'ถ้าต้องการกำหนดเอง ให้แก้ `portfolio.target_weights` ใน config.json '
-        '(เช่น {"VOO": 0.4, "GLDM": 0.05}) — เว้นว่างไว้จะใช้ preset ด้านบน'
-    )
+    _render_target_weights_table(current_tickers, RISK_PROFILES[selected_profile])
 
     st.divider()
     st.subheader("4) Notification Settings")
@@ -775,13 +902,7 @@ def render_settings_page() -> None:
         index=0 if str(config["display"]["currency"]).upper() == "THB" else 1,
         horizontal=True,
     )
-    default_fx_rate = st.number_input(
-        "อัตราแลกเปลี่ยนสำรอง (ใช้เมื่อดึงค่าสดไม่ได้)",
-        min_value=1.0,
-        value=float(config["display"]["default_fx_rate"]),
-        step=0.1,
-        format="%.4f",
-    )
+    default_fx_rate = _render_fallback_fx_input(config["display"].get("default_fx_rate"))
 
     if st.button("บันทึก Settings", type="primary"):
         updated_config = {
@@ -826,6 +947,40 @@ def _style_alert_rows(row: pd.Series) -> list[str]:
     return [""] * len(row)
 
 
+def _render_alert_check_result(result: dict) -> None:
+    """ผลของปุ่ม "ตรวจ Alert ตอนนี้" — "ตรวจไม่ได้" ห้ามอ่านเป็น "ไม่ถึงเงื่อนไข".
+
+    ``check_alerts()`` คืนมาครบอยู่แล้ว: ``store_error`` (อ่านคลังไม่ได้ = ข้ามทั้งรอบ)
+    และ ``unchecked`` (alert ที่ดึงราคาไม่ได้ จึงยังไม่ได้ตรวจจริง) เดิมหน้าจอดูแค่
+    ``triggered`` แล้วพิมพ์ "ยังไม่มี Alert ที่ถึงเงื่อนไข" ⇒ ความล้มเหลวกลายเป็น
+    คำยืนยันว่าราคายังไม่ถึง (AUDIT_2026-08-06 D1.1)
+    """
+    if result.get("store_error"):
+        st.error(
+            f"อ่านคลัง Price Alert ไม่ได้ ({result.get('error') or 'ไม่ทราบสาเหตุ'}) — "
+            "ข้ามการตรวจรอบนี้ทั้งหมด ระบบ **ไม่ได้** เขียนทับไฟล์ของคุณ "
+            "นี่ไม่ได้แปลว่าไม่มี Alert ค้าง แต่แปลว่าตรวจไม่ได้"
+        )
+        return
+
+    triggered = list(result.get("triggered") or [])
+    unchecked = list(result.get("unchecked") or [])
+    checked = int(_to_number(result.get("checked")) or 0)
+    if triggered:
+        st.success(f"มี Alert ถึงเงื่อนไข {len(triggered)} รายการ (ส่ง Discord แล้ว)")
+    elif not unchecked:
+        st.info("ยังไม่มี Alert ที่ถึงเงื่อนไข")
+    if unchecked:
+        detail = ", ".join(
+            f"{str(item.get('ticker') or '-')} ({item.get('reason') or 'ไม่ทราบสาเหตุ'})"
+            for item in unchecked
+        )
+        st.warning(
+            f"ตรวจไม่ได้ {len(unchecked)} รายการ (ตรวจได้จริง {checked} รายการ): {detail} — "
+            "รายการเหล่านี้ยังค้างเป็น pending ระบบจะตรวจใหม่รอบถัดไป"
+        )
+
+
 def render_price_alerts_page() -> None:
     """หน้า Price Alerts: ระดับที่ระบบแนะนำ, ตั้งเอง, และรายการที่รออยู่."""
     st.header("Price Alerts")
@@ -834,9 +989,19 @@ def render_price_alerts_page() -> None:
         st.warning("ยังไม่มี ETF ในระบบ — เพิ่มได้ที่หน้า Settings")
         return
 
-    all_alerts = list_alerts(include_triggered=True)
+    try:
+        all_alerts = list_alerts(include_triggered=True)
+        active_alerts = get_active_alerts_with_distance(near_threshold_pct=2.0)
+    except AlertStoreUnavailable as exc:
+        # "อ่านคลังไม่ได้" ≠ "ไม่มี alert" — และต้องเป็นข้อความไทย ไม่ใช่ traceback
+        # ของ Streamlit ที่ผู้ใช้อ่านไม่ออก (AUDIT_2026-08-06 H2 ฝั่งหน้าจอ)
+        st.error(
+            f"อ่านคลัง Price Alert ไม่ได้: {exc} — หน้านี้จึงยังแสดง Alert ไม่ได้ "
+            "ระบบ **ไม่ได้** เขียนทับไฟล์ของคุณ และนี่ไม่ได้แปลว่าไม่มี Alert ค้างอยู่ "
+            "(ตรวจไฟล์ `alerts/data/price_alerts.json` แล้วรีเฟรชหน้านี้)"
+        )
+        return
     history_alerts = [item for item in all_alerts if bool(item.get("triggered"))]
-    active_alerts = get_active_alerts_with_distance(near_threshold_pct=2.0)
     latest_prices = get_current_prices(tickers)
 
     st.subheader("1) AI Suggest Alerts")
@@ -941,13 +1106,9 @@ def render_price_alerts_page() -> None:
             st.error(f"เพิ่ม Alert ไม่สำเร็จ: {exc}")
 
     if st.button("ตรวจ Alert ตอนนี้"):
-        result = check_alerts()
-        triggered_count = len(result.get("triggered", []))
-        if triggered_count > 0:
-            st.success(f"มี Alert ถึงเงื่อนไข {triggered_count} รายการ (ส่ง Discord แล้ว)")
-        else:
-            st.info("ยังไม่มี Alert ที่ถึงเงื่อนไข")
-        st.rerun()
+        # ไม่ st.rerun() ต่อท้ายอีกแล้ว — rerun ทิ้งข้อความผลตรวจทั้งหมดก่อนผู้ใช้ได้อ่าน
+        # (รายงานที่ไม่มีใครเห็น = ยังตัดเงียบอยู่) กด Refresh Data เองได้ถ้าต้องการรีเฟรชตาราง
+        _render_alert_check_result(check_alerts())
 
     st.divider()
     st.subheader("3) Active Alerts")
@@ -1736,6 +1897,12 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
 
     dca_df = simulate_monthly_dca(prices, normalized_weights, monthly_investment=monthly_investment)
 
+    # ETF ที่เพิ่งเข้าตลาดตัดช่วงต้นของการจำลองทิ้งทั้งเดือน — ต้องบอกก่อนโชว์ตัวเลข
+    # ไม่ใช่ปล่อยให้ Total Invested ที่ต่ำกว่าจริงอธิบายตัวเอง (AUDIT_2026-08-06 B8)
+    coverage_warning = describe_coverage(dca_df.attrs.get(COVERAGE_ATTR))
+    if coverage_warning:
+        st.warning(coverage_warning)
+
     dca_fig = px.line(
         dca_df,
         x=dca_df.index,
@@ -1752,6 +1919,32 @@ def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, f
     col1.metric("Total Invested", f"${total_invested:,.2f}")
     col2.metric("Current Value", f"${current_value:,.2f}")
     col3.metric("Profit", f"${profit:,.2f}", delta=f"{(profit / total_invested) * 100:.2f}%")
+
+
+def _momentum_available(row: dict) -> bool:
+    """โมเมนตัมของแถวนี้คำนวณได้ไหม (ค่าเริ่มต้น True เพื่อรองรับ payload เก่าที่ไม่มีคีย์)."""
+    return bool(row.get("momentum_available", True))
+
+
+def _momentum_points(row: dict) -> int | None:
+    """คะแนนโมเมนตัม หรือ ``None`` เมื่อคำนวณไม่ได้ (FIX_PLAN ข้อ 1.5).
+
+    ``score_from_prices`` ตัดหน้าต่างที่ข้อมูลไม่พอออกจาก**ทั้งคะแนนและคะแนนเต็ม**
+    หน้าจอจึงต้องแสดง "ไม่มีข้อมูล" ห้ามแปลงเป็น 0 ซึ่งอ่านว่า "ราคาไม่ขึ้นเลย"
+    """
+    value = row.get("momentum_score")
+    if not _momentum_available(row) or value is None:
+        return None
+    return int(value)
+
+
+def _momentum_max(row: dict) -> int:
+    """เพดานคะแนนโมเมนตัมที่ใช้จริงกับแถวนี้ (อาจน้อยกว่า ``MOMENTUM_MAX``)."""
+    raw = row.get("momentum_max", MOMENTUM_MAX)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return MOMENTUM_MAX
 
 
 def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
@@ -1792,7 +1985,8 @@ def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
                 "Score %": float(payload.get("total_pct") or 0),
                 "Trend": int(payload.get("trend_score", 0) or 0),
                 "Timing": int(payload.get("timing_score", 0) or 0),
-                "Momentum": int(payload.get("momentum_score", 0) or 0),
+                # โมเมนตัมที่คำนวณไม่ได้ = N/A ไม่ใช่ 0 (0 อ่านว่า "ราคาไม่ขึ้น" ซึ่งคนละเรื่อง)
+                "Momentum": _momentum_points(payload),
                 "Dividend": int(payload.get("dividend_score", 0) or 0),
                 "RSI": float(payload.get("rsi", 0) or 0),
                 "Signal": str(payload.get("signal", "")),
@@ -1884,18 +2078,27 @@ def render_dcf_analysis_page() -> None:
 
     st.subheader("Score Breakdown (คะแนนเดียวกับที่ AI Advisor ใช้)")
     # waterfall แทน flat bar (Roadmap "ของแถม" ข้อสุดท้าย) — เห็นการสะสมทีละองค์ประกอบจนถึงคะแนนรวม
-    component_labels = [
-        f"Trend (เต็ม {TREND_MAX})",
-        f"Timing (เต็ม {TIMING_MAX})",
-        f"Momentum (เต็ม {MOMENTUM_MAX})",
-        f"Dividend (เต็ม {DIVIDEND_MAX})",
+    # หมวดที่คำนวณไม่ได้ (โมเมนตัม/ปันผล) ถูก **ตัดออกจากกราฟและจากคะแนนเต็ม**
+    # ไม่ใช่วาดเป็นแท่ง 0 ซึ่งอ่านว่า "ได้ 0 คะแนน" ทั้งที่ความจริงคือไม่มีข้อมูล (C1)
+    momentum_ok = _momentum_available(selected_raw)
+    dividend_ok = bool(selected_raw.get("dividend_available", True))
+    components: list[tuple[str, float]] = [
+        (f"Trend (เต็ม {TREND_MAX})", float(selected_row["Trend"])),
+        (f"Timing (เต็ม {TIMING_MAX})", float(selected_row["Timing"])),
     ]
-    component_values = [
-        float(selected_row["Trend"]),
-        float(selected_row["Timing"]),
-        float(selected_row["Momentum"]),
-        float(selected_row["Dividend"]),
-    ]
+    excluded: list[str] = []
+    if momentum_ok:
+        components.append(
+            (f"Momentum (เต็ม {_momentum_max(selected_raw)})", float(selected_row["Momentum"]))
+        )
+    else:
+        excluded.append("Momentum")
+    if dividend_ok:
+        components.append((f"Dividend (เต็ม {DIVIDEND_MAX})", float(selected_row["Dividend"])))
+    else:
+        excluded.append("Dividend")
+    component_labels = [label for label, _ in components]
+    component_values = [value for _, value in components]
     waterfall_fig = go.Figure(
         go.Waterfall(
             orientation="v",
@@ -1913,6 +2116,12 @@ def render_dcf_analysis_page() -> None:
         title=f"{selected_ticker} Score Breakdown", showlegend=False, height=360
     )
     st.plotly_chart(_apply_plotly_dark_theme(waterfall_fig), use_container_width=True)
+    if excluded:
+        st.caption(
+            f"{', '.join(excluded)}: ไม่มีข้อมูลพอจะคำนวณ — ตัดออกจากคะแนนเต็มของ "
+            f"{selected_ticker} (คะแนนรวม {selected_raw.get('total_score')}/"
+            f"{selected_raw.get('max_score')}) ไม่ใช่ให้ 0 คะแนน"
+        )
 
     st.subheader("DCF Cash Flow Table (10 Years)")
     cash_flows = selected_dcf.get("cash_flows", []) if isinstance(selected_dcf, dict) else []
@@ -1959,6 +2168,65 @@ def render_dcf_analysis_page() -> None:
     heatmap_fig.update_layout(coloraxis_colorbar_title="Score")
     st.plotly_chart(_apply_plotly_dark_theme(heatmap_fig), use_container_width=True)
     st.caption("ช่องว่าง = ข้อมูลไม่พร้อม (NO DATA)")
+
+
+def _render_empty_allocation_reason(result: dict) -> None:
+    """บอกว่า "ทำไมแผนจัดสรรว่าง" ตามสาเหตุจริง — ห้ามเหมารวมเป็นคำแนะนำการลงทุน.
+
+    ``calculate_allocation()`` คืน ``{}`` ได้จากสาเหตุที่แยกจากกันไม่ได้ที่ปลายทาง:
+    (ก) ไม่มี ticker ไหน ``data_ok=True`` = **ดึงราคาไม่ได้ทั้งหมด**
+    (ข) งบ ≤ 0 (ค) งบน้อยกว่าก้อนต่ำสุด 100 บาท (ง) ไม่มีน้ำหนักเป้าหมายรองรับ
+
+    เดิมหน้าจอพิมพ์ "เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์จัดสรร — โมเดลแนะนำถือเงินสดรอ"
+    ทับทุกสาเหตุ ซึ่งผิดสองชั้น: (1) ความล้มเหลวของการดึงข้อมูลกลายเป็นคำแนะนำการลงทุน
+    และไปโผล่ในหน้าเดียวกับ "NO DATA: VOO, SCHD, ..." ที่ขัดกันเอง (2) อ้าง "เกณฑ์คะแนน"
+    ที่นโยบาย DCA ปัจจุบันไม่มีอยู่แล้ว (คะแนนแค่เอียงน้ำหนัก 0.6–1.4 เท่า ไม่ตัดตัวไหนออก)
+    ใช้ถ้อยคำชุดเดียวกับ ``analysis/ai_advisor._allocation_summary_lines()``
+    (AUDIT_2026-08-06 C2.2)
+    """
+    scores = list(result.get("etf_scores") or [])
+    no_data = list(result.get("no_data_tickers") or [])
+    usable = [
+        row
+        for row in scores
+        if isinstance(row, dict)
+        and row.get("data_ok", True)
+        and _to_number(row.get("total_pct")) is not None
+    ]
+
+    if not usable:
+        if scores or no_data:
+            # เคยพยายามประเมินแล้วแต่ไม่มีตัวไหนรอด = ดึงข้อมูลไม่ได้ (ความล้มเหลวจริง)
+            st.error(
+                "ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร (ดึงข้อมูลไม่ได้) — "
+                "นี่คือความล้มเหลวของการดึงข้อมูล **ไม่ใช่คำแนะนำให้ถือเงินสด** "
+                "ลองกดคำนวณใหม่อีกครั้ง"
+            )
+        else:
+            # ไม่มีอะไรถูกประเมินเลย — คนละเรื่องกับ "ดึงข้อมูลไม่สำเร็จ"
+            st.warning(
+                "โมเดลไม่ได้ประเมิน ETF ใดเลยเดือนนี้ — ตรวจสอบรายการ ETF ที่หน้า Settings "
+                "(ไม่ใช่คำแนะนำให้ถือเงินสด)"
+            )
+        return
+
+    budget = _to_number(result.get("budget_thb"))
+    if budget is None:
+        st.warning("ไม่ทราบงบ DCA ของเดือนนี้ — จึงยังจัดสรรไม่ได้")
+        return
+    if budget <= 0:
+        st.warning("งบ DCA เดือนนี้เป็น 0 บาท — ไม่มีเงินให้จัดสรร (ตั้งงบได้ที่หน้า Settings)")
+        return
+    if budget < ALLOCATION_UNIT_THB:
+        st.warning(
+            f"งบ DCA เดือนนี้ {budget:,.0f} บาท น้อยกว่าก้อนต่ำสุด {ALLOCATION_UNIT_THB} บาท "
+            "จึงแบ่งไม่ได้สักก้อน — เพิ่มงบหรือสะสมไปเดือนถัดไป"
+        )
+        return
+    st.warning(
+        "มี ETF ที่ข้อมูลพร้อม แต่ไม่มีตัวไหนมีน้ำหนักเป้าหมายรองรับ — "
+        "ตรวจสอบ `portfolio.target_weights` / โปรไฟล์ความเสี่ยงที่หน้า Settings"
+    )
 
 
 def show_result(result: dict) -> None:
@@ -2052,13 +2320,21 @@ def show_result(result: dict) -> None:
         )
         st.plotly_chart(_apply_plotly_dark_theme(pie), use_container_width=True)
     else:
-        st.warning("เดือนนี้ไม่มี ETF ที่คะแนนถึงเกณฑ์จัดสรร — โมเดลแนะนำถือเงินสดรอ")
+        _render_empty_allocation_reason(result)
 
     advice_text = str(result.get("advice_text") or result.get("advice") or "")
     if result.get("ai_used"):
-        st.markdown("### คำอธิบายจาก AI (Claude Haiku 4.5)")
+        st.markdown(f"### คำอธิบายจาก AI ({ANTHROPIC_MODEL})")
         st.markdown(advice_text)
+    elif advice_text.startswith("⚠️"):
+        # LLM ล้มเหลวจริง (คีย์หาย/provider ล่ม/ตอบว่าง) — get_monthly_advice ไม่ throw แล้ว
+        # แต่คืน ai_used=False พร้อมข้อความ ⚠️ ถ้าแสดงเป็นกล่องข้อมูลปกติจะดูเหมือนคำแนะนำ
+        st.error(advice_text)
+        st.caption(
+            "คะแนน/แผนจัดสรรด้านบนยังใช้ได้ตามปกติ — คำนวณในโค้ดทั้งหมด ไม่ได้พึ่ง AI"
+        )
     else:
+        # AI ถูกปิดไว้เพื่อคุมค่าใช้จ่าย = สถานะปกติ ไม่ใช่ความล้มเหลว
         st.info(advice_text)
 
     discord_result = result.get("discord_result", {})
@@ -2230,9 +2506,12 @@ def render_ai_advisor_page() -> None:
     with col_ai:
         run_ai = st.button("ให้ AI อธิบายด้วย (มีค่าใช้จ่าย)", use_container_width=True)
 
+    # ชื่อโมเดลอ่านจาก analysis/llm.py (แหล่งเดียว) — เขียนตายตัวแล้วเคยค้างเป็น Haiku 4.5
+    # ทั้งที่ระบบย้ายไป Sonnet 5 (แพงกว่า ~3 เท่า) = บอกต้นทุนผู้ใช้ผิด
     st.caption(
         "ปุ่มซ้าย: คำนวณทุกอย่างในระบบ ไม่เรียก AI ไม่มีค่าใช้จ่าย | "
-        "ปุ่มขวา: เรียก Claude Haiku 4.5 มาอธิบายเพิ่ม (ประมาณ 0.10–0.30 บาทต่อครั้ง)"
+        f"ปุ่มขวา: เรียก {ANTHROPIC_MODEL} มาอธิบายเพิ่ม — "
+        "มีค่าใช้จ่ายจริงตามจำนวนโทเคน (ระบบ log ต้นทุนโดยประมาณทุกครั้งที่เรียก)"
     )
 
     if (run_free or run_ai) and not st.session_state["ai_running"]:
@@ -2444,18 +2723,242 @@ def cached_dividend_yields(tickers: tuple[str, ...]) -> dict[str, float | None]:
     return {ticker: _dividend_yield(ticker) for ticker in tickers}
 
 
+def _ledger_report_rows(source: object, key: str) -> list[dict]:
+    """อ่านรายงานรายแถวชุดใดชุดหนึ่งของ ``portfolio/tracker.py``.
+
+    รับได้ทั้ง dict สรุป (คีย์ตรง ๆ) และ DataFrame ที่ tracker แนบไว้ที่ ``.attrs``
+    ``key`` = ``skipped_rows`` (ถูกตัดออก) · ``derived_fx_rows`` (อัตราถูกคำนวณย้อน)
+    · ``inconsistent_rows`` (ยอดบาทขัดกับอัตราที่บันทึก) — **ห้ามยุบรวมกัน**
+    เพราะสามชุดนี้แปลว่าคนละเรื่อง (ตัดทิ้ง / ซ่อมแล้วยังนับ / นับอยู่แต่น่าสงสัย)
+    """
+    if isinstance(source, dict):
+        return list(source.get(key) or [])
+    attrs = getattr(source, "attrs", None) or {}
+    return list(attrs.get(key) or [])
+
+
+def _ledger_skipped_rows(source: object) -> list[dict]:
+    """แถวสมุดบัญชีที่ ``portfolio/tracker.py`` ตัดทิ้งเพราะข้อมูลไม่ครบ (FIX_PLAN ข้อ 1.2).
+
+    รับได้ทั้ง dict สรุป (คีย์ ``skipped_rows``) และ DataFrame ที่ tracker แนบไว้ที่
+    ``.attrs['skipped_rows']`` — ข้อมูลที่ "ถูกตัด" ต้องเดินทางมาถึงหน้าจอเสมอ
+    ห้ามหายกลางทาง (ตัดเงียบ = ผิดกฎ fail-loud เท่ากับกุตัวเลข)
+    """
+    return _ledger_report_rows(source, "skipped_rows")
+
+
+def _render_ledger_skipped_rows(skipped_rows: list[dict], reason: str = "") -> None:
+    """เตือนว่าตัวเลขด้านบน **ไม่รวม** แถวเหล่านี้ พร้อมบอกรายแถวว่าขาดอะไร.
+
+    ``reason`` คือข้อความสรุปที่ tracker ส่งมากับ ``skipped_reason``
+    (ถ้าไม่มีก็ประกอบข้อความเองจากจำนวนแถว — ห้ามเงียบเด็ดขาด)
+    """
+    if not skipped_rows:
+        return
+    st.error(
+        reason
+        or f"ข้ามธุรกรรม {len(skipped_rows)} แถวเพราะข้อมูลไม่ครบ — ตัวเลขสรุปไม่รวมแถวเหล่านี้"
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "tx_id": str(row.get("tx_id") or ""),
+                    "วันที่": str(row.get("date") or "ไม่ทราบ"),
+                    "ETF": str(row.get("ticker") or "ไม่ทราบ"),
+                    "ช่องที่ขาด": ", ".join(str(f) for f in (row.get("missing_fields") or [])),
+                    "เหตุผล": str(row.get("reason") or ""),
+                }
+                for row in skipped_rows
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "แก้ไขแถวเหล่านี้ใน `portfolio/data/transactions.csv` (ใส่ค่าที่ขาดให้ครบ) "
+        "แล้วกด Refresh Data — ระบบไม่เดาค่าแทนให้ เพราะจะทำให้กำไร/ขาดทุนผิดแบบเงียบ ๆ"
+    )
+
+
+def _render_ledger_derived_fx_rows(rows: list[dict], reason: str = "") -> None:
+    """แถวที่อัตราแลกเปลี่ยน **ถูกคำนวณย้อนมาแทน** ค่าที่บันทึกไว้ (C1.3).
+
+    ต่างจาก ``skipped_rows`` ตรงที่แถวเหล่านี้ **ยังอยู่ในทุกตัวเลข** — เดิมมีแค่
+    ``logger.warning`` ผู้ใช้จึงไม่มีทางรู้ว่าเงินที่เห็นคิดจากอัตราที่ระบบหาเอง
+    """
+    if not rows:
+        return
+    st.warning(
+        reason
+        or (
+            f"อัตราแลกเปลี่ยน {len(rows)} แถวถูกคำนวณย้อนจากยอดเงินบาท "
+            "เพราะค่าที่บันทึกไว้ใช้ไม่ได้ (ตัวเลขด้านล่างรวมแถวเหล่านี้อยู่)"
+        )
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "tx_id": str(row.get("tx_id") or ""),
+                    "วันที่": str(row.get("date") or "ไม่ทราบ"),
+                    "ETF": str(row.get("ticker") or "ไม่ทราบ"),
+                    "อัตราที่บันทึกไว้": row.get("recorded_fx"),
+                    "อัตราที่ใช้จริง": row.get("used_fx"),
+                    "เหตุผล": str(row.get("reason") or ""),
+                }
+                for row in rows
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "แถวเหล่านี้ยังถูกนับในเงินลงทุน/กำไรทั้งหมด — ถ้าอัตราที่ระบบคำนวณย้อนไม่ใช่อัตราที่คุณจ่ายจริง "
+        "ให้แก้ `fx_rate_thb` ในสมุดแล้วกด Refresh Data"
+    )
+
+
+def _render_ledger_inconsistent_rows(rows: list[dict], reason: str = "") -> None:
+    """แถวที่ยอดเงินบาทที่จ่ายจริง **ขัดกับ** จำนวนหุ้น × ราคา × อัตรา + ค่าธรรมเนียม (C1.2).
+
+    เตือนอย่างเดียว ไม่ตัดทิ้ง — ข้อมูลครบและระบบบันทึกตามที่ผู้ใช้บอก
+    ตัวจุดชนวนที่พบบ่อยคือการย้อนบันทึกไม้เก่าด้วยอัตราแลกเปลี่ยน "วันนี้"
+    """
+    if not rows:
+        return
+    st.warning(
+        reason
+        or (
+            f"ยอดเงินบาทของ {len(rows)} แถวไม่ตรงกับ จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน "
+            "(ตัวเลขด้านล่างยังนับแถวเหล่านี้อยู่ ให้ตรวจสอบอัตราที่บันทึกไว้)"
+        )
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "tx_id": str(row.get("tx_id") or ""),
+                    "วันที่": str(row.get("date") or "ไม่ทราบ"),
+                    "ETF": str(row.get("ticker") or "ไม่ทราบ"),
+                    "ยอดที่บันทึก (บาท)": row.get("amount_thb"),
+                    "ยอดที่ควรเป็น (บาท)": row.get("implied_amount_thb"),
+                    "อัตราที่บันทึก": row.get("recorded_fx"),
+                    "อัตราที่คำนวณย้อน": row.get("implied_fx"),
+                    "ต่างกัน (%)": row.get("diff_pct"),
+                }
+                for row in rows
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(
+        "ถ้าอัตราที่คำนวณย้อนคือค่าที่ถูก ให้แก้ `fx_rate_thb` ของแถวนั้นในสมุด — "
+        "ระบบไม่แก้ให้เอง เพราะยอดเงินที่คุณกรอกอาจถูกและตัวเลขอื่นผิดแทน"
+    )
+
+
+def _render_ledger_reports(source: object) -> None:
+    """แสดงรายงานสมุดบัญชีครบทั้งสามชุดจากที่เดียว (ตัด / ซ่อม / ขัดกันเอง).
+
+    ทั้งสามชุดมาคู่กันจาก ``portfolio/tracker.py`` เสมอ ถ้าหน้าจอแสดงแค่ชุดเดียว
+    อีกสองชุดจะเงียบสนิททั้งที่มีข้อความไทยพร้อมใช้อยู่แล้ว
+    """
+
+    def _reason(key: str) -> str:
+        return str(source.get(key) or "") if isinstance(source, dict) else ""
+
+    _render_ledger_skipped_rows(
+        _ledger_report_rows(source, "skipped_rows"), _reason("skipped_reason")
+    )
+    _render_ledger_derived_fx_rows(
+        _ledger_report_rows(source, "derived_fx_rows"), _reason("derived_fx_reason")
+    )
+    _render_ledger_inconsistent_rows(
+        _ledger_report_rows(source, "inconsistent_rows"), _reason("inconsistent_reason")
+    )
+
+
+def _render_dividend_section_header(dividend_summary: dict) -> bool:
+    """เปิดหัวข้อปันผลพร้อมเตือนแถวที่ถูกตัด — คืน ``True`` ถ้าเปิดหัวข้อแล้ว.
+
+    ต้องเปิดหัวข้อ**แม้ ``count == 0``** เมื่อมีแถวถูกตัด เพราะกรณีที่แถวปันผล
+    ถูกตัดทั้งหมดคือกรณีที่ผู้ใช้ต้องรู้มากที่สุด — ยอดที่เห็นเป็น 0 ทั้งที่
+    บันทึกปันผลไว้จริง ถ้าซ่อนทั้งบล็อกตาม ``count`` ข้อมูลที่หายไปจะเงียบสนิท
+    (FIX_PLAN ข้อ 1.2 / รอบเก็บกวาด C1)
+    """
+    skipped_rows = _ledger_skipped_rows(dividend_summary)
+    if int(dividend_summary.get("count") or 0) <= 0 and not skipped_rows:
+        return False
+    st.subheader("ปันผลรับจริง (สุทธิหลังภาษี)")
+    _render_ledger_skipped_rows(
+        skipped_rows, str(dividend_summary.get("skipped_reason") or "")
+    )
+    return True
+
+
+def _tracked_target_weights() -> dict[str, float]:
+    """สัดส่วนเป้าหมาย **ของทุกกองที่ระบบติดตาม** — สูตรเดียวของทั้งหน้าจอนี้.
+
+    ทั้งโหมด "ดึงพอร์ตเข้าเป้า" และกล่อง drift ต้องเรียกผ่านที่นี่เท่านั้น
+    เพราะ ``get_target_weights()`` **normalize ให้รวมเป็น 1.0 บนรายชื่อที่ส่งเข้าไป**
+    ส่งเฉพาะกองที่ถืออยู่ = เป้าถูกขยายใหม่บนเซ็ตย่อยนั้น (ถือ VOO+SCHD อยู่ →
+    SCHD กลายเป็น 41.7% ทั้งที่ตั้งไว้ 25%) แล้วกองที่ยังไม่เคยซื้อจะหายจากทั้ง
+    ตัวหารและตารางผลลัพธ์ ⇒ **ไม่มีวันได้เงิน** และเลขบนจอไม่ตรงกับหน้า Settings
+    ซึ่งเป็นบั๊กที่ ``portfolio/targets.py`` ถูกสร้างมาแก้ตั้งแต่แรก
+    (AUDIT_2026-08-06 C2 / FIX_PLAN 3.4 · ฝั่ง backend แก้ไปแล้วที่ rebalance_service)
+
+    โยน :class:`InvalidTargetWeights` ต่อให้ผู้เรียก — คอนฟิกเป้าหมายผิดรูปคือ
+    "ไม่รู้เป้าหมาย" ห้ามเดาแทนแล้วทำแผนเงินต่อ
+    """
+    tracked = [str(t).strip().upper() for t in get_tickers() if str(t).strip()]
+    return get_target_weights(tracked)
+
+
+def _render_invalid_target_weights(exc: Exception) -> None:
+    """ข้อความเดียวที่ใช้ร่วมกันเมื่อ ``portfolio.target_weights`` ผิดรูป."""
+    st.error(
+        f"สัดส่วนพอร์ตเป้าหมายใน config.json ใช้ไม่ได้ ({exc}) — "
+        "ยังเทียบพอร์ตกับเป้าหมายไม่ได้ (แก้ `portfolio.target_weights` แล้วกด Refresh Data)"
+    )
+
+
+def _unpriced_tickers(holdings_df: pd.DataFrame) -> list[str]:
+    """ticker ที่ถืออยู่แต่ดึงราคาไม่สำเร็จ — มีแม้ตัวเดียว = เทียบสัดส่วนพอร์ตไม่ได้.
+
+    ตัวหารของทุกสัดส่วน (มูลค่าพอร์ตรวม) ต้องมาจากราคาครบทุกตัว
+    ถ้าตัดตัวที่ราคาหายทิ้งเงียบ ๆ ตัวที่เหลือจะดู overweight ทันที
+    ซึ่งเป็นบั๊กเดียวกับที่ ``backend/services/rebalance_service.py`` แก้ไปในข้อ 1.3
+    """
+    if holdings_df.empty or "Price OK" not in holdings_df.columns:
+        return []
+    unpriced = holdings_df[~holdings_df["Price OK"].astype(bool)]
+    return [str(t) for t in unpriced["Ticker"]]
+
+
 def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     """ชนะ VOO ไหม + %/ปี money-weighted (Roadmap ข้อ 14) — เทียบเงินก้อนเดียวกัน วันเดียวกัน."""
     st.divider()
     st.subheader("ชนะ VOO ไหม (เงินก้อนเดียวกัน วันเดียวกัน)")
 
     transactions = get_transactions()
+    # แถวที่ถูกตัดไม่ได้เข้าทั้งขาพอร์ตจริงและขา VOO เงา — ต้องบอก ไม่งั้น "ชนะ/แพ้" จะอ่านผิด
+    ledger_skipped = _ledger_skipped_rows(transactions)
+    if ledger_skipped:
+        st.warning(
+            f"ไม่รวม {len(ledger_skipped)} ไม้ที่ข้อมูลในสมุดบัญชีไม่ครบ — "
+            "ตัวเลขเทียบ VOO และ %ต่อปีด้านล่างคิดจากไม้ที่เหลือเท่านั้น (รายละเอียดอยู่ด้านบนของหน้า)"
+        )
     buys = transactions[
         (transactions["tx_type"] != TX_DIVIDEND)
         & (pd.to_numeric(transactions["shares"], errors="coerce") > 0)
     ]
     if buys.empty:
-        st.caption("ยังไม่มีรายการซื้อใน ledger — ไม่มีอะไรให้เทียบ")
+        if ledger_skipped:
+            st.caption("ไม้ซื้อทุกรายการถูกตัดเพราะข้อมูลไม่ครบ — ยังเทียบ VOO ไม่ได้ (ไม่ใช่ 'ไม่มีรายการซื้อ')")
+        else:
+            st.caption("ยังไม่มีรายการซื้อใน ledger — ไม่มีอะไรให้เทียบ")
         return
 
     try:
@@ -2488,16 +2991,84 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     bench_col2.metric("ถ้าซื้อ VOO ล้วน (USD)", f"{shadow_value:,.2f}", delta=f"{shadow_pct:+.2f}%")
     bench_col3.metric("ส่วนต่าง", f"{actual_value_usd - shadow_value:+,.2f} USD")
     if shadow["skipped"]:
-        st.warning(f"{shadow['skipped']} ไม้เทียบไม่ได้ (ไม่มีราคา VOO ณ วันซื้อ) — ตัดออกจากขา VOO เงา")
+        # เหตุผลต้องตรงชนิด — ``shadow_benchmark`` แยก "แถวในสมุดเสียเอง" ออกจาก
+        # "ไม่มีราคา VOO ณ วันซื้อ" มาให้แล้ว เดิมหน้าจออ่านแต่ผลรวมแล้วพิมพ์เหตุผล
+        # ตายตัวข้อเดียว ⇒ บอกสาเหตุผิด (AUDIT_2026-08-06 C2.3)
+        skipped_no_price = int(shadow.get("skipped_no_price") or 0)
+        skipped_bad_row = int(shadow.get("skipped_bad_row") or 0)
+        causes: list[str] = []
+        if skipped_no_price:
+            causes.append(f"{skipped_no_price} ไม้ไม่มีราคา VOO ณ วันซื้อ (ซื้อก่อนช่วงที่มีข้อมูล)")
+        if skipped_bad_row:
+            causes.append(
+                f"{skipped_bad_row} ไม้ข้อมูลในสมุดใช้ไม่ได้ (วันที่/จำนวนหุ้น/ราคาอ่านไม่ออก)"
+            )
+        st.warning(
+            f"{shadow['skipped']} ไม้เทียบไม่ได้ ตัดออกจากขา VOO เงา — "
+            + " · ".join(causes or ["ไม่ทราบสาเหตุ"])
+        )
+    # as-of ของราคา VOO ที่ใช้ตีมูลค่าเงา — docstring ของ shadow_benchmark สั่งให้ผู้เรียก
+    # เตือนก่อนเอาไปเทียบ แต่เดิมไม่มีโค้ดโปรดักชันอ่านคีย์นี้เลย (C2.3)
+    benchmark_asof = shadow.get("benchmark_asof")
+    if benchmark_asof is not None:
+        st.caption(
+            f"มูลค่า VOO เงาตีด้วยราคาปิดวันที่ {pd.Timestamp(benchmark_asof):%Y-%m-%d} "
+            "(พอร์ตจริงตีด้วยราคาล่าสุดที่ดึงได้ — ถ้าคนละวันกัน ส่วนต่างจะรวมผลของวันที่ต่างกันไว้ด้วย)"
+        )
+    prices_dropped = int(shadow.get("benchmark_prices_dropped") or 0)
+    if prices_dropped:
+        st.warning(
+            f"คัดราคา VOO ทิ้ง {prices_dropped} จุดเพราะใช้ไม่ได้ — "
+            "ถ้าจุดที่ทิ้งคือวันล่าสุด มูลค่า VOO เงาจะเป็นราคาของวันก่อนหน้า"
+        )
 
-    # %/ปีแบบ money-weighted จากกระแสเงินสดจริง (ซื้อเป็นลบ, ปันผล+มูลค่าปัจจุบันเป็นบวก)
-    flows: list[tuple[pd.Timestamp, float]] = [
-        (pd.to_datetime(row["date"]), -float(row["shares"]) * float(row["price_usd"]))
-        for _, row in buys.iterrows()
-    ]
-    for _, dividend_row in get_dividends().iterrows():
-        flows.append((pd.to_datetime(dividend_row["date"]), float(dividend_row["amount_usd"])))
-    flows.append((pd.Timestamp.today().normalize(), actual_value_usd))
+    # %/ปีแบบ money-weighted — **ฐานเงินบาท** เพราะเป็นตัวเลขที่เอาไปหักเงินเฟ้อไทย
+    # (AUDIT_2026-08-06 H8) เดิมสร้าง flow จาก shares × price_usd ⇒ ได้ผลตอบแทนฐาน
+    # ดอลลาร์ แล้วลบ CPI ไทยทับ: ช่วงบาทแข็งตัวเลขสูงเกินจริงหลายจุด/ปี และพลิก
+    # เครื่องหมายได้ (USD บวก แต่บาทติดลบ) · ขาซื้อใช้ ``amount_thb`` = เงินที่จ่ายจริง
+    # ซึ่งรวมค่าธรรมเนียมไว้แล้ว (เดิมค่าธรรมเนียมหายไปจากกระแสเงินสดทั้งหมด)
+    flows_thb: list[tuple[pd.Timestamp, float]] = []
+    flows_usd: list[tuple[pd.Timestamp, float]] = []
+    buys_without_thb = 0
+    usd_incomplete = False  # ตัวเลขฐานดอลลาร์เป็นของแถม — ไม่ครบก็ไม่แสดง ห้ามคิดจากไม้ที่เหลือ
+    for _, row in buys.iterrows():
+        when = pd.to_datetime(row["date"])
+        paid_thb = _to_number(row.get("amount_thb"))
+        if paid_thb is None or paid_thb <= 0:
+            buys_without_thb += 1
+        else:
+            flows_thb.append((when, -paid_thb))
+        shares = _to_number(row.get("shares"))
+        price_usd = _to_number(row.get("price_usd"))
+        if shares is None or price_usd is None:
+            usd_incomplete = True
+        else:
+            flows_usd.append((when, -shares * price_usd))
+    dividends = get_dividends()
+    dividends_without_thb = 0
+    for _, dividend_row in dividends.iterrows():
+        when = pd.to_datetime(dividend_row["date"])
+        received_thb = _to_number(dividend_row.get("amount_thb"))
+        if received_thb is None:
+            dividends_without_thb += 1
+        else:
+            flows_thb.append((when, received_thb))
+        received_usd = _to_number(dividend_row.get("amount_usd"))
+        if received_usd is None:
+            usd_incomplete = True
+        else:
+            flows_usd.append((when, received_usd))
+    today = pd.Timestamp.today().normalize()
+    actual_value_thb = float(priced["Current Value (THB)"].sum()) if not priced.empty else 0.0
+    flows_thb.append((today, actual_value_thb))
+    flows_usd.append((today, actual_value_usd))
+
+    unpriced_now = _unpriced_tickers(holdings_df)
+    if unpriced_now:
+        st.caption(
+            f"มูลค่าปลายทางของกระแสเงินสดไม่รวม {', '.join(unpriced_now)} (ดึงราคาไม่ได้) — "
+            "%ต่อปีด้านล่างจึงต่ำกว่าความจริง"
+        )
 
     portfolio_age_days = (pd.Timestamp.today() - buys["date"].min()).days
     if portfolio_age_days < 90:
@@ -2506,11 +3077,33 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
             "(ตัวเลขรวมด้านบนคือของจริงทั้งหมดแล้ว)"
         )
         return
-    annual_rate = xirr(flows)
-    if annual_rate is None:
-        st.caption("คำนวณ %ต่อปี (XIRR) ไม่ได้จากกระแสเงินสดปัจจุบัน — ไม่แสดงตัวเลขแทน")
+    if buys_without_thb or dividends_without_thb:
+        # ขาดยอดบาทของบางไม้ = ฐานเงินบาทไม่ครบ ห้ามคิด %ต่อปีจากไม้ที่เหลือเงียบ ๆ
+        st.warning(
+            f"คำนวณ %ต่อปีฐานเงินบาทไม่ได้: ไม่มียอดเงินบาทของไม้ซื้อ {buys_without_thb} รายการ "
+            f"และปันผล {dividends_without_thb} รายการ — เติมช่อง `amount_thb` ในสมุดแล้วลองใหม่"
+        )
         return
-    xirr_text = f"ผลตอบแทนจริง ~{annual_rate * 100.0:+.1f}%/ปี (money-weighted รวมปันผลที่บันทึก)"
+    annual_rate = xirr(flows_thb)
+    if annual_rate is None:
+        # xirr() คืน None เมื่อพิสูจน์รากไม่ผ่าน — ดีกว่าคืนขอบบน +1000%/ปี (FIX_PLAN ข้อ 1.6)
+        hint = (
+            " (อาจเป็นเพราะไม้ที่ข้อมูลไม่ครบถูกตัดออกจากกระแสเงินสด — ดูรายการด้านบน)"
+            if ledger_skipped
+            else ""
+        )
+        st.caption(f"คำนวณ %ต่อปี (XIRR) ไม่ได้จากกระแสเงินสดปัจจุบัน — ไม่แสดงตัวเลขแทน{hint}")
+        return
+    xirr_text = (
+        f"ผลตอบแทนจริง ~{annual_rate * 100.0:+.1f}%/ปี "
+        "(ฐานเงินบาท · money-weighted จากเงินบาทที่จ่ายจริงรวมค่าธรรมเนียม และปันผลที่บันทึก)"
+    )
+    usd_rate = None if usd_incomplete else xirr(flows_usd)
+    if usd_rate is not None:
+        xirr_text += (
+            f" · ฐานดอลลาร์ ~{usd_rate * 100.0:+.1f}%/ปี (ไม่รวมผลของอัตราแลกเปลี่ยน "
+            "จึงห้ามเอาไปหักเงินเฟ้อไทย)"
+        )
     thai_inflation = get_thai_inflation()
     if thai_inflation is not None:
         real_rate = annual_rate * 100.0 - float(thai_inflation["inflation_pct"])
@@ -2634,6 +3227,85 @@ def _render_overlap_section() -> None:
     )
 
 
+_UNKNOWN_MONEY_TEXT = "ไม่ทราบ"
+
+
+def _money_or_unknown(value: float | None) -> str:
+    """จำนวนเงินบาทที่ไม่รู้ต้องอ่านว่า "ไม่ทราบ" ไม่ใช่ 0.00."""
+    return _UNKNOWN_MONEY_TEXT if value is None else f"{value:,.2f}"
+
+
+def _render_portfolio_totals(
+    total_summary: dict, primary_currency: str, today_fx_rate: float
+) -> None:
+    """แถบตัวเลขรวมของหน้า Portfolio — ต้องติดป้ายทั้งฐานเงินลงทุนและที่มาของอัตราแลกเปลี่ยน.
+
+    สามอย่างที่ต้องพูดออกมา ไม่งั้นตัวเลขบนจอเดียวกันจะขัดกันเองโดยไม่มีอะไรบอก:
+
+    1. **เงินลงทุนมีสองฐาน** ``invested_thb_all`` (จ่ายไปจริงทั้งหมด) กับ
+       ``invested_thb_priced`` (เฉพาะกองที่มีราคา = ฐานเดียวที่ P&L/% คิดมาจาก)
+       เดิมแสดงฐานแรกคู่กับกำไรที่คิดจากฐานที่สอง ผู้ใช้จึงประกอบเลขกลับเองไม่ได้ (H9)
+    2. **NaN = "ไม่รู้มูลค่า"** ห้ามพิมพ์เป็น ``0.00`` (อ่านว่า "เท่าทุนพอดี") หรือ ``nan``
+    3. **``fx_is_live=False``** = ตัวเลขบาททั้งก้อนคิดจากค่าสำรอง ต้องเตือน (B9/C1.5)
+    """
+    fx_is_live = total_summary.get("fx_is_live")
+    if fx_is_live is False:
+        fx_used = _to_number(total_summary.get("fx_rate_thb"))
+        if fx_used is None:
+            fx_used = _to_number(today_fx_rate)
+        fx_text = f"{fx_used:.2f}" if fx_used is not None else _UNKNOWN_MONEY_TEXT
+        st.warning(
+            f"อัตราแลกเปลี่ยนที่ใช้แปลงมูลค่าวันนี้เป็น**ค่าสำรอง** ({fx_text} บาท/USD) "
+            "ไม่ใช่อัตราสด — ตัวเลขบาททุกช่องด้านล่างคลาดเคลื่อนตามไปด้วย"
+        )
+
+    invested_all = _to_number(
+        total_summary.get("invested_thb_all", total_summary.get("total_invested_thb"))
+    )
+    invested_priced = _to_number(total_summary.get("invested_thb_priced"))
+    current_value = _to_number(total_summary.get("current_value_thb"))
+    pnl_value = _to_number(total_summary.get("total_pnl_thb"))
+    return_pct = _to_number(total_summary.get("total_return_pct"))
+    fee_total = _to_number(total_summary.get("total_fee_thb"))
+
+    to_usd = str(primary_currency).upper() == "USD"
+    divisor = _to_number(today_fx_rate) if to_usd else 1.0
+    unit = "USD" if to_usd else "THB"
+
+    def _money(value: float | None) -> str:
+        if value is None or divisor is None or divisor <= 0:
+            return _UNKNOWN_MONEY_TEXT
+        return f"{value / divisor:,.2f}"
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(f"เงินลงทุนรวม ({unit})", _money(invested_all))
+    m2.metric(f"มูลค่าปัจจุบัน ({unit})", _money(current_value))
+    m3.metric(
+        f"กำไร/ขาดทุน ({unit})",
+        _money(pnl_value),
+        delta=(f"{return_pct:.2f}%" if return_pct is not None else None),
+    )
+    m4.metric("FX Rate วันนี้", f"{float(today_fx_rate):.2f} THB/USD")
+    m5.metric("ค่าธรรมเนียมรวม (THB)", _money_or_unknown(fee_total))
+
+    if current_value is None or pnl_value is None:
+        st.info(
+            "ยังไม่รู้มูลค่า/กำไรของพอร์ต เพราะดึงราคาปัจจุบันไม่ได้เลยสักกอง — "
+            f"ช่องที่ขึ้นว่า “{_UNKNOWN_MONEY_TEXT}” คือ **ไม่รู้** ไม่ใช่ 0 บาท"
+        )
+    if (
+        invested_all is not None
+        and invested_priced is not None
+        and abs(invested_all - invested_priced) > 0.005
+    ):
+        st.caption(
+            f"เงินลงทุนรวมด้านบนคือยอดที่จ่ายไปจริงทั้งหมด {invested_all:,.2f} บาท "
+            f"แต่กำไร/ขาดทุนและ % คิดจากฐานเฉพาะกองที่มีราคา {invested_priced:,.2f} บาท "
+            f"(ต่างกัน {invested_all - invested_priced:,.2f} บาท = กองที่ดึงราคาไม่ได้) — "
+            "สองตัวเลขนี้อยู่คนละฐาน จึงลบกันตรง ๆ ไม่ได้"
+        )
+
+
 def render_portfolio_page() -> None:
     """หน้า Portfolio: บันทึกธุรกรรมและสรุปพอร์ต."""
     st.header("Portfolio")
@@ -2751,28 +3423,10 @@ def render_portfolio_page() -> None:
             "มูลค่าและกำไร/ขาดทุนด้านล่างคิดเฉพาะ ETF ที่มีราคาเท่านั้น"
         )
 
-    m1, m2, m3, m4, m5 = st.columns(5)
-    if primary_currency == "USD":
-        invested = float(total_summary["total_invested_thb"]) / today_fx_rate
-        current = float(total_summary["current_value_thb"]) / today_fx_rate
-        pnl_value = float(total_summary["total_pnl_thb"]) / today_fx_rate
-        m1.metric("เงินลงทุนรวม (USD)", f"{invested:,.2f}")
-        m2.metric("มูลค่าปัจจุบัน (USD)", f"{current:,.2f}")
-        m3.metric(
-            "กำไร/ขาดทุน (USD)",
-            f"{pnl_value:,.2f}",
-            delta=f"{float(total_summary['total_return_pct']):.2f}%",
-        )
-    else:
-        m1.metric("เงินลงทุนรวม (THB)", f"{float(total_summary['total_invested_thb']):,.2f}")
-        m2.metric("มูลค่าปัจจุบัน (THB)", f"{float(total_summary['current_value_thb']):,.2f}")
-        m3.metric(
-            "กำไร/ขาดทุน (THB)",
-            f"{float(total_summary['total_pnl_thb']):,.2f}",
-            delta=f"{float(total_summary['total_return_pct']):.2f}%",
-        )
-    m4.metric("FX Rate วันนี้", f"{today_fx_rate:.2f} THB/USD")
-    m5.metric("ค่าธรรมเนียมรวม (THB)", f"{float(total_summary['total_fee_thb']):,.2f}")
+    # แถวธุรกรรมที่ถูกตัด / ถูกซ่อมอัตรา / ยอดเงินขัดกันเอง (FIX_PLAN ข้อ 1.2 + C1.2/C1.3)
+    _render_ledger_reports(total_summary)
+
+    _render_portfolio_totals(total_summary, primary_currency, today_fx_rate)
 
     if holdings_df.empty:
         st.info("No portfolio data found.")
@@ -2893,8 +3547,8 @@ def render_portfolio_page() -> None:
         st.caption("ไม่ทราบเงินเฟ้อไทยขณะนี้ (ดึงข้อมูลไม่สำเร็จ) — ไม่แสดงตัวเลขประมาณแทน")
 
     dividend_summary = get_dividend_summary()
+    _render_dividend_section_header(dividend_summary)
     if int(dividend_summary["count"]) > 0:
-        st.subheader("ปันผลรับจริง (สุทธิหลังภาษี)")
         _, withheld_tax_thb = gross_up_net_dividend(float(dividend_summary["total_thb"]))
         income_col1, income_col2, income_col3 = st.columns(3)
         income_col1.metric("รับสุทธิสะสม", f"{float(dividend_summary['total_thb']):,.2f} ฿")
@@ -2935,9 +3589,22 @@ def render_portfolio_page() -> None:
     st.subheader("Transaction History")
     with st.spinner(" ..."):
         all_transactions = get_transactions()
+    # "ถูกตัดเพราะข้อมูลไม่ครบ" ≠ "ยังไม่เคยบันทึกธุรกรรม" — ต้องแยกให้ผู้ใช้เห็น (C1)
+    # (รายละเอียดรายแถวแสดงไปแล้วที่บล็อกสรุปด้านบนของหน้าเดียวกัน จึงไม่ซ้ำตารางอีกรอบ)
+    history_skipped = _ledger_skipped_rows(all_transactions)
     if all_transactions.empty:
-        st.info("No transactions found.")
+        if history_skipped:
+            st.warning(
+                f"ทุกแถวในสมุดบัญชี ({len(history_skipped)} แถว) ถูกตัดเพราะข้อมูลไม่ครบ — "
+                "ไม่ใช่ 'ยังไม่มีธุรกรรม' ดูรายละเอียดด้านบนแล้วเติมค่าที่ขาดใน transactions.csv"
+            )
+        else:
+            st.info("No transactions found.")
         return
+    if history_skipped:
+        st.warning(
+            f"ตารางนี้ไม่รวม {len(history_skipped)} แถวที่ข้อมูลไม่ครบ (รายละเอียดอยู่ด้านบนของหน้า)"
+        )
 
     ticker_options = ["ทั้งหมด"] + sorted(all_transactions["ticker"].dropna().astype(str).str.upper().unique().tolist())
     selected_ticker = st.selectbox("กรอง ETF", ticker_options, index=0)
@@ -3046,6 +3713,9 @@ def _score_reason_chips(row: dict) -> str:
         v = float(value)
         v_color = THEME["positive"] if v > 0 else THEME["negative"] if v < 0 else THEME["text_secondary"]
         chips.append(_chip_html(f"{label} {v:+.1f}%", v_color))
+    if not _momentum_available(row):
+        # ผลตอบแทน 1/3 เดือนคำนวณไม่ได้ (ข้อมูลสั้นเกินไป) — บอกตรง ๆ ห้ามโชว์ 0/20
+        chips.append(_chip_html("โมเมนตัม: ไม่มีข้อมูล (ตัดจากคะแนนเต็ม)", THEME["text_secondary"]))
     if not row.get("dividend_available", False):
         chips.append(_chip_html("ปันผล: ไม่มีข้อมูล (ตัดจากคะแนนเต็ม)", THEME["text_secondary"]))
     elif int(row.get("dividend_score") or 0) > 0:
@@ -3083,10 +3753,17 @@ def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
 def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
     """audit trail "ทำไมได้เท่านี้" (Roadmap ข้อ 9) — โชว์เลขที่โมเดลคืนมาทุกชั้น ไม่คำนวณใหม่."""
     dividend_max_text = str(DIVIDEND_MAX) if row.get("dividend_available") else "ตัดออก (ไม่มีข้อมูลปันผล)"
+    # ตัวหารต้องเป็นเพดานจริงของแถวนี้ (ข้อ 1.5) — ค่าคงที่ 20 จะโกหกเมื่อหน้าต่างถูกตัดออก
+    momentum_points = _momentum_points(row)
+    momentum_text = (
+        f"{momentum_points}/{_momentum_max(row)}"
+        if momentum_points is not None
+        else "ตัดออก (ไม่มีข้อมูลผลตอบแทน 1/3 เดือน)"
+    )
     st.markdown(
         f"**ชั้น 1 — คะแนนดิบ** (จาก `score_from_prices`)  \n"
         f"Trend {row.get('trend_score')}/{TREND_MAX} · Timing {row.get('timing_score')}/{TIMING_MAX} · "
-        f"Momentum {row.get('momentum_score')}/{MOMENTUM_MAX} · Dividend {row.get('dividend_score')}/{dividend_max_text}  \n"
+        f"Momentum {momentum_text} · Dividend {row.get('dividend_score')}/{dividend_max_text}  \n"
         f"รวม {row.get('total_score')}/{row.get('max_score')} = **{float(row.get('total_pct') or 0):.1f}%**"
     )
     if alloc_item:
@@ -3108,6 +3785,11 @@ def _render_rebalance_mode(budget_thb: float, scores_by_ticker: dict) -> bool:
 
     คืน True เมื่อแสดงแผนโหมดนี้แล้ว (ผู้เรียกข้ามแผน tilt ปกติ)
     เงื่อนไขไม่ครบ (ไม่มีพอร์ต/ราคา) = แจ้งแล้วคืน False — ห้ามสลับโหมดเงียบ ๆ
+
+    **เป้าหมายมาจาก :func:`_tracked_target_weights` เท่านั้น** (ทั้งพอร์ตที่ระบบติดตาม)
+    เหมือน :func:`_render_drift_advisory` เป๊ะ ๆ — เดิมส่ง ``list(current_values)``
+    คือเฉพาะกองที่ถืออยู่เข้าไป เป้าจึงถูก normalize ใหม่บนเซ็ตย่อยและกองที่ยังไม่เคยซื้อ
+    ไม่มีวันได้เงิน ทั้งที่ชื่อโหมดคือ "ดึงพอร์ตเข้าเป้า" (AUDIT_2026-08-06 C2)
     """
     if not st.toggle(
         "โหมดดึงพอร์ตเข้าเป้า — เทงบเดือนนี้เข้าตัวที่ต่ำกว่าเป้า (ไม่ขาย ไม่มีภาษี)",
@@ -3117,15 +3799,37 @@ def _render_rebalance_mode(budget_thb: float, scores_by_ticker: dict) -> bool:
         return False
     try:
         holdings = get_portfolio_summary()
+        # ราคาขาดแม้ตัวเดียว = ไม่ทำแผน (FIX_PLAN ข้อ 1.3): มูลค่าพอร์ตรวมคือตัวหาร
+        # ของทุกสัดส่วนในโหมดนี้ ถ้าตัดตัวที่ราคาหายทิ้ง เงินจะถูกเทเข้าตัวที่เหลือผิดสัดส่วน
+        unpriced = _unpriced_tickers(holdings)
+        if unpriced:
+            st.warning(
+                f"ดึงราคาไม่สำเร็จ: {', '.join(unpriced)} — ยังไม่มีแผนดึงเข้าเป้า "
+                "(คิดสัดส่วนจากพอร์ตที่ไม่ครบจะทำให้เทเงินผิดตัว) แสดงแผน DCA ปกติแทน"
+            )
+            return False
         priced = holdings[holdings["Price OK"]] if not holdings.empty else holdings
         current_values = (
-            {str(row["Ticker"]): float(row["Current Value (THB)"]) for _, row in priced.iterrows()}
+            {
+                str(row["Ticker"]).strip().upper(): float(row["Current Value (THB)"])
+                for _, row in priced.iterrows()
+            }
             if not priced.empty
             else {}
         )
-        plan = rebalance_with_new_money(
-            current_values, get_target_weights(list(current_values)), float(budget_thb)
-        )
+    except Exception as exc:
+        st.warning(f"ใช้โหมดดึงเข้าเป้าไม่ได้: {exc} — แสดงแผน DCA ปกติแทน")
+        return False
+
+    try:
+        targets = _tracked_target_weights()
+    except InvalidTargetWeights as exc:
+        # คอนฟิกผิดรูป = ไม่รู้เป้าหมายจริง ห้ามเดาแล้วเทเงินตามที่เดา
+        _render_invalid_target_weights(exc)
+        return False
+
+    try:
+        plan = rebalance_with_new_money(current_values, targets, float(budget_thb))
     except Exception as exc:
         st.warning(f"ใช้โหมดดึงเข้าเป้าไม่ได้: {exc} — แสดงแผน DCA ปกติแทน")
         return False
@@ -3158,6 +3862,41 @@ def _render_rebalance_mode(budget_thb: float, scores_by_ticker: dict) -> bool:
         use_container_width=True,
         hide_index=True,
     )
+
+    # --- สามอย่างที่แผนนี้ "ไม่ได้พูด" ถ้าไม่บังคับให้พูด (ตัดทิ้งเงียบ = ผิดพอกับกุตัวเลข) ---
+    unallocated_thb = float(plan.unallocated_thb)
+    if unallocated_thb > 0:
+        st.warning(
+            f"เหลือเงินที่แจกไม่ลง {unallocated_thb:,.0f} บาท จากงบ {float(plan.budget_thb):,.0f} บาท "
+            "(แผนปัดเป็นหลักร้อย) — ยกไปเดือนหน้าหรือเติมเข้ากองที่ต่ำกว่าเป้ามากที่สุดเอง"
+        )
+
+    # "ไม่ได้ติดตามแล้ว" กับ "ตั้งเป้าไว้ 0% เอง" คนละเรื่องกัน — ห้ามยุบเป็นข้อความเดียว
+    held_untracked = sorted(t for t in current_values if t not in targets)
+    if held_untracked:
+        st.warning(
+            f"ถืออยู่แต่ไม่ได้อยู่ในรายการที่ระบบติดตาม: {', '.join(held_untracked)} — "
+            "มูลค่าของกองเหล่านี้ยังนับอยู่ในตัวหารของทุกสัดส่วนด้านบน แต่ไม่มีแถวในแผน "
+            "และจะไม่ได้รับเงินเดือนนี้ (ถ้าตั้งใจถือต่อ ให้เพิ่มเข้ารายการที่ติดตามในหน้า Settings)"
+        )
+    held_zero_target = sorted(
+        t for t in current_values if t in targets and float(targets[t]) <= 0
+    )
+    if held_zero_target:
+        st.caption(
+            f"ตั้งเป้าไว้ 0% แต่ยังถืออยู่: {', '.join(held_zero_target)} — "
+            "โหมดนี้ไม่ขายอะไรทั้งสิ้น จึงได้แค่ไม่เติมเงินเข้าไปอีก "
+            "(มูลค่ายังนับอยู่ในตัวหารของทุกสัดส่วนด้านบน)"
+        )
+
+    target_without_money = [t for t, w in targets.items() if float(w) > 0 and t not in plan]
+    if target_without_money:
+        st.caption(
+            f"ไม่ได้รับเงินเดือนนี้: {', '.join(target_without_money)} — "
+            "สัดส่วนตอนนี้ถึง/เกินเป้าแล้ว หรือส่วนแบ่งที่ควรได้น้อยกว่าหนึ่งก้อน (100 บาท) "
+            "ไม่ใช่ว่าถูกตัดออกจากเป้าหมาย"
+        )
+
     _render_execute_list(plan, scores_by_ticker)
     return True
 
@@ -3230,6 +3969,16 @@ def _render_drift_advisory() -> None:
     """เทียบพอร์ตจริงกับเป้าหมาย (Roadmap ข้อ 7) — advisory เท่านั้น ไม่แก้เลขจัดสรร.
 
     ใช้เกณฑ์ drift 5% เดียวกับ rebalance_service เพื่อไม่สร้างนิยามใหม่
+    ราคาของที่ถืออยู่ขาดแม้ตัวเดียว = **ไม่ตอบ** (เหมือนข้อ 1.3 ฝั่ง backend)
+    เพราะ drift ทุกตัวหารด้วยมูลค่าพอร์ตรวม ถ้าตัวหารไม่ครบ ตัวเลขจะเอียงทั้งกระดาน
+
+    **เป้าหมายต้องมาจากทั้งพอร์ตที่ระบบติดตามเสมอ** (:func:`_tracked_target_weights`
+    ตัวเดียวกับที่โหมด "ดึงพอร์ตเข้าเป้า" ใช้ — ห้ามมีสองสูตร)
+    เดิมส่งเฉพาะ ticker ที่ *ถืออยู่แล้ว* เข้าไป → ``portfolio/targets.py`` normalize
+    ใหม่ให้รวมเป็น 1.0 บนเซ็ตย่อยนั้น กองที่ยังไม่เคยซื้อจึงหายจากทั้งตัวหารและ
+    ตารางผลลัพธ์ ⇒ "ขาดกองนั้นทั้งกอง" ถูกแปลงเป็น drift = 0 แล้วหน้าจอสรุปว่า
+    "ใกล้เป้าหมายทุกตัว" ทั้งที่ห่างจากเป้าจริงเกือบ 30 จุด (AUDIT_2026-08-06 H7)
+    กองที่ยังไม่ถือต้องอยู่ในรายการด้วย ``actual = 0%`` (drift = −target)
     """
     try:
         holdings = get_portfolio_summary()
@@ -3238,25 +3987,47 @@ def _render_drift_advisory() -> None:
         return
     if holdings.empty:
         return  # ยังไม่มีพอร์ตจริง — ไม่มีอะไรให้เทียบ
+    unpriced = _unpriced_tickers(holdings)
+    if unpriced:
+        st.warning(
+            f"ดึงราคาไม่สำเร็จ: {', '.join(unpriced)} — ยังบอกไม่ได้ว่าพอร์ตเอียงจากเป้าแค่ไหน "
+            "(ถ้าคิดจากเฉพาะตัวที่มีราคา ตัวที่เหลือจะดูเกินสัดส่วนทั้งที่ไม่ได้เกินจริง)"
+        )
+        return
     priced = holdings[holdings["Price OK"]]
     total_value = float(priced["Current Value (THB)"].sum()) if not priced.empty else 0.0
     if total_value <= 0:
         return
 
-    targets = get_target_weights([str(t) for t in priced["Ticker"]])
-    drifts: list[tuple[str, float]] = []
-    for _, holding in priced.iterrows():
-        ticker = str(holding["Ticker"])
-        actual_pct = float(holding["Current Value (THB)"]) / total_value * 100.0
+    try:
+        targets = _tracked_target_weights()  # สูตรเดียวกับโหมด rebalance — ห้ามมีสองสูตร
+    except InvalidTargetWeights as exc:
+        # คอนฟิกผิดรูป = ไม่รู้เป้าหมายจริง ห้ามเดาแทนแล้วสรุปว่าเอียง/ไม่เอียง
+        _render_invalid_target_weights(exc)
+        return
+
+    actual_pct_by_ticker = {
+        str(holding["Ticker"]).strip().upper(): float(holding["Current Value (THB)"]) / total_value * 100.0
+        for _, holding in priced.iterrows()
+    }
+    # union ของ "กองที่ระบบติดตาม/มีเป้าหมาย" กับ "กองที่ถืออยู่จริง" — ไม่มีฝั่งไหนหาย
+    # (``targets`` ครอบ ticker ที่ระบบติดตามครบอยู่แล้ว เพราะถามด้วย get_tickers())
+    universe = list(dict.fromkeys([*targets, *actual_pct_by_ticker]))
+    drifts: list[tuple[str, float, bool]] = []
+    for ticker in universe:
+        actual_pct = actual_pct_by_ticker.get(ticker, 0.0)
         target_pct = float(targets.get(ticker, 0.0)) * 100.0
-        drifts.append((ticker, actual_pct - target_pct))
+        drifts.append((ticker, actual_pct - target_pct, ticker not in actual_pct_by_ticker))
 
     DRIFT_THRESHOLD_PCT = 5.0
-    off_target = [(t, d) for t, d in drifts if abs(d) >= DRIFT_THRESHOLD_PCT]
+    off_target = [item for item in drifts if abs(item[1]) >= DRIFT_THRESHOLD_PCT]
     if not off_target:
         st.caption(f"พอร์ตจริงใกล้เป้าหมายทุกตัว (drift < {DRIFT_THRESHOLD_PCT:.0f}%) — DCA ตามแผนได้เลย")
         return
-    drift_text = ", ".join(f"{t} {d:+.1f}% จากเป้า" for t, d in sorted(off_target, key=lambda x: -abs(x[1])))
+    drift_text = ", ".join(
+        f"{t} {d:+.1f}% จากเป้า" + (" (ยังไม่ได้ซื้อ)" if not_held else "")
+        for t, d, not_held in sorted(off_target, key=lambda x: -abs(x[1]))
+    )
     st.info(
         f"พอร์ตจริงตอนนี้เอียง: {drift_text} — การซื้อตามแผนเดือนนี้ช่วยดึงตัวที่ต่ำกว่าเป้ากลับ"
         "โดยไม่ต้องขาย (ข้อมูลจาก ledger ในเครื่อง · คำอธิบายเท่านั้น ไม่เปลี่ยนตัวเลขจัดสรร)"
@@ -3417,6 +4188,13 @@ def render_scorecard_page() -> None:
         st.caption(
             "ตัวที่ไม่มีข้อมูลปันผล คะแนนเต็มคือ 90 (ตัดหมวด Dividend ออก) — % คิดจากคะแนนเต็มจริงของตัวนั้น"
         )
+    no_momentum = [str(r.get("ticker")) for r in ranked if not _momentum_available(r)]
+    if no_momentum:
+        # แท่ง Momentum ของตัวเหล่านี้ยาว 0 เพราะ "ไม่มีข้อมูล" ไม่ใช่ "ได้ 0 คะแนน" — ต้องบอก
+        st.caption(
+            f"{', '.join(no_momentum)}: ข้อมูลราคาไม่พอคำนวณผลตอบแทน 1/3 เดือน — "
+            "หมวด Momentum ถูกตัดออกจากคะแนนเต็มของตัวนั้น (แท่งจึงว่าง ไม่ใช่ได้ 0 คะแนน)"
+        )
 
     # --- เจาะราย ETF พร้อม chips เหตุผล ---
     st.subheader("เจาะราย ETF (เรียงตามคะแนน)")
@@ -3467,7 +4245,8 @@ def render_dashboard() -> None:
             return
 
         # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
-        default_weights = get_target_weights(tickers)
+        # ผ่าน _tracked_target_weights() ตัวเดียวกับหน้า Scorecard เพื่อไม่ให้มีสองทางเข้า
+        default_weights = _tracked_target_weights()
         config = load_config()
 
         default_page = str(config["display"]["default_page"])

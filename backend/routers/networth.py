@@ -8,9 +8,14 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models.networth_models import NetWorthResponse, SnapshotRequest
+from ..responses import UTF8JSONResponse
 from ..services import networth_service
 
-router = APIRouter(prefix="/api/networth", tags=["networth"])
+# default_response_class: ``warnings``/``skipped_reason`` เป็นข้อความไทย ต้องประกาศ
+# charset ให้ตรงตามที่ CLAUDE.md กำหนด — AUDIT_2026-08-06 D3.2
+router = APIRouter(
+    prefix="/api/networth", tags=["networth"], default_response_class=UTF8JSONResponse
+)
 
 
 @router.get("/current", response_model=NetWorthResponse)

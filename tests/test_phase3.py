@@ -85,12 +85,19 @@ class TestTargetWeights:
         assert weights["VTI"] > 0
         assert sum(weights.values()) == pytest.approx(1.0)
 
-    def test_rebalance_and_goals_share_the_same_presets(self):
-        from backend.services.goal_service import ALLOCATION_MAP
-        from backend.services.rebalance_service import TARGET_WEIGHTS
+    def test_rebalance_reads_the_target_source_not_the_raw_presets(self):
+        """AUDIT_2026-08-06 B4.1 — เดิมตรึงว่า ``TARGET_WEIGHTS is RISK_PROFILES``.
 
-        assert TARGET_WEIGHTS is RISK_PROFILES
+        นั่นคือการตรึง *บั๊ก* ไว้: preset ดิบมองไม่เห็น ``portfolio.target_weights``
+        ที่ผู้ใช้ตั้งเอง และไม่เห็น ticker ที่เพิ่มจากหน้า Settings — แผน rebalance
+        จึงเดินคนละทางกับแผน DCA รายเดือน (VOO ต่างกัน 87,500 บาทในการวัดจริง)
+        ตอนนี้อ่านจาก ``portfolio.targets.get_target_weights()`` แหล่งเดียว
+        """
+        from backend.services import rebalance_service
+        from backend.services.goal_service import ALLOCATION_MAP
+
         assert ALLOCATION_MAP is RISK_PROFILES
+        assert rebalance_service.resolve_target_weights() == get_target_weights()
 
     def test_all_presets_sum_to_one(self):
         for profile, weights in RISK_PROFILES.items():

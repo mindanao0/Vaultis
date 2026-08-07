@@ -4,16 +4,59 @@ services:
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+
+    # ⚠️ ดิสก์ของแผนฟรีเป็น ephemeral — ไฟล์ที่เขียนตอนรันหายทุกครั้งที่ deploy/รีสตาร์ต
+    # SQLite (`vaultis.db`: goals / net worth / monthly reports) จึงไม่คงอยู่บน Render
+    # ถ้าต้องการให้คงอยู่ ต้องใช้แผนที่มีดิสก์ แล้วเปิดบล็อกนี้ + ตั้ง VAULTIS_DB_PATH
+    # ให้ชี้เข้า mountPath (ค่าเริ่มต้นในโค้ดคือไฟล์ในโฟลเดอร์โปรเจกต์ = หายแน่นอน)
+    #
+    # disk:
+    #   name: vaultis-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+
     envVars:
-      - key: DISCORD_WEBHOOK_URL
-        sync: false
-      # LLM ตัวหลักคือ Claude Haiku 4.5 (analysis/llm.py) — เดิมประกาศแต่ Groq
-      # backend บน Render จึงตกไปใช้ fallback ทุกครั้งโดยไม่มีใครตั้งใจ
+      # --- LLM (ผู้ให้บริการเดียว) ---
+      # analysis/llm.py ตั้ง ANTHROPIC_MODEL = "claude-sonnet-5"
+      # ไม่มี fallback แล้ว (ถอด Groq ออก 2026-08-02) — ไม่ตั้งคีย์นี้ = ปุ่ม AI แจ้ง error
+      # ส่วนคะแนน/สัญญาณยังทำงานปกติเพราะคำนวณใน Python
+      # หมายเหตุ: VAULTIS_LLM_AUTO ตั้งใจไม่ประกาศไว้ที่นี่ — งานอัตโนมัติต้องไม่จ่ายเงิน
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: GROQ_API_KEY
+
+      # --- ความปลอดภัย ---
+      # **ต้องตั้ง** สำหรับ deploy สาธารณะ: คำขอมาจาก IP อินเทอร์เน็ต ข้อยกเว้น localhost
+      # ใน backend/security.py จึงไม่มีผล → route ที่ป้องกันไว้ตอบ 503 จนกว่าจะตั้งคีย์
+      - key: VAULTIS_API_KEY
         sync: false
-      - key: GOOGLE_API_KEY
+      # origin ที่อนุญาตให้เบราว์เซอร์เรียก API (คั่นด้วย ,) — ว่าง = localhost:8501 เท่านั้น
+      - key: VAULTIS_ALLOWED_ORIGINS
         sync: false
+
+      # --- ฐานข้อมูล ---
+      # PostgreSQL สำหรับ sentiment + screener history (ว่าง = ข้ามฟีเจอร์นี้)
+      - key: DATABASE_URL
+        sync: false
+      # ตำแหน่งไฟล์ SQLite — ดูคำเตือน ephemeral disk ด้านบน
+      - key: VAULTIS_DB_PATH
+        sync: false
+
+      # --- แจ้งเตือน ---
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+      # --- แหล่งข้อมูล ---
       - key: FRED_API_KEY
+        sync: false
+      - key: NEWSAPI_KEY
+        sync: false
+      - key: REDDIT_CLIENT_ID
+        sync: false
+      - key: REDDIT_CLIENT_SECRET
+        sync: false
+      - key: REDDIT_USER_AGENT
         sync: false

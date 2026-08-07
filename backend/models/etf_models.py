@@ -5,7 +5,16 @@ from pydantic import BaseModel
 
 
 class ETFInfo(BaseModel):
+    """ข้อมูลพื้นฐานของ ETF — ``data_ok=False`` คือ "ดึงไม่สำเร็จ" ไม่ใช่ "ไม่มีข้อมูล".
+
+    ก่อนหน้านี้ความล้มเหลวของ yfinance ถูกคืนเป็น ``ETFInfo(symbol=sym)`` เฉย ๆ
+    ซึ่งหน้าตาเหมือน ETF ที่ไม่มีข้อมูลอะไรเลย ⇒ แยกสองสถานะไม่ออกทั้งฝั่งผู้ใช้และ
+    ฝั่งแคช (ไปค้างอยู่ 6 ชม.) — AUDIT_2026-08-06 B5
+    """
+
     symbol: str
+    data_ok: bool = True
+    error: Optional[str] = None
     name: Optional[str] = None
     price: Optional[float] = None
     nav: Optional[float] = None

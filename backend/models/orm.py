@@ -58,3 +58,7 @@ class MonthlyReport(Base):
     month = Column(String, nullable=False, unique=True, index=True)  # YYYY-MM
     content = Column(Text, nullable=False)
     sent_at = Column(DateTime, nullable=False)
+    # ``ai`` = LLM เขียนบทสรุป (ผู้ใช้จ่ายเงินไปแล้ว) · ``plain`` = ตัวเลขจากโมเดลล้วน
+    # ใช้กันไม่ให้รายงาน plain ทับรายงาน ai ของเดือนเดียวกัน (AUDIT_2026-08-06 M-R1)
+    # ฐานเดิมที่ไม่มีคอลัมน์นี้ถูกเติมให้โดย ``report_service._ensure_report_schema()``
+    source = Column(String, nullable=False, default="plain")

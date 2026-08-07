@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from analysis.llm import AI_DISABLED_MESSAGE
 
 from ..models.etf_models import ETFAnalysis, ETFCompareResponse, ETFInfo, TechnicalIndicators
+from ..responses import UTF8JSONResponse
 from ..services.analysis_service import AnalysisService
 from ..services.cache_service import (
     ETF_INFO_TTL,
@@ -22,7 +23,9 @@ from ..services.technical_service import TechnicalService
 
 ALLOWED_SYMBOLS = frozenset({"VOO", "QQQM", "SCHD", "XLV", "GLDM"})
 
-router = APIRouter(prefix="/api", tags=["ETF Analysis"])
+# default_response_class: คำตอบมีข้อความไทย (ชื่อกอง/คำอธิบาย) ต้องประกาศ charset
+# ให้ตรงตามที่ CLAUDE.md กำหนด — AUDIT_2026-08-06 D3.2
+router = APIRouter(prefix="/api", tags=["ETF Analysis"], default_response_class=UTF8JSONResponse)
 
 _cache = CacheService()
 _info_service = ETFInfoService()
@@ -91,7 +94,11 @@ async def _ensure_info_and_technical(sym: str) -> tuple[ETFInfo, TechnicalIndica
             technical = None
     if technical is None:
         technical = await _technical_service.get_technical(sym)
-        await _cache.set(tkey, technical.model_dump(mode="json"), TECHNICAL_TTL)
+        # ห้ามแคชผลที่ด่าน _technical_fetch_failed จะปฏิเสธอยู่แล้ว — ไม่งั้น
+        # "ดึงไม่สำเร็จ" ค้างเป็น 500 ไปอีก 15 นาทีโดยไม่ได้ลองดึงใหม่เลย
+        # (AUDIT_2026-08-06 B5)
+        if not _technical_fetch_failed(technical):
+            await _cache.set(tkey, technical.model_dump(mode="json"), TECHNICAL_TTL)
 
     return info, technical
 

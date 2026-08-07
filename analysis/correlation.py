@@ -47,7 +47,8 @@ def calculate_correlation(period: str = "10y") -> pd.DataFrame:
         group_by="ticker",
     )
     prices = _extract_adj_close(raw_data, tickers)
-    daily_returns = prices.pct_change().dropna(how="all")
+    # fill_method=None: ห้าม ffill ราคาก่อนคำนวณ (B11 — เหตุผลเดียวกับ risk.py)
+    daily_returns = prices.pct_change(fill_method=None).dropna(how="all")
     if daily_returns.empty:
         raise ValueError("ผลตอบแทนรายวันว่าง ไม่สามารถคำนวณ Correlation ได้")
     return daily_returns.corr()
@@ -83,11 +84,16 @@ def get_correlation_insight(corr_matrix: pd.DataFrame) -> str:
 
 @cache_data_1h
 def calculate_correlation_matrix(price_df: pd.DataFrame) -> pd.DataFrame:
-    """คำนวณเมทริกซ์ความสัมพันธ์จากผลตอบแทนรายวัน."""
+    """คำนวณเมทริกซ์ความสัมพันธ์จากผลตอบแทนรายวัน.
+
+    ``fill_method=None`` บังคับไว้ (B11) — ถ้า ffill วันที่ไม่มีแท่งจะกลายเป็นผลตอบแทน
+    0.00% ซึ่งบิดค่าความสัมพันธ์เข้าหา 0 เทียม ๆ วันที่ไม่มีข้อมูลต้องเป็น ``NaN``
+    แล้วให้ ``corr()`` ตัดคู่นั้นทิ้งเอง (pairwise) ตามจริง
+    """
     try:
         if price_df.empty:
             raise ValueError("price_df ว่าง ไม่สามารถคำนวณ Correlation ได้")
-        daily_returns = price_df.sort_index().pct_change().dropna(how="all")
+        daily_returns = price_df.sort_index().pct_change(fill_method=None).dropna(how="all")
         corr = daily_returns.corr()
         return corr
     except Exception as exc:

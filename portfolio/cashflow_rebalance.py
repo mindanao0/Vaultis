@@ -19,21 +19,44 @@ from typing import Any
 UNIT_THB = 100
 
 
+class RebalancePlan(dict):
+    """แผนแจกงบ (``{ticker: {...}}``) **พร้อมเศษที่แจกไม่ลง**.
+
+    เป็น ``dict`` ทุกประการเพื่อให้ผู้เรียกเดิมใช้ต่อได้ แต่เพิ่ม ``unallocated_thb``
+    ที่ผู้เรียก **ต้องแสดงให้ผู้ใช้เห็น** — การปัดหลักร้อยทำให้เงินตกหล่นได้ถึง 99 บาท
+    และ "ตัดทิ้งเงียบ" ผิดพอกับ "กุตัวเลข" (AUDIT_2026-08-06 D3.9)
+
+    ``budget_thb`` ติดมาด้วยเพื่อให้ตรวจ invariant ได้ที่ปลายทาง:
+    ``sum(amount_thb) + unallocated_thb == budget_thb``
+    """
+
+    def __init__(self, *args: Any, budget_thb: float = 0.0, unallocated_thb: float = 0.0, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self.budget_thb = float(budget_thb)
+        self.unallocated_thb = float(unallocated_thb)
+
+
 def rebalance_with_new_money(
     current_values_thb: dict[str, float],
     target_weights: dict[str, float],
     budget_thb: float,
-) -> dict[str, dict[str, Any]]:
+) -> RebalancePlan:
     """แผนแจกงบเดือนนี้ให้พอร์ตขยับเข้าเป้ามากที่สุดโดยไม่ขาย.
 
-    คืน ``{ticker: {amount_thb, current_pct, target_pct, projected_pct}}``
-    พอร์ตว่าง/งบ ≤ 0/ไม่มีเป้าหมาย → ValueError (โหมดนี้มีความหมายเมื่อมีพอร์ตจริงเท่านั้น)
+    คืน ``RebalancePlan`` = ``{ticker: {amount_thb, current_pct, target_pct, projected_pct}}``
+    บวกแอตทริบิวต์ ``unallocated_thb`` (เศษจากการปัดหลักร้อย — ต้องรายงานต่อผู้ใช้)
+
+    พอร์ตว่าง/งบไม่ถึงหนึ่งก้อน (100 บาท)/ไม่มีเป้าหมาย → ValueError
+    (โหมดนี้มีความหมายเมื่อมีพอร์ตจริงเท่านั้น และงบที่แจกไม่ลงสักกองไม่ใช่ "แผนว่าง")
     """
     holdings = {t: float(v) for t, v in current_values_thb.items() if float(v) > 0}
     if not holdings:
         raise ValueError("ยังไม่มีพอร์ตจริง — โหมดดึงเข้าเป้าใช้ไม่ได้ (ใช้แผน DCA ปกติ)")
-    if budget_thb <= 0:
-        raise ValueError("งบต้องมากกว่า 0")
+    if budget_thb < UNIT_THB:
+        # เดิมงบ 1–99 บาทผ่านด่านนี้แล้วคืนแผนว่างเงียบ ๆ (ปัดหลักร้อยแล้วเหลือ 0 ก้อน)
+        raise ValueError(
+            f"งบต้องอย่างน้อย {UNIT_THB} บาท (แผนปัดเป็นหลักร้อย งบน้อยกว่านี้แจกไม่ลงสักกอง)"
+        )
     weights = {t: float(w) for t, w in target_weights.items() if float(w) > 0}
     if not weights:
         raise ValueError("ไม่มีน้ำหนักเป้าหมาย")
@@ -69,7 +92,7 @@ def rebalance_with_new_money(
         for t in by_remainder[:leftover_units]:
             units[t] += 1
 
-    plan: dict[str, dict[str, Any]] = {}
+    plan = RebalancePlan(budget_thb=float(budget_thb))
     for t in sorted(weights, key=lambda x: units.get(x, 0), reverse=True):
         amount = units.get(t, 0) * UNIT_THB
         if amount <= 0:
@@ -81,4 +104,8 @@ def rebalance_with_new_money(
             "target_pct": round(weights[t] * 100.0, 1),
             "projected_pct": round((current_value + amount) / total_after * 100.0, 1),
         }
+    # เศษที่หน่วยละ 100 บาทแจกไม่ลง — ผู้เรียกต้องแสดงให้ผู้ใช้เห็น ห้ามกลืนหาย
+    plan.unallocated_thb = round(
+        float(budget_thb) - sum(item["amount_thb"] for item in plan.values()), 2
+    )
     return plan

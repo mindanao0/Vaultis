@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 import yfinance as yf
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -64,14 +65,26 @@ async def _price_broadcast_loop() -> None:
     while True:
         try:
             prices: dict[str, dict[str, float]] = {}
+            unavailable: list[str] = []
             for ticker in TICKERS:
                 # yfinance เป็น sync I/O — ต้องออกจาก event loop ไม่งั้น API ทั้งตัวค้าง (AUDIT.md M13)
                 snapshot = await asyncio.to_thread(_fetch_ticker_snapshot, ticker)
                 if snapshot is not None:
                     prices[ticker] = snapshot
+                else:
+                    # ดึงไม่ได้ต้องประกาศออกไป — ข้ามเงียบ ๆ ทำให้หน้าจอค้างราคาเก่าไว้
+                    # โดยผู้ใช้ไม่รู้ว่าหยุดอัปเดตแล้ว (AUDIT_2026-08-06 B7)
+                    unavailable.append(ticker)
 
-            if prices:
-                await manager.broadcast({"type": "price_update", "data": prices})
+            # ส่งทุกรอบแม้ดึงไม่ได้ทั้งหมด: "ดึงไม่สำเร็จ" ≠ "ไม่มีข้อมูล" และเงียบ = หน้าจอโกหก
+            await manager.broadcast(
+                {
+                    "type": "price_update",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "data": prices,
+                    "unavailable": unavailable,
+                }
+            )
         except Exception as exc:
             logger.exception("broadcast loop error: %s", exc)
 

@@ -66,6 +66,18 @@ def ai_advice(payload: AiAdviceRequest, db: Session = Depends(get_db)):
 
         # endpoint นี้คือการ "ขอ AI โดยตรง" (auth ด้วย X-API-Key) → ถือเป็นการกดเอง
         result = get_monthly_advice(budget_thb=payload.budget_thb, user_initiated=True)
+
+        # C1: ความล้มเหลวห้ามถูกแคชและห้ามถูกบันทึกเป็น "คำแนะนำ"
+        # ตั้งแต่ get_monthly_advice ดัก RuntimeError เอง มันจะ **ไม่ throw** เมื่อ LLM ล่ม
+        # แต่คืน ai_used=False พร้อมข้อความ ⚠️ แทน ถ้าปล่อยให้แคชรายชั่วโมงเก็บผลนั้นไว้
+        # ผู้ใช้จะกดซ้ำอีกกี่ครั้งก็ได้ข้อความล้มเหลวเดิมจนหมดชั่วโมง ทั้งที่ provider ฟื้นแล้ว
+        # (endpoint นี้ user_initiated=True เสมอ → ai_used=False = ล้มเหลวจริง ไม่ใช่กรณีปิดไว้)
+        if not result.get("ai_used"):
+            return JSONResponse(
+                content={"data": result},
+                media_type="application/json; charset=utf-8",
+            )
+
         _cache_put(cache_key, result)
 
         history = _get_history(db)

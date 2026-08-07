@@ -70,7 +70,7 @@ class TestNoWebhook:
 
     def test_price_alert_still_scheduled(self, monkeypatch):
         """งานที่ไม่ต้องใช้ Discord ต้องยังทำงาน"""
-        assert "check_alerts" in _names(_run(monkeypatch, ""))
+        assert "run_price_alert_job" in _names(_run(monkeypatch, ""))
 
     def test_discord_jobs_are_skipped(self, monkeypatch):
         names = _names(_run(monkeypatch, ""))
@@ -83,7 +83,7 @@ class TestNoWebhook:
             assert job not in names, f"{job} ไม่ควรถูกตั้งเวลาเมื่อไม่มี webhook"
 
     def test_only_price_alert_jobs_registered(self, monkeypatch):
-        assert _names(_run(monkeypatch, "")) == {"check_alerts"}
+        assert _names(_run(monkeypatch, "")) == {"run_price_alert_job"}
 
 
 class TestWithWebhook:
@@ -94,7 +94,7 @@ class TestWithWebhook:
             "check_and_send_dca_reminder",
             "generate_weekly_report_and_notify",
             "generate_daily_technical_alerts",
-            "check_alerts",
+            "run_price_alert_job",
         } <= names
 
     def test_notification_toggles_respected(self, monkeypatch):
@@ -117,4 +117,4 @@ class TestWithWebhook:
         assert "generate_daily_technical_alerts" not in names
         # monthly advisor ไม่มี toggle แยก — ผูกกับ webhook อย่างเดียว
         assert "run_monthly_ai_advisor_if_first_day" in names
-        assert "check_alerts" in names
+        assert "run_price_alert_job" in names

@@ -12,6 +12,99 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+#: คีย์ใน ``DataFrame.attrs`` ที่พกรายงานช่วงเวลาที่จำลองได้จริงติดไปกับผลลัพธ์
+COVERAGE_ATTR = "coverage"
+
+
+def _fmt_month(stamp: pd.Timestamp) -> str:
+    return pd.Timestamp(stamp).strftime("%Y-%m")
+
+
+def _limited_by_phrase(limited_by: Dict[str, str | None]) -> str:
+    """วลีบอกว่ากองไหนเป็นตัวบีบช่วงเวลา และมีราคาแรกวันไหน."""
+    if not limited_by:
+        return ""
+    items = [
+        f"{ticker} เพิ่งมีราคาแรก {first_date}" if first_date else f"{ticker} ไม่มีราคาเลย"
+        for ticker, first_date in limited_by.items()
+    ]
+    return "เพราะ " + ", ".join(items)
+
+
+def _coverage_report(
+    prices: pd.DataFrame, monthly_all: pd.DataFrame, monthly: pd.DataFrame
+) -> Dict[str, Any]:
+    """สรุปว่าจำลองได้กี่เดือนจากข้อมูลกี่เดือน และกองไหนเป็นตัวตัดช่วง."""
+    dropped_index = monthly_all.index.difference(monthly.index)
+
+    limited_by: Dict[str, str | None] = {}
+    for ticker in monthly_all.columns:
+        if len(dropped_index) == 0:
+            break
+        if not bool(monthly_all.loc[dropped_index, ticker].isna().any()):
+            continue
+        first_valid = prices[ticker].first_valid_index()
+        limited_by[str(ticker)] = (
+            None if first_valid is None else pd.Timestamp(first_valid).date().isoformat()
+        )
+
+    # กองที่มีราคาช้าที่สุด (หรือไม่มีเลย) คือตัวที่บีบช่วงมากที่สุด — เอาขึ้นก่อน
+    ordered = dict(sorted(limited_by.items(), key=lambda kv: kv[1] or "9999-12-31", reverse=True))
+
+    return {
+        "available_from": _fmt_month(monthly_all.index[0]) if len(monthly_all) else None,
+        "available_to": _fmt_month(monthly_all.index[-1]) if len(monthly_all) else None,
+        "months_available": int(len(monthly_all)),
+        "simulated_from": _fmt_month(monthly.index[0]) if len(monthly) else None,
+        "simulated_to": _fmt_month(monthly.index[-1]) if len(monthly) else None,
+        "months_simulated": int(len(monthly)),
+        "months_dropped": int(len(monthly_all) - len(monthly)),
+        "limited_by": ordered,
+    }
+
+
+def _monthly_first_prices(prices: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str, Any]]:
+    """ราคาต้นเดือนของทุกกอง + รายงานว่าตัดเดือนไหนทิ้งไปบ้าง (AUDIT_2026-08-06 B8).
+
+    การจำลองพอร์ตตามน้ำหนักคงที่ต้องมีราคาครบทุกกองในเดือนนั้น ``dropna(how="any")``
+    จึงตัด**ทั้งเดือน**ถ้ามีกองใดยังไม่เกิด — ETF ที่เพิ่งเข้าตลาดตัดช่วงต้นของการ
+    จำลองทิ้ง ทำให้ ``Total Invested`` ต่ำกว่าการซื้อครบทุกเดือนมาก การตัดยังทำ
+    เหมือนเดิม แต่ **ต้องรายงานออกไปให้ผู้ใช้เห็น** ห้ามตัดเงียบ
+    (``portfolio/backtest.py::run_portfolio_backtest`` ตัดแบบเดียวกันและอธิบายไว้แล้ว)
+    """
+    monthly_all = prices.resample("MS").first()
+    monthly = monthly_all.dropna(how="any")
+    coverage = _coverage_report(prices, monthly_all, monthly)
+
+    if monthly.empty:
+        reason = _limited_by_phrase(coverage["limited_by"])
+        raise ValueError(
+            "ไม่มีเดือนไหนที่ทุกกองมีราคาพร้อมกัน จึงจำลอง DCA ไม่ได้"
+            + (f" ({reason})" if reason else "")
+        )
+    return monthly, coverage
+
+
+def describe_coverage(coverage: Dict[str, Any] | None) -> str | None:
+    """คำเตือนภาษาไทยหนึ่งบรรทัดสำหรับช่วงที่ถูกตัด — ``None`` เมื่อไม่มีเดือนไหนหาย.
+
+    นิยามข้อความมีที่เดียว หน้าจอกับ API อ่านจากฟังก์ชันนี้ตัวเดียวกัน
+    """
+    if not coverage or not coverage.get("months_dropped"):
+        return None
+
+    parts = [
+        f"จำลองได้ตั้งแต่ {coverage.get('simulated_from')} ถึง {coverage.get('simulated_to')} "
+        f"เท่านั้น ({coverage.get('months_simulated')} เดือน) — "
+        f"ตัดไป {int(coverage['months_dropped'])} เดือนจากช่วงข้อมูลที่เริ่ม "
+        f"{coverage.get('available_from')}"
+    ]
+    reason = _limited_by_phrase(coverage.get("limited_by") or {})
+    if reason:
+        parts.append(reason)
+    parts.append("ตัวเลข Total Invested จึงต่ำกว่าการซื้อครบทุกเดือน")
+    return " · ".join(parts)
+
 
 def _normalize_weights(weights: dict[str, float]) -> pd.Series:
     """ตรวจสอบและ normalize weights ให้รวมเป็น 1."""
@@ -71,6 +164,8 @@ def simulate_dca(monthly_amount: float, weights: dict, start_date: str) -> dict[
         - profit_loss_pct
         - history (DataFrame)
         - figure (Plotly Figure)
+        - coverage (dict) + coverage_warning (str|None) — ช่วงที่จำลองได้จริง
+          และเดือนที่ถูกตัดทิ้งเพราะกองใดกองหนึ่งยังไม่มีราคา (B8)
     """
     try:
         if monthly_amount <= 0:
@@ -84,9 +179,7 @@ def simulate_dca(monthly_amount: float, weights: dict, start_date: str) -> dict[
         prices = prices[tickers].dropna(how="all")
 
         # ใช้ราคาวันเทรดแรกของแต่ละเดือน เทียบเท่าการซื้อวันที่ 1
-        monthly_prices = prices.resample("MS").first().dropna(how="any")
-        if monthly_prices.empty:
-            raise ValueError("ไม่พบข้อมูลรายเดือนสำหรับช่วงเวลาที่ระบุ")
+        monthly_prices, coverage = _monthly_first_prices(prices)
 
         shares = pd.Series(0.0, index=tickers)
         total_invested = 0.0
@@ -113,6 +206,7 @@ def simulate_dca(monthly_amount: float, weights: dict, start_date: str) -> dict[
             )
 
         history = pd.DataFrame(records).set_index("Date")
+        history.attrs[COVERAGE_ATTR] = coverage
         current_value = float(history["Portfolio Value"].iloc[-1])
         profit_loss = float(history["Profit/Loss"].iloc[-1])
         profit_loss_pct = float(history["Profit/Loss %"].iloc[-1])
@@ -134,6 +228,8 @@ def simulate_dca(monthly_amount: float, weights: dict, start_date: str) -> dict[
             "profit_loss_pct": profit_loss_pct,
             "history": history,
             "figure": figure,
+            "coverage": coverage,
+            "coverage_warning": describe_coverage(coverage),
         }
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการจำลอง DCA: {exc}") from exc
@@ -144,7 +240,12 @@ def simulate_monthly_dca(
     weights: Dict[str, float],
     monthly_investment: float = 1000.0,
 ) -> pd.DataFrame:
-    """คงไว้เพื่อรองรับโค้ดเดิมที่ส่ง price_df เข้ามาโดยตรง."""
+    """คงไว้เพื่อรองรับโค้ดเดิมที่ส่ง price_df เข้ามาโดยตรง.
+
+    ผลลัพธ์พกรายงานช่วงเวลาไว้ที่ ``df.attrs[COVERAGE_ATTR]`` — เดือนที่ถูกตัดทิ้ง
+    เพราะกองใดกองหนึ่งยังไม่มีราคา **ต้องถูกแสดงต่อผู้ใช้** ใช้ ``describe_coverage()``
+    แปลงเป็นข้อความ (AUDIT_2026-08-06 B8)
+    """
     try:
         if price_df.empty:
             raise ValueError("price_df ว่าง ไม่สามารถจำลอง DCA ได้")
@@ -157,7 +258,7 @@ def simulate_monthly_dca(
 
         normalized_weights = _normalize_weights({k: weights[k] for k in valid_assets})
         prices = price_df[valid_assets].ffill().dropna(how="all")
-        monthly_prices = prices.resample("MS").first().dropna(how="any")
+        monthly_prices, coverage = _monthly_first_prices(prices)
 
         shares = pd.Series(0.0, index=valid_assets)
         records: list[dict[str, float | pd.Timestamp]] = []
@@ -182,7 +283,9 @@ def simulate_monthly_dca(
                 }
             )
 
-        return pd.DataFrame(records).set_index("Date")
+        history = pd.DataFrame(records).set_index("Date")
+        history.attrs[COVERAGE_ATTR] = coverage
+        return history
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการจำลอง DCA: {exc}") from exc
 
@@ -194,3 +297,5 @@ if __name__ == "__main__":
     print(f"Total Invested: ${result['total_invested']:,.2f}")
     print(f"Current Value: ${result['current_value']:,.2f}")
     print(f"Profit/Loss: ${result['profit_loss']:,.2f} ({result['profit_loss_pct']:.2f}%)")
+    if result["coverage_warning"]:
+        print(f"⚠️  {result['coverage_warning']}")

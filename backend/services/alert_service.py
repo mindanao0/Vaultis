@@ -35,10 +35,18 @@ def delete_alert(alert_id: str) -> bool:
 
 
 def check_alerts() -> dict[str, Any]:
-    """ตรวจ alert ทั้งหมด (ตัวเดียวกับที่ cron รายวันเรียก) และส่ง Discord ถ้ามี trigger."""
+    """ตรวจ alert ทั้งหมด (ตัวเดียวกับที่ cron รายวันเรียก) และส่ง Discord ถ้ามี trigger.
+
+    ส่งต่อ ``unchecked`` / ``success`` / ``error`` ให้ผู้เรียกด้วย — "ดึงราคาไม่ได้" และ
+    "อ่านคลัง alert ไม่ได้" ต้องไม่ถูกยุบเป็น "ตรวจแล้วไม่มีอะไร" (AUDIT_2026-08-06 A1/D1.1)
+    """
     result = price_alert.check_alerts()
     return {
+        "success": bool(result.get("success", False)),
         "checked": result.get("checked", 0),
         "triggered": result.get("triggered", []),
+        "unchecked": result.get("unchecked", []),
+        "store_error": bool(result.get("store_error", False)),
+        "error": result.get("error"),
         "daily_summary": result.get("daily_summary", ""),
     }

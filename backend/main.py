@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,7 +36,34 @@ logger = logging.getLogger(__name__)
 
 Base.metadata.create_all(bind=engine)
 
-scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
+# misfire_grace_time ดีฟอลต์ของ APScheduler คือ 1 วินาที — งานที่ตื่นช้ากว่านั้น
+# (เช่น loop ติดงาน blocking คร่อม 07:00:00 พอดี) ถูก "ข้าม" ไปเงียบ ๆ ทั้งรอบ
+# ⇒ สแกนของวันนั้นหายไปโดยไม่มีใครรู้ (AUDIT_2026-08-06 ข้อ B6.1)
+# 3600 = ยอมให้สายได้ถึง 1 ชม. แล้วค่อยรัน · coalesce = รอบที่ค้างหลายรอบยุบเหลือรอบเดียว
+scheduler = AsyncIOScheduler(
+    timezone="Asia/Bangkok",
+    job_defaults={"misfire_grace_time": 3600, "coalesce": True, "max_instances": 1},
+)
+
+
+def _report_job_problem(event) -> None:
+    """งานตามเวลาที่ถูกข้ามหรือพัง ต้องดังออกมา ไม่ใช่หายเงียบ."""
+    if event.code == EVENT_JOB_MISSED:
+        logger.error(
+            "งานตามเวลา %s ถูกข้าม (misfire) รอบ %s — รอบนี้ไม่มีผลลัพธ์",
+            event.job_id,
+            getattr(event, "scheduled_run_time", "?"),
+        )
+    else:
+        logger.error(
+            "งานตามเวลา %s ล้มเหลว: %s",
+            event.job_id,
+            getattr(event, "exception", None),
+            exc_info=getattr(event, "exception", None),
+        )
+
+
+scheduler.add_listener(_report_job_problem, EVENT_JOB_MISSED | EVENT_JOB_ERROR)
 
 
 @asynccontextmanager
@@ -63,7 +91,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(),
-    allow_methods=["GET", "POST", "DELETE"],
+    # PUT ต้องอยู่ในรายการ ไม่งั้น preflight ของ PUT /api/goals/{id}/contribute
+    # ถูกปฏิเสธ 400 ทั้งที่ openapi ประกาศ endpoint นั้นไว้ (AUDIT_2026-08-06 D3.3)
+    # ตาข่ายกันหลุด: tests/test_audit_d3.py (ทุกเมธอดที่ route ประกาศต้องอยู่ที่นี่)
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
 
@@ -72,6 +103,9 @@ app.include_router(etf.router)
 app.include_router(prices_ws.router)
 
 # --- ต้องมี X-API-Key: เปลี่ยนสถานะ, มีค่าใช้จ่าย LLM, หรือเข้าถึงข้อมูลส่วนตัว ---
+# ทุก router ต้องประกาศ path ไม่ชนกัน: FastAPI จับคู่ route แรกที่ตรงเสมอ ตัวหลังจึง
+# เข้าไม่ถึงตลอดกาลโดยไม่มี error ให้เห็น (เคย: analysis.router ทับ backtest.router ที่
+# POST /api/backtest) — tests/test_route_uniqueness.py กันไม่ให้กลับมา
 protected = [
     portfolio.router,
     rebalance.router,

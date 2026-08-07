@@ -126,3 +126,24 @@ class TestDrip:
     def test_no_price_history_fails_loud(self):
         with pytest.raises(ValueError):
             drip.simulate_drip(pd.DataFrame([{"date": "2026-01-05", "amount_usd": 10.0}]), pd.Series(dtype=float))
+
+    def test_unreadable_amount_is_skipped_not_turned_into_nan(self):
+        """งวดที่จำนวนเงินอ่านไม่ออกต้องถูกนับเป็น skipped ไม่ใช่ทำให้ผลรวมทั้งก้อนเป็น NaN
+
+        สำนวนเดิม ``float(pd.to_numeric(...) or 0.0)`` ดัก NaN ไม่ได้ เพราะ NaN เป็น
+        truthy และ ``NaN <= 0`` ก็เป็น False ด้วย งวดเสียจึงไหลเข้าไปบวก/คูณต่อ
+        จนทุกตัวเลขที่คืนออกมาเป็น NaN โดยไม่มีอะไรบอก
+        """
+        dividends = pd.DataFrame(
+            [
+                {"date": "2026-01-05", "amount_usd": "ไม่ทราบ"},  # อ่านเป็นตัวเลขไม่ได้
+                {"date": "2026-01-05", "amount_usd": 100.0},
+            ]
+        )
+        result = drip.simulate_drip(dividends, self._closes())
+
+        assert result["skipped"] == 1, "งวดที่อ่านไม่ออกต้องถูกนับว่าข้าม"
+        assert result["rounds"] == 1
+        for key in ("cash_usd", "extra_shares", "drip_value_usd", "advantage_usd"):
+            assert not pd.isna(result[key]), f"{key} กลายเป็น NaN — งวดที่อ่านไม่ออกเล็ดลอดเข้ามา"
+        assert result["cash_usd"] == pytest.approx(100.0)

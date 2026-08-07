@@ -2,7 +2,8 @@
 #
 #   docker compose up -d              รัน backend + dashboard + scheduler
 #   docker compose up -d backend      รันเฉพาะ API
-#   docker compose --profile dev run --rm tests    รันชุดเทสต์ในภาพ dev
+#   docker compose --profile dev run --rm -v "$PWD:/app" tests    รันชุดเทสต์ในภาพ dev
+#   (โค้ดถูกอบเข้า image — ไม่ mount ทับ /app จะได้ผล "ผ่าน" จากโค้ดเวอร์ชันที่ build ไว้)
 #
 # ข้อมูลจริงอยู่บน host ทั้งหมดผ่าน volume — rebuild image กี่ครั้งก็ไม่หาย
 # และ .dockerignore กันไม่ให้ ledger/.env/vaultis.db ถูกอบเข้า image layer
@@ -140,12 +141,16 @@ services:
         required: false
     environment:
       TZ: Asia/Bangkok
-      VAULTIS_DB_PATH: /data/vaultis.db
+      # SQLite ของชุดเทสต์อยู่ในคอนเทนเนอร์เท่านั้น หายไปพร้อม --rm
+      # ต้องเขียนทับที่นี่เพราะ Dockerfile ตั้ง VAULTIS_DB_PATH=/data/vaultis.db ไว้ใน image
+      # เดิม service นี้ mount `./.docker-data:/data` ด้วย → อะไรก็ตามที่แตะ SessionLocal
+      # ระหว่างเทสต์เขียนทะลุถึงฐาน goals / net worth / reports ตัวจริงของผู้ใช้บน host
+      # และเคยเขียนไปแล้วจริง (AUDIT_2026-08-06 ข้อ 0.1 / H1) — ห้ามผูก volume นั้นกลับมา
+      # ตาข่ายกันพลาด: tests/test_db_isolation.py
+      VAULTIS_DB_PATH: /tmp/test_vaultis.db
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
       DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
-    volumes:
-      - ./.docker-data:/data
     command: ["pytest", "-q"]
 
 volumes:

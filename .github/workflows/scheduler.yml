@@ -7,9 +7,12 @@ on:
     - cron: '0 15 * * 1-5' # จันทร์-ศุกร์ 22:00 Thailand (หลัง US market เปิด 30 นาที)
   workflow_dispatch:
 
-# ต้องเขียน repo ได้เพื่อบันทึกสถานะ alert ที่ trigger แล้ว (กันแจ้งเตือนซ้ำ)
+# อ่านอย่างเดียวพอ — step "Persist triggered alerts" ที่เคยต้องเขียน repo ถูกถอดออกไปแล้ว
+# (มติผู้ใช้ 2026-07-28: ห้าม commit ticker/ราคาเป้าหมายกลับเข้า public repo)
+# repo เป็น public และ workflow ไม่ pin action ด้วย hash — GITHUB_TOKEN ที่ถือสิทธิ์เขียน
+# โดยไม่มีอะไรต้องใช้คือความเสี่ยงเปล่า ๆ (AUDIT_2026-08-06 ข้อ L-CI-1)
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   run-scheduler:
@@ -51,22 +54,16 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Daily price summary (ทุกวันทำการ)
-        # `check_alerts()` ส่งสรุปราคา 5 ETF เข้า Discord ทุกครั้งที่รัน — ส่วนนี้ยังทำงานปกติ
-        #
-        # **แต่ CI มองไม่เห็น price alert ที่ผู้ใช้ตั้งไว้** เพราะ
-        # `alerts/data/price_alerts.json` เป็นข้อมูลส่วนตัวและถูก gitignore
-        # (repo นี้เป็น public — ข้อจำกัดเดียวกับ ledger ที่ AUDIT.md บันทึกไว้)
-        # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
-        #   ที่เห็นไฟล์จริงผ่าน volume
-        #
-        # เดิมมี step "Persist triggered alerts" commit ไฟล์นี้กลับเข้า repo เพื่อกัน
-        # alert เด้งซ้ำ — ถอดออกแล้วเพราะการทำแบบนั้นคือการเผยแพร่ ticker + ราคาเป้าหมาย
-        # ของผู้ใช้ลง public repo (มติผู้ใช้ 2026-07-28: ความเป็นส่วนตัวมาก่อน)
-        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python main.py --job price_alert
+      # เดิมมี step "Daily price summary" (`python main.py --job price_alert`) อยู่ตรงนี้
+      # เงื่อนไข `if:` เดียวกันเป๊ะกับ step ข้างล่าง และยิงเว็บฮุคเดียวกัน
+      # ⇒ ผู้ใช้ได้ข้อความพาดหัว "Daily Price Check" **2 ใบต่อวัน** ที่เลขขัดกันเอง
+      #   (`check_alerts()` คิด % จากแท่งปิด 2 แท่ง ส่วน daily_check เดิมใช้
+      #    `fast_info['previous_close']` — วันที่วัดพลิกเครื่องหมาย 3 จาก 5 ตัว)
+      # ถอด step นั้นออกเพราะ **CI มองไม่เห็น price alert ที่ผู้ใช้ตั้งไว้อยู่แล้ว**:
+      # `alerts/data/price_alerts.json` เป็นข้อมูลส่วนตัวและถูก gitignore (repo เป็น public)
+      # → `--job price_alert` ที่นี่จึงไม่ได้ตรวจ alert อะไรเลย เหลือแต่สรุปราคาใบซ้ำ
+      # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
+      #   ที่เห็นไฟล์จริงผ่าน volume  (AUDIT_2026-08-06 ข้อ H12)
       - name: Run Daily Price Check (ทุกวันทำการ)
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:

@@ -43,6 +43,9 @@ def get_forecast(
             content=result.model_dump(),
             media_type="application/json; charset=utf-8",
         )
+    except ValueError as exc:
+        # ข้อมูลไม่พอจะพยากรณ์ (ไม่มีเดือนที่จบแล้ว) — บอกผู้ใช้ตรง ๆ ห้ามคืนตัวเลขปลอม
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -63,6 +66,9 @@ def run_scenario(payload: ScenarioRequest):
             content=result.model_dump(),
             media_type="application/json; charset=utf-8",
         )
+    except ValueError as exc:
+        # scenario ระบุหมวดที่ไม่มี / ซ้ำหมวด / ไม่มีเดือนที่จบแล้ว — ต้องไม่เงียบ
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

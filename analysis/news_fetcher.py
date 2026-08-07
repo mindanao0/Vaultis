@@ -35,6 +35,14 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
+# โหลด .env **ครั้งเดียวตอน import** — env ของโปรเซสคือแหล่งความจริงตอนรัน
+# ไฟล์ .env เป็นแค่ค่าเริ่มต้นตอนบูตเท่านั้น (เหมือน analysis/llm.py)
+# เดิมเรียกซ้ำในทุก fetch_reddit_status()/get_news()/get_news_with_status()
+# ทำให้ unset NEWSAPI_KEY / REDDIT_CLIENT_ID ในโปรเซสไม่มีผลเลย เพราะไฟล์เติมกลับมา
+# ทุกครั้ง = ไฟล์ชนะ env เสมอ  ผลข้างเคียงที่ร้ายกับไฟล์นี้เป็นพิเศษคือสถานะ ``off``
+# (ไม่ได้ตั้งคีย์ ซึ่งไม่ใช่ความล้มเหลว) เกิดขึ้นไม่ได้เลยบนเครื่องที่มี .env
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+
 KIND_NEWS = "news"
 KIND_SOCIAL = "social"
 
@@ -135,7 +143,6 @@ def fetch_reddit_status(symbol: str) -> tuple[list[dict[str, Any]], dict[str, An
     sym = (symbol or "").strip()
     if not sym:
         return [], _source_status(name, KIND_SOCIAL, STATUS_OFF, 0, "ไม่ได้ระบุสัญลักษณ์")
-    load_dotenv(ROOT_DIR / ".env")
     client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
     client_secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
     user_agent = (os.getenv("REDDIT_USER_AGENT") or "VaultisBot/1.0").strip() or "VaultisBot/1.0"
@@ -386,7 +393,6 @@ def get_news(symbol: str) -> list[dict[str, Any]]:
     ข่าวจริง (``kind="news"``) ถูกจัดลำดับก่อนโซเชียลเสมอ เพื่อไม่ให้โพสต์ StockTwits
     ซึ่งมีปริมาณมากและใหม่กว่า เบียดข่าวจริงตกขอบ 30 รายการ
     """
-    load_dotenv(ROOT_DIR / ".env")
     api_key = os.getenv("NEWSAPI_KEY", "").strip()
 
     merged: list[dict[str, Any]] = []
@@ -408,7 +414,6 @@ def get_news_with_status(symbol: str) -> dict[str, Any]:
     ``all_news_sources_failed`` = แหล่งข่าวจริงทุกตัวที่เปิดอยู่ล้มเหลวหมด → ผู้เรียก
     **ต้องไม่แสดงว่า "ไม่มีข่าว"** เพราะนั่นคือความล้มเหลวที่ปลอมตัวเป็นข้อมูล (AUDIT.md C1)
     """
-    load_dotenv(ROOT_DIR / ".env")
     api_key = os.getenv("NEWSAPI_KEY", "").strip()
 
     merged: list[dict[str, Any]] = []

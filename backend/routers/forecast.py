@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from analysis.backtester import WalkForwardBacktester
 from analysis.forecast_chart import generate_forecast_chart
 from analysis.forecaster import PriceForecaster
+from backend.responses import UTF8JSONResponse
 from backend.services.cache_service import CacheService
 
-router = APIRouter(prefix="/api", tags=["forecast"])
+# default_response_class: disclaimer/หมายเหตุเป็นภาษาไทย ต้องประกาศ charset ให้ตรง
+# ตามที่ CLAUDE.md กำหนด — AUDIT_2026-08-06 D3.2
+router = APIRouter(prefix="/api", tags=["forecast"], default_response_class=UTF8JSONResponse)
 
 ALLOWED_SYMBOLS = ["VOO", "QQQM", "SCHD", "XLV", "GLDM"]
 FORECAST_TTL = 6 * 60 * 60  # 6 hours
+# เพดานเดียวกับ Prophet ที่ยังพอมีความหมาย — กรวยยาวกว่าปีหนึ่งไม่มีข้อมูลรองรับ
+MAX_FORECAST_DAYS = 365
 
 _cache = CacheService()
 
 
 @router.get("/forecast/{symbol}")
-async def get_forecast(symbol: str, days: int = 30):
+async def get_forecast(
+    symbol: str,
+    # เดิมไม่มี validation: days=0 → IndexError, days=-5 → OutOfBoundsDatetime
+    # ⇒ HTTP 500 พร้อม traceback แทนที่จะเป็น 422 (AUDIT_2026-08-06 D3.7)
+    days: int = Query(30, ge=1, le=MAX_FORECAST_DAYS, description="จำนวนวันทำการที่พยากรณ์"),
+):
     symbol = symbol.strip().upper()
     if symbol not in ALLOWED_SYMBOLS:
         raise HTTPException(

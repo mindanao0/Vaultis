@@ -30,6 +30,13 @@ logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
+# โหลด .env **ครั้งเดียวตอน import** — env ของโปรเซสคือแหล่งความจริงตอนรัน
+# ไฟล์ .env เป็นแค่ค่าเริ่มต้นตอนบูตเท่านั้น
+# เดิมเรียกซ้ำในทุก chat_text()/auto_enabled() ทำให้การ unset ตัวแปรในโปรเซส
+# (เช่นถอด VAULTIS_LLM_AUTO ซึ่งเป็นสวิตช์คุมค่าใช้จ่าย หรือ ANTHROPIC_API_KEY)
+# ไม่มีผลเลย เพราะไฟล์เติมกลับมาให้ทุกครั้ง = ไฟล์ชนะ env เสมอ
+load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+
 ANTHROPIC_MODEL = "claude-sonnet-5"
 
 # ราคา (USD ต่อ 1 ล้านโทเคน) input/output — ใช้ประมาณค่าใช้จ่ายเพื่อแสดงให้ผู้ใช้เห็น
@@ -58,8 +65,10 @@ class LLMDisabledError(RuntimeError):
 
 
 def auto_enabled() -> bool:
-    """งานอัตโนมัติได้รับอนุญาตให้เรียก LLM หรือไม่ (ดีฟอลต์: ไม่)."""
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+    """งานอัตโนมัติได้รับอนุญาตให้เรียก LLM หรือไม่ (ดีฟอลต์: ไม่).
+
+    อ่านจาก env ของโปรเซสล้วน ๆ — ``.env`` ถูกโหลดไปแล้วตอน import โมดูลนี้
+    """
     return os.getenv(_AUTO_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -120,8 +129,16 @@ def _chat_anthropic(system: str, user: str, max_tokens: int) -> str:
         if attempt == 0:
             budget = max_tokens * 2
             continue
+        # โควตาหมดรอบสองแล้วยังไม่มีเนื้อหาเลย (มักเกิดเมื่อ thinking กินโควตาไปหมด)
+        # = จ่ายเงินไป 2 รอบได้ศูนย์ ห้ามคืนหมายเหตุเปล่า ๆ เป็นผลสำเร็จ
+        # (`"" + _TRUNCATION_NOTE` เป็น truthy ทำให้ด่าน `if not text` ใน chat_text ยิงไม่ได้)
+        if not text:
+            raise RuntimeError(
+                f"โมเดลใช้โควตา {budget} tokens หมดโดยไม่มีเนื้อหาตอบกลับ "
+                "(stop_reason=max_tokens) — เพิ่ม max_tokens หรือย่อ prompt"
+            )
         return text + _TRUNCATION_NOTE
-    return ""  # unreachable
+    raise RuntimeError("เรียก LLM ไม่สำเร็จ: ลูป retry จบโดยไม่ได้คำตอบ (ไม่ควรเกิดขึ้น)")
 
 
 def chat_text(
@@ -141,9 +158,11 @@ def chat_text(
     ``temperature`` **ไม่มีผลแล้ว** — รับไว้เพื่อความเข้ากันได้กับผู้เรียกเดิมเท่านั้น
     Claude รุ่นใหม่ตอบ 400 ถ้าส่งค่านี้ไป (ดู ``_chat_anthropic``) ถ้าต้องการคุมโทน
     หรือความยาวคำตอบ ให้เขียนกำกับใน system prompt แทน
-    """
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 
+    โยน ``RuntimeError`` เมื่อเรียกไม่สำเร็จหรือได้คำตอบว่าง — ผู้เรียกที่เป็น
+    งานอัตโนมัติต้องดักให้ครบ (``LLMDisabledError`` เป็นลูกของ ``RuntimeError``
+    การดักเฉพาะตัวลูกจะ **ไม่** ครอบคลุมความล้มเหลวจริงของ provider)
+    """
     if not user_initiated and not auto_enabled():
         raise LLMDisabledError(AI_DISABLED_MESSAGE)
 

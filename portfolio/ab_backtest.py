@@ -304,9 +304,22 @@ def run_ab_backtest(
                 neutral_counts[t] = neutral_counts.get(t, 0) + 1
         arms["tilt"]["neutral_by_ticker"] = neutral_counts
 
-        if "VOO" in prices.columns:
+        # แขน benchmark ต้องซื้อ "วันเดียวกัน" กับอีกสองแขน — ``simulate_dca_dynamic``
+        # เลือกวันซื้อจากแถวแรกของเดือนที่ **ทุกคอลัมน์ในเฟรมนั้น** มีราคา ถ้าส่ง
+        # ``prices[["VOO"]]`` เข้าไปตรง ๆ เดือนแรกจะซื้อวันที่ VOO มีราคา (เร็วกว่า)
+        # ขณะที่แขน plain/tilt รอจนครบ 5 ตัว = ได้ราคาคนละวันโดยไม่มีเหตุผลเชิงกลยุทธ์
+        # (proxy window: 2011-10-03 @77.48 vs 2011-10-20 @85.85 — AUDIT_2026-08-06 D3.11)
+        arm_rows = arm_prices.dropna(how="any")
+        if "VOO" in arm_rows.columns:
+            voo_frame = arm_rows[["VOO"]]
+        elif "VOO" in prices.columns:
+            # VOO ไม่ได้อยู่ในน้ำหนักเป้าหมาย → ยืมเฉพาะ "วัน" ของแขนอื่นมาใช้
+            voo_frame = prices.loc[prices.index.isin(arm_rows.index), ["VOO"]].dropna(how="any")
+        else:
+            voo_frame = None
+        if voo_frame is not None and not voo_frame.empty:
             voo_sim = simulate_dca_dynamic(
-                prices[["VOO"]], monthly_amount, fixed_weights_fn({"VOO": 1.0}), start=start
+                voo_frame, monthly_amount, fixed_weights_fn({"VOO": 1.0}), start=start
             )
             arms["voo_only"] = _arm_metrics(voo_sim)
 

@@ -99,7 +99,12 @@ try:
 
         @staticmethod
         def rsi(series: pd.Series, length: int = 14) -> pd.Series:
-            return ta_lib.momentum.RSIIndicator(close=series, window=length, fillna=False).rsi()
+            # ใช้สูตร pandas ล้วนตัวเดียวกับ fallback ด้วยเหตุผลเดียวกับ MACD/BBands
+            # เดิมเรียก ``ta_lib.momentum.RSIIndicator`` ซึ่งเริ่มคืนค่าที่แท่งที่ 14
+            # (13 การเปลี่ยนแปลง) = เร็วไปหนึ่งแท่ง ⇒ ซีรีส์ขาขึ้นล้วนได้ 100.0 ปลอม
+            # (zone=overbought) และเป็นตัวชี้วัดคนละชุดกับ fallback ในไฟล์เดียวกัน
+            # ขัดกับกฎ "นิยามมีที่เดียว" — AUDIT_2026-08-06 D3.8
+            return _rsi_fallback(series, length=length)
 
         @staticmethod
         def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:

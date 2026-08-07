@@ -70,6 +70,11 @@ def _is_cacheable(value: Any) -> bool:
     return True
 
 
+# ชื่อสาธารณะของตัวกรองเดียวกัน — ``backend/services/cache_service.py`` ใช้ตัวนี้ร่วม
+# (นิยาม "ผลลัพธ์ที่แคชได้" ต้องมีที่เดียวทั้งระบบ ห้ามเขียนตัวที่สอง)
+is_cacheable = _is_cacheable
+
+
 def ttl_cache(ttl_seconds: float, maxsize: int = 64) -> Callable[[F], F]:
     """Decorator factory: memoize ผลสำเร็จของฟังก์ชันไว้ ``ttl_seconds`` วินาที."""
 

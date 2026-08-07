@@ -1,7 +1,16 @@
-"""Integration test for PriceForecaster and WalkForwardBacktester."""
+"""Integration test for PriceForecaster and WalkForwardBacktester (ต่อเน็ตจริง).
+
+ติด ``@pytest.mark.network`` เพราะ Prophet ถูกฟิตบนราคาจริงที่ดึงสด —
+ถูกกันออกจากการรันปกติ (``addopts = -m "not network"`` ใน pytest.ini)
+เรียกกลับมาด้วย ``pytest -m network``  (AUDIT_2026-08-06 ข้อ 0-B)
+"""
+
+import pytest
 
 from analysis.forecaster import PriceForecaster
 from analysis.backtester import WalkForwardBacktester
+
+pytestmark = pytest.mark.network
 
 
 def test_forecast():
