@@ -283,15 +283,26 @@ class TestShadowBenchmarkRegressionGuard:
         result = shadow_benchmark(buys, self._closes())
         # เพิ่ม benchmark_prices_dropped/benchmark_asof เข้ามาในรอบตรวจซ้ำ: ราคาที่ถูกคัดทิ้ง
         # ต้องรายงานออกไป ไม่งั้นราคาล่าสุดที่ใช้ไม่ได้จะกลายเป็นมูลค่าเงาลงวันที่เก่าเงียบ ๆ
-        # ตัวเลขเงินทั้งสามยังเท่าเดิมเป๊ะ (410 / 5.5 / 550)
+        #
+        # 2026-08-08 (FIX_PLAN ข้อ 3.1) เพิ่มขา ``payouts`` — ปันผลที่พอร์ตจริงคายออก
+        # ต้องทำให้เงาขาย benchmark เท่ากันวันเดียวกัน ไม่งั้นเงาได้ปันผลของ benchmark
+        # ลงทุนต่อฟรี ๆ (Adjusted Close = total return) ⇒ เอียงเข้าข้าง VOO 1.6 จุด/ปี
+        # **สมุดที่ไม่มีปันผลต้องได้ตัวเลขเงินเดิมเป๊ะ (410 / 5.5 / 550)** และคีย์ใหม่ทุกตัว
+        # ต้องเป็นศูนย์ — เทียบทั้ง dict ต่อไปเพราะการเทียบทีละคีย์จะมองไม่เห็นคีย์ที่หายไป
         assert result == {
             "invested_usd": pytest.approx(410.0),
+            "payout_usd": pytest.approx(0.0),
+            "net_external_usd": pytest.approx(410.0),
             "benchmark_shares": pytest.approx(5.5),
             "benchmark_value_usd": pytest.approx(550.0),
             "rounds": 3,
+            "payout_rounds": 0,
             "skipped": 0,
             "skipped_bad_row": 0,
             "skipped_no_price": 0,
+            "payouts_skipped": 0,
+            "payouts_skipped_bad_row": 0,
+            "payouts_skipped_no_price": 0,
             "benchmark_prices_dropped": 0,
             "benchmark_asof": pd.Timestamp("2026-01-02"),
         }

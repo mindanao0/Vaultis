@@ -3233,6 +3233,23 @@ def _upper_set(values) -> set[str]:
     return {str(v).strip().upper() for v in values}
 
 
+#: อายุขั้นต่ำของพอร์ตก่อนที่ตัวเลข "ต่อปี" จะมีความหมาย — ใช้ทั้งกับด่าน XIRR และกับคำเตือน
+#: "ยังไม่มีแถวปันผลเลย" (ต่ำกว่านี้ผลของปันผลที่ยังไม่ถูกบันทึกอยู่ใต้ ~0.4 จุด จึงยังไม่ใช่
+#: สิ่งที่ต้องรบกวนผู้ใช้ และหน้าจอก็บอกอยู่แล้วว่าพอร์ตยังใหม่เกินกว่าจะตีเป็น %ต่อปี)
+_BENCHMARK_MIN_AGE_DAYS = 90
+
+
+def _zero_safe(value: float, digits: int = 2) -> float:
+    """ปัดที่ความละเอียดที่จะแสดงจริง แล้วกลบ ``-0.0`` ทิ้ง.
+
+    ``f"{-4.5e-13:+,.2f}"`` ให้ ``"-0.00"`` ซึ่งผู้ใช้อ่านว่า "ขาดทุน" ทั้งที่ค่าที่แสดงคือศูนย์
+    — เครื่องหมายมาจากเศษของ float ล้วน ๆ ไม่ได้มาจากข้อมูล และเคสที่เกิดคือเคสที่สำคัญที่สุด
+    ของหัวข้อนี้พอดี: สมุดที่ซื้อ VOO ล้วนต้องได้ส่วนต่าง **ศูนย์** (FIX_PLAN ข้อ 3.1)
+    ``-0.0 + 0.0 == 0.0`` ตามมาตรฐาน IEEE 754 ส่วนค่าที่ปัดแล้วไม่เป็นศูนย์ไม่ถูกแตะเลย
+    """
+    return round(float(value), digits) + 0.0
+
+
 def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     """ชนะ VOO ไหม + %/ปี money-weighted (Roadmap ข้อ 14) — เทียบเงินก้อนเดียวกัน วันเดียวกัน.
 
@@ -3243,6 +3260,24 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     (เคสจริง: จอพิมพ์ −22.44% และแพ้ VOO 1,167 ดอลลาร์ ทั้งที่ฐานเดียวกันคือ +15.76%
     และแพ้ 125 ดอลลาร์ — เพี้ยน 9 เท่า) จึงกรองไม้ของกองที่ไม่มีราคาออกจาก**ทั้งสองขา**
     แล้วบอกผู้ใช้ว่าตัดกองไหนออก
+
+    **และ "ไม้ชุดเดียวกัน" ต้องรวมขาปันผลด้วย** (FIX_PLAN ข้อ 3.1) — สามอาการที่ปิดพร้อมกัน
+    ด้วยโมเดลเดียว คือ *กระแสเงินเข้า-ออกจากภายนอกชุดเดียวกัน*:
+
+    - **เทียบคนละฐาน** ขาเงาใช้ ``cached_prices`` = Adjusted Close = total return
+      (ปันผลของ VOO ถูกลงทุนต่อให้เองในตัวเลข) ส่วนขาพอร์ตจริงคือ ``Current Value (USD)``
+      = ``หุ้น × ราคาปิดดิบ`` ปันผลที่รับเป็นเงินสดไม่ถูกนับกลับ วัดจริง 2026-08-08:
+      VOO 3 ปี total **79.29%** vs price **72.38%** ⇒ **เอียงเข้าข้าง VOO 1.58 จุด/ปี
+      ตลอดเวลา** สมุดที่ซื้อ VOO ล้วนวันเดียวกันเป๊ะยังโชว์ว่าแพ้ VOO
+    - **DRIP ถูกนับเป็นเงินใหม่** ไม้ที่ซื้อด้วยเงินปันผลถูกเหมารวมเป็น "เงินเข้าจากภายนอก"
+      ⇒ ขาเงาพองเกินจริง และ ``invested_usd`` ที่พองยังไปเป็นตัวหารของ %พอร์ตจริงอีกชั้น
+      — ผู้ใช้ที่ลงทุนปันผลต่ออย่างมีวินัยที่สุดถูกลงโทษหนักที่สุด
+    - **ตัวหารต้องเป็นเงินสุทธิจากภายนอก** ``net_external_usd`` = ไม้ซื้อ − ปันผลที่รับ
+      (ไม้ DRIP หักล้างตัวเองพอดี) ไม่ใช่ผลรวมไม้ซื้อดิบ ๆ
+
+    ทุก **ไม้ซื้อ** = เงินเข้า → เงาซื้อ VOO วันเดียวกันจำนวนเดียวกัน · ทุก **ปันผลที่รับ**
+    = เงินที่พอร์ตจริงคายออกมา → เงา**ขาย** VOO มูลค่าเท่ากันวันเดียวกัน · แล้วเทียบเฉพาะ
+    มูลค่าปลายทาง (แท่งล่าสุดของ Adj Close เท่ากับ Close เป๊ะ สองขาจึงจบบนฐานราคาเดียวกัน)
 
     และ "ไม่รู้มูลค่า" ห้ามกลายเป็น ``0.00`` / ``−100%`` (AUDIT.md C1) — ดึงราคาไม่ได้
     สักกอง = ไม่แสดงกล่องเทียบ ไม่ใช่แสดงว่าพอร์ตเหลือศูนย์
@@ -3289,6 +3324,29 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
         )
         return
 
+    # ปันผลต้องถูกกรองด้วย **เกณฑ์เดียวกับไม้ซื้อ** ไม่งั้นขาเงาจะถูกบังคับให้ขายเพื่อจ่าย
+    # ปันผลของกองที่ไม่เคยได้เงินซื้อในขาเงาเลย = โทษ VOO ด้วยเงินที่มันไม่เคยได้รับ
+    # (ตรงข้ามกับบั๊กเดิมพอดี แต่ผิดกฎ "ไม้ชุดเดียวกัน" ข้อเดียวกัน)
+    dividends = get_dividends()
+    comparable_dividends = (
+        dividends[dividends["ticker"].map(lambda t: str(t).strip().upper() in priced_tickers)]
+        if not dividends.empty and "ticker" in dividends.columns
+        else dividends
+    )
+
+    # อายุของ **ชุดที่เทียบจริง** ไม่ใช่ของทั้งสมุด — ใช้ทั้งกับด่าน %ต่อปี และกับการตัดสินว่า
+    # "ไม่มีแถวปันผลเลย" เป็นเรื่องน่าเตือนหรือยัง (พอร์ตที่เพิ่งซื้อสัปดาห์ที่แล้วยังไม่ควรมีปันผล)
+    comparable_dates = pd.to_datetime(comparable["date"], errors="coerce").dropna()
+    if comparable_dates.empty:
+        st.warning("ไม้ซื้อของกองที่เทียบได้ไม่มีวันที่ที่อ่านออกเลย — ยังเทียบกับ VOO ไม่ได้")
+        return
+    first_buy_date = comparable_dates.min()
+    if first_buy_date.tzinfo is not None:
+        # ยึดเวลาหน้าปัดเหมือน ``portfolio/benchmark._align_tz`` — ห้าม tz_convert เพราะ
+        # มันเลื่อนวันที่ได้ทั้งขึ้นและลง (และ ``Timestamp.today()`` เป็น tz-naive)
+        first_buy_date = first_buy_date.tz_localize(None)
+    comparable_age_days = int((pd.Timestamp.today() - first_buy_date).days)
+
     try:
         benchmark_prices = cached_prices(sorted(set(get_tickers()) | {"VOO"}), years=10)
     except PriceDataUnavailableError as exc:
@@ -3301,13 +3359,30 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     # ขา VOO เงาต้องสร้างจาก ``comparable`` (ไม้ของกองที่มีราคาวันนี้) ไม่ใช่ ``buys``
     # ทั้งหมด ไม่งั้นตัวตั้ง (พอร์ตจริงเฉพาะกองที่มีราคา) กับตัวหาร (เงินลงทุนทุกไม้)
     # อยู่คนละฐาน แล้ว "ส่วนต่าง" คือการลบเลขคนละเรื่องกัน (T3)
+    # ``payouts`` คือขาที่ทำให้การเทียบยุติธรรม: ราคาที่ป้อนเข้าไปเป็น total return
+    # แต่พอร์ตจริงตีมูลค่าด้วยราคาล้วน — ไม่บังคับให้เงาคายปันผลออกก้อนเดียวกันวันเดียวกัน
+    # ตัวเลขจะเอียงเข้าข้าง VOO ราว 1.6 จุด/ปี ตลอดเวลา (FIX_PLAN ข้อ 3.1)
     try:
-        shadow = shadow_benchmark(comparable, benchmark_prices["VOO"].dropna())
+        shadow = shadow_benchmark(
+            comparable, benchmark_prices["VOO"].dropna(), payouts=comparable_dividends
+        )
     except ValueError as exc:
         st.error(f"เทียบไม่ได้: {exc}")
         return
     if shadow["rounds"] == 0:
         st.caption("ไม่มีไม้ซื้อที่เทียบราคา VOO ณ วันซื้อได้")
+        return
+    if shadow["payouts_skipped"]:
+        # ปันผลที่ข้าม ≠ ไม้ซื้อที่ข้าม — ไม้ซื้อที่ข้ามหายจากทั้งตัวตั้งและตัวหาร แต่ปันผล
+        # ที่ข้ามแปลว่าเงาเก็บเงินที่ควรคายออกไว้กับตัว = เอียงเข้าข้าง VOO ทางเดียว
+        # จึงไม่มีคำตัดสิน "ชนะ/แพ้" ที่เชื่อถือได้ให้แสดง
+        st.error(
+            f"มีแถวปันผล {shadow['payouts_skipped']} รายการที่ใช้เทียบไม่ได้ "
+            f"(ข้อมูลในสมุดใช้ไม่ได้ {shadow['payouts_skipped_bad_row']} · "
+            f"ไม่มีราคา VOO ณ วันรับ {shadow['payouts_skipped_no_price']}) — "
+            "ข้ามแถวปันผลไปเฉย ๆ จะทำให้ขา VOO เงาเก็บเงินที่ต้องคายออกไว้กับตัว "
+            "ตัวเลขจะเอียงเข้าข้าง VOO ทางเดียว จึงไม่แสดงผลเทียบในรอบนี้"
+        )
         return
 
     if dropped_from_both:
@@ -3322,10 +3397,17 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     priced_values_usd = pd.to_numeric(priced["Current Value (USD)"], errors="coerce")
     actual_value_usd = None if priced_values_usd.isna().any() else _to_number(priced_values_usd.sum())
     invested_usd = _to_number(shadow["invested_usd"])
+    payout_usd = _to_number(shadow["payout_usd"])
+    # ตัวหารของทั้งสองขาคือ **เงินสุทธิจากภายนอก** ไม่ใช่ผลรวมไม้ซื้อ — ไม้ DRIP เข้ามาทาง
+    # ``invested_usd`` แล้วถูกปันผลก้อนเดียวกันหักออกตรงนี้พอดี เหลือเฉพาะเงินที่ผู้ใช้
+    # ควักจากกระเป๋าจริง ๆ (FIX_PLAN ข้อ 3.1 ข้อย่อย ข)
+    net_external_usd = _to_number(shadow["net_external_usd"])
     shadow_value = _to_number(shadow["benchmark_value_usd"])
     if (
         actual_value_usd is None
         or invested_usd is None
+        or payout_usd is None
+        or net_external_usd is None
         or shadow_value is None
         or invested_usd <= 0
     ):
@@ -3337,11 +3419,41 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
         return
 
     bench_col1, bench_col2, bench_col3 = st.columns(3)
-    actual_pct = (actual_value_usd / invested_usd - 1.0) * 100.0
-    shadow_pct = (shadow_value / invested_usd - 1.0) * 100.0
-    bench_col1.metric("พอร์ตจริง (USD)", f"{actual_value_usd:,.2f}", delta=f"{actual_pct:+.2f}%")
-    bench_col2.metric("ถ้าซื้อ VOO ล้วน (USD)", f"{shadow_value:,.2f}", delta=f"{shadow_pct:+.2f}%")
-    bench_col3.metric("ส่วนต่าง", f"{actual_value_usd - shadow_value:+,.2f} USD")
+    if net_external_usd > 0:
+        actual_pct = (actual_value_usd / net_external_usd - 1.0) * 100.0
+        shadow_pct = (shadow_value / net_external_usd - 1.0) * 100.0
+        actual_delta: str | None = f"{_zero_safe(actual_pct):+.2f}%"
+        shadow_delta: str | None = f"{_zero_safe(shadow_pct):+.2f}%"
+    else:
+        # ถอนปันผลออกมามากกว่าเงินที่ใส่เข้าไป = ตัวหารเป็นศูนย์/ติดลบ %ที่ได้ไม่มีความหมาย
+        # (และเครื่องหมายพลิกได้) — แสดงมูลค่ากับส่วนต่างซึ่งยังเทียบกันได้ แล้วบอกเหตุผล
+        actual_delta = shadow_delta = None
+    bench_col1.metric("พอร์ตจริง (USD)", f"{actual_value_usd:,.2f}", delta=actual_delta)
+    bench_col2.metric("ถ้าซื้อ VOO ล้วน (USD)", f"{shadow_value:,.2f}", delta=shadow_delta)
+    bench_col3.metric("ส่วนต่าง", f"{_zero_safe(actual_value_usd - shadow_value):+,.2f} USD")
+    if net_external_usd > 0:
+        st.caption(
+            f"เปอร์เซ็นต์ทั้งสองช่องคิดจากฐานเดียวกัน: เงินสุทธิจากภายนอก {net_external_usd:,.2f} USD "
+            f"(ไม้ซื้อ {invested_usd:,.2f} − ปันผลที่รับ {payout_usd:,.2f}) · "
+            "ขา VOO เงาถูกบังคับให้ขายเท่ากับปันผลทุกก้อนในวันเดียวกัน ไม้ที่ซื้อด้วยเงินปันผล "
+            "(DRIP) จึงหักล้างตัวเองและไม่ถูกนับเป็นเงินใหม่"
+        )
+    else:
+        st.warning(
+            f"ปันผลที่รับ ({payout_usd:,.2f} USD) มากกว่าหรือเท่ากับเงินที่ใส่เข้าไป "
+            f"({invested_usd:,.2f} USD) — เงินสุทธิจากภายนอกไม่เป็นบวก จึงไม่แสดงเปอร์เซ็นต์ "
+            "(ตัวหารที่ ≤ 0 ทำให้ % พลิกเครื่องหมายได้) · มูลค่าและส่วนต่างข้างบนยังเทียบกันได้ตามปกติ"
+        )
+    if shadow["payout_rounds"] == 0 and comparable_age_days >= _BENCHMARK_MIN_AGE_DAYS:
+        # ไม่มีแถวปันผลเลยทั้งที่พอร์ตอายุเกิน 90 วัน = ขาเงาได้ปันผล VOO ลงทุนต่อฟรี ๆ
+        # (Adjusted Close = total return) ขณะที่ขาพอร์ตจริงตีมูลค่าด้วยราคาล้วน
+        st.warning(
+            "ไม่มีแถวปันผลของกองที่เทียบอยู่ในสมุดเลย — ราคา VOO ที่ใช้เป็น Adjusted Close "
+            "(ปันผลลงทุนต่อให้เอง) ส่วนพอร์ตจริงตีมูลค่าจากราคาล้วน ถ้าคุณเคยได้ปันผลแต่ยังไม่ได้"
+            "บันทึก ตัวเลขข้างบนจะเอียงเข้าข้าง VOO อย่างเป็นระบบ (วัด VOO 3 ปีล่าสุด: "
+            "total return 79.29% เทียบกับราคาล้วน 72.38% ≈ 1.6 จุด/ปี) — บันทึกปันผลที่รับ "
+            "แล้วตัวเลขจะกลับมาเทียบกันได้ตรง ๆ"
+        )
     if shadow["skipped"]:
         # เหตุผลต้องตรงชนิด — ``shadow_benchmark`` แยก "แถวในสมุดเสียเอง" ออกจาก
         # "ไม่มีราคา VOO ณ วันซื้อ" มาให้แล้ว เดิมหน้าจออ่านแต่ผลรวมแล้วพิมพ์เหตุผล
@@ -3379,11 +3491,18 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
     # ดอลลาร์ แล้วลบ CPI ไทยทับ: ช่วงบาทแข็งตัวเลขสูงเกินจริงหลายจุด/ปี และพลิก
     # เครื่องหมายได้ (USD บวก แต่บาทติดลบ) · ขาซื้อใช้ ``amount_thb`` = เงินที่จ่ายจริง
     # ซึ่งรวมค่าธรรมเนียมไว้แล้ว (เดิมค่าธรรมเนียมหายไปจากกระแสเงินสดทั้งหมด)
+    #
+    # กระแสเงินสดต้องมาจาก **ไม้ชุดเดียวกับมูลค่าปลายทาง** (FIX_PLAN ข้อ 3.1 ข้อย่อย ค)
+    # เดิมสร้าง flow จาก ``buys``/``dividends`` ทั้งสมุด แต่ปิดท้ายด้วย ``actual_value``
+    # ที่นับเฉพาะกองที่มีราคา ⇒ เงินของกองที่ราคาหายถูกใส่เข้าไปเป็นเงินจ่ายออก แต่มูลค่า
+    # ของมันไม่เคยกลับมาในแถวสุดท้าย = XIRR ต่ำกว่าจริงอย่างเป็นระบบ (วัดได้ 16.25%/ปี
+    # กลายเป็น 7.63%/ปี จากราคาที่หายไปตัวเดียว) ตอนนี้ใช้ ``comparable`` ซึ่งเป็นชุด
+    # เดียวกับที่ตีมูลค่าปลายทางได้จริง ตัวเลขจึงเป็น "ผลตอบแทนของกองที่เทียบได้" ครบวง
     flows_thb: list[tuple[pd.Timestamp, float]] = []
     flows_usd: list[tuple[pd.Timestamp, float]] = []
     buys_without_thb = 0
     usd_incomplete = False  # ตัวเลขฐานดอลลาร์เป็นของแถม — ไม่ครบก็ไม่แสดง ห้ามคิดจากไม้ที่เหลือ
-    for _, row in buys.iterrows():
+    for _, row in comparable.iterrows():
         when = pd.to_datetime(row["date"])
         paid_thb = _to_number(row.get("amount_thb"))
         if paid_thb is None or paid_thb <= 0:
@@ -3396,9 +3515,8 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
             usd_incomplete = True
         else:
             flows_usd.append((when, -shares * price_usd))
-    dividends = get_dividends()
     dividends_without_thb = 0
-    for _, dividend_row in dividends.iterrows():
+    for _, dividend_row in comparable_dividends.iterrows():
         when = pd.to_datetime(dividend_row["date"])
         received_thb = _to_number(dividend_row.get("amount_thb"))
         if received_thb is None:
@@ -3425,15 +3543,18 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
 
     unpriced_now = _unpriced_tickers(holdings_df)
     if unpriced_now:
+        # เงิน **และ** ปันผลของกองเหล่านี้ถูกตัดออกจากกระแสเงินสดทั้งชุด ไม่ใช่แค่มูลค่า
+        # ปลายทาง — %ต่อปีจึงเป็นของกองที่เหลือครบวง ไม่ใช่ตัวเลขที่ "ต่ำกว่าความจริง"
+        # แบบเดิมที่เอาเงินจ่ายออกของกองหนึ่งไปหารกับมูลค่าปลายทางของอีกกองหนึ่ง
         st.caption(
-            f"มูลค่าปลายทางของกระแสเงินสดไม่รวม {', '.join(unpriced_now)} (ดึงราคาไม่ได้) — "
-            "%ต่อปีด้านล่างจึงต่ำกว่าความจริง"
+            f"%ต่อปีด้านล่างเป็นของกองที่เทียบได้เท่านั้น — เงินและปันผลของ "
+            f"{', '.join(unpriced_now)} (ดึงราคาไม่ได้) ถูกตัดออกจากกระแสเงินสดทั้งชุด "
+            "ไม่ใช่ตัดเฉพาะมูลค่าปลายทาง"
         )
 
-    portfolio_age_days = (pd.Timestamp.today() - buys["date"].min()).days
-    if portfolio_age_days < 90:
+    if comparable_age_days < _BENCHMARK_MIN_AGE_DAYS:
         st.caption(
-            f"อายุพอร์ต {portfolio_age_days} วัน — น้อยเกินกว่าจะตีเป็น %ต่อปีอย่างมีความหมาย "
+            f"อายุพอร์ต {comparable_age_days} วัน — น้อยเกินกว่าจะตีเป็น %ต่อปีอย่างมีความหมาย "
             "(ตัวเลขรวมด้านบนคือของจริงทั้งหมดแล้ว)"
         )
         return
