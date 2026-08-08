@@ -89,6 +89,20 @@ class ScreenerRunResults(list):
         self.errors: list[str] = list(errors or [])
 
 
+def _decided(value: bool | None, what: str) -> bool:
+    """แปลง "คำนวณไม่ได้" (``None``) ของตัวตรวจจับให้ดังเป็น ``ValueError``.
+
+    ตัวตรวจจับใน ``crossover_detector.py`` คืน ``None`` เมื่อข้อมูลไม่พอตัดสิน
+    (FIX_PLAN ข้อ 2.1) — ถ้าปล่อยให้ ``None`` ไหลต่อ ``all()``/``any()`` จะอ่านมันเป็น
+    **เท็จ** = "กฎข้อนี้ไม่ผ่าน" ซึ่งคือบั๊กเดิมทั้งดุ้น (ETF ประวัติสั้นกว่า 200 วัน
+    ได้ "ไม่มีสัญญาณ" ตลอดกาลอย่างเงียบ ๆ) · ``run()`` เก็บ ``ValueError`` นี้ลง
+    ``.errors`` รายสัญลักษณ์ ซึ่งงาน 07:00 และหน้าจอรายงานต่อ
+    """
+    if value is None:
+        raise ValueError(f"ตัดสิน {what} ไม่ได้ (ประวัติราคาไม่พอ) — ไม่ใช่ 'ไม่มีสัญญาณ'")
+    return bool(value)
+
+
 class ScreenerEngine:
     def __init__(self):
         self.detector = CrossoverDetector()
@@ -96,7 +110,12 @@ class ScreenerEngine:
     def _fetch_df(self, symbol: str) -> pd.DataFrame:
         # auto_adjust=True ระบุชัด: ใช้ราคา adjusted เป็นมาตรฐานเดียวทั้งระบบ
         # (เดิมไม่ระบุ → พฤติกรรมแกว่งตามเวอร์ชัน yfinance — AUDIT.md M1)
-        df = yfinance.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=True)
+        #
+        # ``period="2y"`` ไม่ใช่ ``"1y"`` (FIX_PLAN ข้อ 2.1): กฎที่ต้องใช้ MA200 กิน 200 แท่ง
+        # ไปแล้ว 1 ปี (~250 แท่ง) จึงเหลือ margin แค่ ~50 แท่ง — พรีเซ็ต golden/death cross
+        # มองย้อน lookback อีก 3 แท่ง และค่าเฉลี่ย bandwidth 50 แท่งของ BB ก็กินเพิ่ม
+        # ⇒ วันที่ผู้ให้ข้อมูลส่งแท่งขาดไปไม่กี่วัน สัญญาณจะกลายเป็น "ตัดสินไม่ได้" ทั้งชุด
+        df = yfinance.download(symbol, period="2y", interval="1d", progress=False, auto_adjust=True)
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
         if df.empty or "Close" not in df.columns:
             raise ValueError(f"ดึงข้อมูลราคา {symbol} ไม่สำเร็จ (ผลว่าง)")
@@ -154,6 +173,8 @@ class ScreenerEngine:
                 return rsi > rule.value
         elif rule.field == "macd_cross":
             cross = self.detector.detect_macd_cross(df)
+            if cross is None:
+                raise ValueError("คำนวณ MACD ไม่ได้ (ข้อมูลไม่พอ) — ไม่ใช่ 'ไม่มีการตัด'")
             if rule.operator == "cross_up":
                 return cross == "bullish"
             if rule.operator == "cross_down":
@@ -167,15 +188,23 @@ class ScreenerEngine:
             if rule.operator == "lt":
                 return price < ma200
         elif rule.field == "golden_cross":
-            return self.detector.detect_golden_cross(df, int(rule.value or 3))
+            return _decided(
+                self.detector.detect_golden_cross(df, int(rule.value or 3)), "golden cross (MA50/MA200)"
+            )
         elif rule.field == "death_cross":
-            return self.detector.detect_death_cross(df, int(rule.value or 3))
+            return _decided(
+                self.detector.detect_death_cross(df, int(rule.value or 3)), "death cross (MA50/MA200)"
+            )
         elif rule.field == "bb_squeeze":
-            return self.detector.detect_bb_squeeze(df)
+            return _decided(self.detector.detect_bb_squeeze(df), "Bollinger squeeze")
         elif rule.field == "volume_spike":
-            return self.detector.detect_volume_spike(df, rule.value or 2.0)
+            return _decided(
+                self.detector.detect_volume_spike(df, rule.value or 2.0), "volume spike"
+            )
         elif rule.field == "price_drop_pct":
-            return self.detector.detect_price_drop_pct(df, rule.value or 5.0)
+            return _decided(
+                self.detector.detect_price_drop_pct(df, rule.value or 5.0), "price drop %"
+            )
         # มาถึงบรรทัดนี้ไม่ได้ถ้า ``_ALLOWED_OPERATORS`` กับสาขาข้างบนตรงกัน — กันไว้
         # ไม่ให้ฟิลด์ที่เพิ่มในตารางแต่ลืมเขียนตัวประเมินกลับไปเงียบเป็น "ไม่ผ่านกฎ" อีก
         raise ValueError(
