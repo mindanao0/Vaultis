@@ -15,9 +15,11 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import math
 import sys
+import textwrap
 from pathlib import Path
 
 import pandas as pd
@@ -246,13 +248,129 @@ class TestCalculatePeriodReturnsInheritsGuards:
         for period in ("3M", "6M", "1Y", "3Y", "5Y", "10Y"):
             assert math.isnan(float(out.loc[period, "VOO"]))
 
-    def test_forward_fill_behaviour_unchanged(self):
-        """ยัง ffill ก่อนคำนวณเหมือนเดิม — ช่องว่างกลางทางไม่ทำให้ทั้งคอลัมน์พัง."""
+    def test_mid_column_gap_counts_the_tickers_own_bars(self):
+        """ช่องว่าง**กลางทาง** ไม่ทำให้ทั้งคอลัมน์พัง — แต่หน้าต่างนับจากแท่งจริงของ ticker เอง.
+
+        แทนที่ ``test_forward_fill_behaviour_unchanged`` เดิม (G7 —
+        AUDIT_ROUND2_2026-08-07): ``ffill`` แก้ช่องว่างกลางทางได้ก็จริง แต่มันเติม
+        **หางคอลัมน์**ของ ticker ที่ผู้ให้ข้อมูลหยุดส่งไปด้วย จนตัวตั้งกับตัวหาร
+        กลายเป็นราคาเดียวกัน ⇒ 0.0000% ตัวเลขที่ถูกกุขึ้น
+        ตัวเลขที่ตรึงจึงเปลี่ยนตาม: หน้าต่าง 21 แท่งคือ 21 แท่ง**ของ ticker นั้น**
+        ไม่ใช่ 21 แถวของทั้งเฟรมที่ยืมวันของเพื่อนมา — นิยามเดียวกับที่
+        ``financial_model.score_from_prices`` ใช้ (มัน ``dropna()`` ก่อนเสมอ)
+        """
         values = [100.0 + i for i in range(40)]
         values[-3] = float("nan")
+        real = [v for v in values if not math.isnan(v)]
         out = calculate_period_returns(self._frame(values))
-        expected = (values[-1] / values[-(_BARS_1M + 1)] - 1.0) * 100.0
+        expected = (real[-1] / real[-(_BARS_1M + 1)] - 1.0) * 100.0
         assert float(out.loc["1M", "VOO"]) == pytest.approx(expected, rel=1e-12)
+        assert not math.isnan(float(out.loc["1M", "VOO"])), "ช่องว่างกลางทางต้องไม่ทำให้ทั้งช่องหาย"
+
+
+class TestTrailingGapIsNeverZeroPercent:
+    """G7 (AUDIT_ROUND2_2026-08-07) — ticker ที่ผู้ให้ข้อมูลหยุดส่งแท่ง ห้ามอ่านเป็น "ราคาไม่ขยับ".
+
+    ``data/fetcher.fetch_adjusted_close_data`` ตัดทิ้งเฉพาะแถวที่ NaN **ทุกคอลัมน์**
+    (``dropna(how="all")``) หางคอลัมน์เดียวที่หายจึงรอดมาถึงตาราง Returns เสมอ
+    เดิม ``calculate_period_returns`` ``ffill()`` ทั้งเฟรมก่อนคำนวณ ⇒
+
+    - ช่องว่างยาวกว่าหน้าต่าง: ตัวตั้ง = ตัวหาร = ราคาจริงแท่งสุดท้าย → **0.0000% พอดี**
+    - ช่องว่างสั้นกว่าหน้าต่าง: ผลตอบแทนถูกหดลงตามจำนวนแท่งที่ถูกเติม
+      (10 แท่ง = 1.11% แทน 2.12%) — อันตรายกว่าเพราะยังดูสมเหตุสมผล
+    - guard ``pd.isna(end)`` ใน ``period_return_pct`` กลายเป็นโค้ดตายบนเส้นทางนี้
+    """
+
+    def _frame_with_dead_tail(self, gap: int, rows: int = 400) -> tuple[pd.DataFrame, pd.Series]:
+        """VOO ปกติ + X ที่หยุดส่งแท่ง ``gap`` แท่งท้าย (ยังเป็นคอลัมน์อยู่ ไม่ได้หายไป)."""
+        healthy = _steady_growth_series(rows)
+        dead = healthy.copy()
+        if gap:
+            dead.iloc[-gap:] = float("nan")
+        return pd.DataFrame({"VOO": healthy, "X": dead}), dead
+
+    def test_gap_longer_than_window_is_not_zero_percent(self):
+        """หลักฐานตรง ๆ ของบั๊ก: ขาด 40 แท่ง → ตารางพิมพ์ 0.0000% (ราคาจริงขึ้นทั้งเดือน)."""
+        frame, dead = self._frame_with_dead_tail(40)
+        out = calculate_period_returns(frame)
+        got = float(out.loc["1M", "X"])
+        assert got != pytest.approx(0.0, abs=1e-9), (
+            "ffill เติมหางคอลัมน์จนตัวตั้ง = ตัวหาร → 'ดึงราคาไม่ได้' ถูกอ่านเป็น 'ราคาไม่ขยับเลยทั้งเดือน'"
+        )
+        assert got == pytest.approx(
+            returns_mod.period_return_pct(dead.dropna(), _BARS_1M), rel=1e-12
+        ), "ต้องเป็นผลตอบแทนของแท่งจริงของ X เอง"
+        assert float(out.loc["1M", "VOO"]) == pytest.approx(
+            returns_mod.period_return_pct(frame["VOO"], _BARS_1M), rel=1e-12
+        ), "ticker ที่ข้อมูลปกติต้องไม่เปลี่ยนค่า"
+
+    @pytest.mark.parametrize("gap", [1, 5, 10, 20, 21, 40, 90])
+    def test_any_trailing_gap_uses_the_tickers_own_bars(self, gap):
+        """ทุกความยาวช่องว่าง: ค่าต้องเท่ากับผลตอบแทนของแท่งจริง ไม่ถูกหดลงตามแท่งที่เติม."""
+        frame, dead = self._frame_with_dead_tail(gap)
+        out = calculate_period_returns(frame)
+        expected = returns_mod.period_return_pct(dead.dropna(), _BARS_1M)
+        assert float(out.loc["1M", "X"]) == pytest.approx(expected, rel=1e-12)
+
+    def test_column_that_stops_before_the_window_is_nan(self):
+        """เหลือแท่งจริงไม่ถึงหน้าต่าง → NaN ("ไม่รู้") ไม่ใช่ 0.0%.
+
+        เดิม ffill ยืดคอลัมน์ให้ยาวเท่าเฟรมเสมอ ``len(closes) > bars`` จึงเป็นจริง
+        ทั้งที่ ticker นั้นมีแท่งจริงแค่ 15 แท่ง → ได้ 0.0000% ที่ดูเหมือนคำตอบ
+        """
+        healthy = _steady_growth_series(400)
+        dead = healthy.copy()
+        dead.iloc[15:] = float("nan")
+        out = calculate_period_returns(pd.DataFrame({"VOO": healthy, "X": dead}))
+        for period in RETURN_WINDOWS:
+            assert math.isnan(float(out.loc[period, "X"])), f"{period} ต้องเป็น NaN ไม่ใช่ตัวเลข"
+
+    def test_all_nan_column_is_nan_everywhere(self):
+        """คอลัมน์ที่ไม่มีแท่งจริงเลย = ดึงไม่สำเร็จ → NaN ทุกช่อง ห้ามเป็น 0."""
+        healthy = _steady_growth_series(400)
+        dead = pd.Series(float("nan"), index=healthy.index)
+        out = calculate_period_returns(pd.DataFrame({"VOO": healthy, "X": dead}))
+        for period in RETURN_WINDOWS:
+            assert math.isnan(float(out.loc[period, "X"]))
+        assert not math.isnan(float(out.loc["1M", "VOO"]))
+
+    def test_infinite_price_is_not_a_real_bar(self):
+        """``inf`` ไม่ใช่ราคา — ถ้าปล่อยผ่านจะได้ ``inf``/-100% ที่ล้ม JSONResponse ทั้ง endpoint."""
+        healthy = _steady_growth_series(400)
+        broken = healthy.copy()
+        broken.iloc[-1] = float("inf")
+        out = calculate_period_returns(pd.DataFrame({"X": broken}))
+        got = float(out.loc["1M", "X"])
+        assert math.isfinite(got), "inf หลุดเข้าตาราง Returns"
+        assert got == pytest.approx(
+            returns_mod.period_return_pct(broken.iloc[:-1], _BARS_1M), rel=1e-12
+        )
+
+    def test_no_ffill_left_on_this_path(self):
+        """กันการกลับไปใช้ ffill บนเส้นทางที่ผลลัพธ์ไปโชว์เป็นผลตอบแทน.
+
+        ตรวจเฉพาะ**โค้ด** — ``ast.unparse`` ตัดคอมเมนต์และ docstring ทิ้งก่อน
+        เพราะ docstring ที่อธิบายว่า "ทำไมถึงห้าม ffill ที่นี่" ต้องเขียนคำนั้นออกมาได้
+        (สำนวนเดียวกับ ``test_source_has_no_or_zero_idiom``)
+        """
+        tree = ast.parse(textwrap.dedent(inspect.getsource(calculate_period_returns)))
+        func = tree.body[0]
+        body = func.body
+        if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]  # docstring
+        code = "\n".join(ast.unparse(node) for node in body)
+        assert "ffill" not in code, "ffill กลับมาอยู่ในเส้นทางตาราง Returns แล้ว"
+
+    def test_table_and_score_agree_on_a_ticker_with_gaps(self):
+        """ตาราง Returns กับคะแนนโมเมนตัมต้องเล่าเรื่องเดียวกันแม้ข้อมูลมีรู (C7)."""
+        healthy = _steady_growth_series(400)
+        dead = healthy.copy()
+        dead.iloc[-40:] = float("nan")
+        dead.iloc[100] = float("nan")
+        table = calculate_period_returns(pd.DataFrame({"X": dead}))
+        score = fm.score_from_prices("X", dead, div_yield=None)
+        assert score["return_1m_pct"] == pytest.approx(round(float(table.loc["1M", "X"]), 2))
+        assert score["return_3m_pct"] == pytest.approx(round(float(table.loc["3M", "X"]), 2))
 
 
 class TestMomentumMissingIsNotZero:

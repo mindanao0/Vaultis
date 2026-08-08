@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Dict
 
+import numpy as np
 import pandas as pd
 
 from utils.cache import cache_data_1h
@@ -54,6 +55,28 @@ RETURN_WINDOWS: Dict[str, int] = {
 }
 
 
+def real_bars(closes: pd.Series) -> pd.Series:
+    """แท่งราคา**จริง**ของอนุกรมเดียว — ช่องว่างถูก "ตัดทิ้ง" ไม่ใช่ "เติม".
+
+    **นิยามเดียวของ "แท่งจริง" ทั้งระบบ** — ``calculate_period_returns``,
+    ``main._real_bars`` และ ``etf_service._real_bars`` เรียกตัวนี้ตัวเดียวกัน
+    (``financial_model.score_from_prices`` ทำสิ่งเดียวกันกับซีรีส์ที่รับเข้ามา)
+
+    ทำไมต้องคิดรายคอลัมน์แทนการ ``ffill()`` ทั้งเฟรม (AUDIT_ROUND2_2026-08-07 G7):
+    ``data/fetcher.fetch_adjusted_close_data`` ตัดทิ้งเฉพาะแถวที่ NaN **ทุกคอลัมน์**
+    (``dropna(how="all")``) หางคอลัมน์ของ ticker ที่ผู้ให้ข้อมูลหยุดส่งจึงรอดมาเสมอ
+    ถ้า ffill ก่อนคำนวณ ราคาสุดท้ายจะไม่มีวันเป็น NaN ⇒ guard ทั้งหมดของ
+    ``period_return_pct`` กลายเป็นโค้ดตาย และเมื่อช่องว่างยาวกว่าหน้าต่าง
+    ตัวตั้งกับตัวหารกลายเป็นราคาเดียวกันเป๊ะ ⇒ **0.0000%** ที่ผู้ใช้อ่านว่า
+    "ราคาไม่ขยับเลยทั้งเดือน" ทั้งที่ความจริงคือ "ดึงราคาไม่ได้"
+
+    ``inf``/``-inf`` ถูกตัดด้วย: ไม่ใช่ราคา และ ``JSONResponse`` (``allow_nan=False``)
+    จะพาทั้ง endpoint ลงเป็น 500 ถ้าหลุดออกไป
+    """
+    series = pd.to_numeric(closes, errors="coerce")
+    return series[np.isfinite(series)]
+
+
 def period_return_pct(closes: pd.Series, bars: int) -> float:
     """ผลตอบแทน**ทบต้นจริง**ของช่วง ``bars`` แท่งล่าสุด (หน่วยเปอร์เซ็นต์).
 
@@ -93,19 +116,27 @@ def calculate_period_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     ใช้ ``period_return_pct`` ซึ่งเป็นนิยามเดียวกับคะแนนโมเมนตัม — ตาราง Returns
     กับคะแนนต้องเล่าเรื่องเดียวกันเสมอ (C7)
 
-    ``ffill`` ก่อนคำนวณ เพื่อให้วันหยุดที่ต่างกันระหว่าง ETF ไม่ทำให้ทั้งคอลัมน์หาย
-    ช่องที่คำนวณไม่ได้คง ``NaN`` ไว้ — ETF ที่เกิดทีหลังต้องได้ ``NaN`` ในช่วงยาว
-    ไม่ใช่ 0 (C1)
+    **ห้าม ``ffill()`` ที่นี่** (AUDIT_ROUND2_2026-08-07 G7) — หน้าต่าง "21 แท่ง"
+    นับจากแท่งจริงของ ticker นั้นเอง (``real_bars``) ไม่ใช่ 21 แถวของทั้งเฟรมที่
+    ยืมวันของ ticker อื่นมา วิธีนี้แก้ทั้งช่องว่าง**กลางทาง** (เหตุผลเดิมที่ใส่ ffill —
+    วันหยุดที่ต่างกันระหว่าง ETF ไม่ทำให้ทั้งคอลัมน์หาย) และช่องว่าง**ท้ายคอลัมน์**
+    (ผู้ให้ข้อมูลหยุดส่งแท่งของ ticker นั้น) พร้อมกัน  ffill ทำให้กรณีหลังกลายเป็น
+    ``0.0000%`` = "ดึงราคาไม่ได้" ถูกอ่านเป็น "ราคาไม่ขยับเลยทั้งช่วง"
+
+    ช่องที่คำนวณไม่ได้คง ``NaN`` ไว้ — ETF ที่เกิดทีหลัง และ ticker ที่มีแท่งจริง
+    ไม่ถึงหน้าต่าง ต้องได้ ``NaN`` ไม่ใช่ 0 (C1)
     """
     try:
         if price_df.empty:
             raise ValueError("price_df ว่าง ไม่สามารถคำนวณผลตอบแทนได้")
 
-        filled = price_df.ffill()
+        # คิดแท่งจริงคอลัมน์ละครั้ง แล้วใช้ซ้ำทุกหน้าต่าง
+        bars_by_column = {
+            col: real_bars(price_df.iloc[:, i]) for i, col in enumerate(price_df.columns)
+        }
         results: dict[str, dict[str, float]] = {
             period: {
-                col: period_return_pct(filled.iloc[:, i], window)
-                for i, col in enumerate(filled.columns)
+                col: period_return_pct(bars, window) for col, bars in bars_by_column.items()
             }
             for period, window in RETURN_WINDOWS.items()
         }

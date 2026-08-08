@@ -17,6 +17,18 @@ from __future__ import annotations
 RSI_OVERSOLD = 30.0
 RSI_OVERBOUGHT = 70.0
 
+#: เพดาน RSI ของป้าย ``strong_buy`` — ร้อนกว่านี้ยังเป็น ``buy`` ได้ แต่ไม่ใช่ "แรง"
+#:
+#: AUDIT_ROUND2_2026-08-07 (T5 · M09): เดิมเลข 65 ฝังอยู่กลาง ``overall_signal()``
+#: เป็นเลขลอยชุดที่สองในไฟล์ที่ประกาศตัวเองว่าเป็น single source of truth เลื่อนเป็น 75
+#: แล้วชุดเทสต์ทั้งชุดยังเขียว ⇒ RSI 70 (= ``RSI_OVERBOUGHT`` เส้น overbought ของทั้งระบบ)
+#: ได้ป้าย ``strong_buy`` ซึ่งขัดกับนโยบายที่เขียนไว้หัวไฟล์เองว่า "overbought = ระวังไล่ราคา
+#: ไม่ใช่คำสั่งซื้อ" ป้ายนี้ออกหน้า ETF analysis และเข้า prompt ของ AI จริง
+#:
+#: **ต้องต่ำกว่า ``RSI_OVERBOUGHT`` เสมอ** ไม่งั้น "ร้อนเกิน" กับ "ซื้อแรง" จะทับกัน
+#: (``tests/test_signal_rules_thresholds.py`` ตรึงทั้งตัวเลขและเส้นแบ่งไว้)
+STRONG_BUY_RSI_CEILING = 65.0
+
 # ค่าที่เป็นไปได้ของสัญญาณกลาง
 NO_DATA = "no_data"
 ACCUMULATE = "accumulate"              # oversold ในขาขึ้น — จังหวะสะสมของ DCA
@@ -92,11 +104,15 @@ def overall_signal(
     """ป้ายสรุปสำหรับหน้า ETF analysis: strong_buy / buy / hold / sell.
 
     หมายเหตุ: oversold ไม่ map เป็น strong_sell อีกต่อไป (บั๊กเดิมใน AUDIT.md C2)
+
+    ``strong_buy`` ต้องมี golden cross **และ** RSI ต่ำกว่า
+    :data:`STRONG_BUY_RSI_CEILING` — RSI ที่คำนวณไม่ได้ (``None``/``NaN``) นับเป็น
+    "ไม่ผ่านเงื่อนไข" จึงได้แค่ ``buy`` ไม่ใช่เดาว่าเย็นพอ (C1)
     """
     if central == NO_DATA:
         return "no_data"
     if central in (BULLISH, ACCUMULATE):
-        rsi_ok = _valid(rsi) and float(rsi) < 65  # type: ignore[arg-type]
+        rsi_ok = _valid(rsi) and float(rsi) < STRONG_BUY_RSI_CEILING  # type: ignore[arg-type]
         if golden_cross and rsi_ok:
             return "strong_buy"
         return "buy"
