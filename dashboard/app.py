@@ -34,7 +34,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from analysis.correlation import calculate_correlation_matrix
+from analysis.correlation import (
+    ROLLING_WINDOW_DAYS,
+    calculate_correlation_matrix,
+    rolling_correlation_summary,
+)
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
 from analysis.llm import ANTHROPIC_MODEL
 from analysis.financial_model import (
@@ -91,6 +95,7 @@ from alerts.price_alert import (
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from db.sentiment_models import get_latest_sentiment_summaries
 from portfolio.backtest import run_portfolio_backtest
+from portfolio.lookthrough import look_through, overlap_pairs
 from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
 from portfolio.targets import (
     RISK_PROFILES,
@@ -3779,8 +3784,114 @@ def _render_panic_coach_section(holdings_df: pd.DataFrame) -> None:
     )
 
 
+#: เกณฑ์ "เคลื่อนไหวแทบเป็นตัวเดียวกัน" — ใช้ทั้งกับค่าเดียวและกับค่าสูงสุดของ rolling
+_HIGH_CORRELATION = 0.85
+
+
+def _render_rolling_correlation(prices: pd.DataFrame, base: str = "VOO") -> None:
+    """correlation แบบเลื่อนหน้าต่าง — ค่าเดียวซ่อนกรณีเลวร้ายไว้ (FIX_PLAN เฟส 4③).
+
+    วัดจริง 2026-08-08 เทียบ VOO: SCHD แสดงค่าเดียว 0.86 แต่ rolling 1 ปีเคยขึ้นถึง
+    **0.98** และตอนนี้อยู่ที่ 0.29 · XLV ค่าเดียว 0.76 แต่เคยขึ้นถึง 0.95 —
+    เกณฑ์เตือนที่ดูค่าเดียวจึงมองไม่เห็นว่า **ตัวที่ควรกระจายความเสี่ยงหยุดกระจายพอดี
+    ตอนที่ต้องการมันที่สุด**
+    """
+    try:
+        summary = rolling_correlation_summary(prices, base)
+    except ValueError as exc:
+        st.caption(f"ยังคิด correlation แบบเลื่อนหน้าต่างไม่ได้: {exc}")
+        return
+
+    table = summary.rename(
+        columns={
+            "min": "ต่ำสุด",
+            "mean": "เฉลี่ย",
+            "max": "สูงสุด",
+            "current": "ปัจจุบัน",
+            "n_windows": "จำนวนหน้าต่าง",
+        }
+    )
+    st.caption(f"correlation เทียบ {base} แบบเลื่อนหน้าต่าง {ROLLING_WINDOW_DAYS} วัน")
+    st.dataframe(
+        table.style.format(
+            {"ต่ำสุด": "{:+.2f}", "เฉลี่ย": "{:+.2f}", "สูงสุด": "{:+.2f}",
+             "ปัจจุบัน": "{:+.2f}", "จำนวนหน้าต่าง": "{:,.0f}"},
+            na_rep="N/A",
+        )
+    )
+    ever_high = [t for t in summary.index if float(summary.loc[t, "max"]) >= _HIGH_CORRELATION]
+    if ever_high:
+        detail = ", ".join(
+            f"{t} (สูงสุด {float(summary.loc[t, 'max']):+.2f} · ปัจจุบัน "
+            f"{float(summary.loc[t, 'current']):+.2f})"
+            for t in ever_high
+        )
+        st.warning(
+            f"เคยเคลื่อนไหวแทบเป็นตัวเดียวกับ {base} (correlation เคยแตะ "
+            f"{_HIGH_CORRELATION:.2f}): {detail} — ค่าเฉลี่ยหรือค่าปัจจุบันที่ต่ำ **ไม่ได้**"
+            "แปลว่ามันจะกระจายความเสี่ยงให้ในวันที่ตลาดพัง ซึ่งเป็นวันที่ต้องการมันที่สุด"
+        )
+
+
+def _render_lookthrough() -> None:
+    """ทะลุกอง ETF ลงไปดูหุ้นและเซกเตอร์ที่ถืออยู่จริง (FIX_PLAN เฟส 4③).
+
+    ตัวเลขเชิงพรรณนาล้วน — **ไม่เข้าเลขคะแนนและไม่เข้าการจัดสรร DCA**
+    """
+    st.markdown("**ทะลุกองลงไปดูของที่ถือจริง**")
+    try:
+        weights = _tracked_target_weights()
+        result = look_through(weights)
+    except (InvalidTargetWeights, NoTargetForSubset, ValueError) as exc:
+        st.caption(f"ยังทะลุกองไม่ได้: {exc}")
+        return
+
+    if result["unavailable"]:
+        st.warning(
+            "ดึงโครงสร้างกองไม่ได้: "
+            + ", ".join(f"{t} ({why})" for t, why in sorted(result["unavailable"].items()))
+            + f" — ตัวเลขด้านล่างคิดจากพอร์ตเพียง {result['covered_weight'] * 100:.1f}%"
+        )
+    if not result["holdings"] and not result["sectors"]:
+        st.caption("ผู้ให้ข้อมูลไม่มีโครงสร้างของกองเหล่านี้ — ยังทะลุกองไม่ได้")
+        return
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.caption("หุ้นรายตัวที่ถือมากที่สุด (ผ่านกองต่าง ๆ รวมกัน)")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "หุ้น": row["symbol"],
+                        "% ของพอร์ต": row["weight_pct"],
+                        "ผ่านกอง": ", ".join(row["via"]),
+                    }
+                    for row in result["holdings"][:10]
+                ]
+            ).style.format({"% ของพอร์ต": "{:.2f}%"}),
+            hide_index=True,
+        )
+    with col_b:
+        st.caption("สัดส่วนเซกเตอร์ที่ถือจริง (ครอบทั้งกอง จึงเป็นตัวเลขเต็ม)")
+        st.dataframe(
+            pd.DataFrame(
+                [{"เซกเตอร์": k, "% ของพอร์ต": v} for k, v in list(result["sectors"].items())[:10]]
+            ).style.format({"% ของพอร์ต": "{:.2f}%"}),
+            hide_index=True,
+        )
+
+    overlaps = overlap_pairs(result)
+    if overlaps:
+        st.warning(
+            "หุ้นที่ถือผ่าน **มากกว่าหนึ่งกอง** — ความทับซ้อนที่จำนวนกองบนหน้าจอไม่บอก: "
+            + ", ".join(f"{r['symbol']} {r['weight_pct']:.2f}% ({'+'.join(r['via'])})" for r in overlaps[:6])
+        )
+    st.caption(result["notes"])
+
+
 def _render_overlap_section() -> None:
-    """ความทับซ้อน/การกระจายจริง (Roadmap ข้อ 10) — correlation คำนวณจริง + โครงสร้างเชิงบรรยาย."""
+    """ความทับซ้อน/การกระจายจริง (Roadmap ข้อ 10) — correlation คำนวณจริง + ทะลุกองถึงรายหุ้น."""
     st.divider()
     st.subheader("การกระจายจริง & ความทับซ้อน")
     try:
@@ -3798,13 +3909,14 @@ def _render_overlap_section() -> None:
             if pd.notna(value):
                 pairs.append((first, second, float(value)))
 
-    high_pairs = sorted([p for p in pairs if p[2] >= 0.85], key=lambda p: -p[2])
+    high_pairs = sorted([p for p in pairs if p[2] >= _HIGH_CORRELATION], key=lambda p: -p[2])
     if high_pairs:
         pair_text = ", ".join(f"{a}–{b} ({c:.2f})" for a, b, c in high_pairs)
         st.warning(
-            f"คู่ที่เคลื่อนไหวแทบเป็นตัวเดียวกัน (correlation ≥ 0.85): {pair_text} — "
+            f"คู่ที่เคลื่อนไหวแทบเป็นตัวเดียวกัน (correlation ≥ {_HIGH_CORRELATION:.2f}): {pair_text} — "
             "การถือทั้งคู่กระจายความเสี่ยงได้น้อยกว่าที่จำนวนตัวบอก"
         )
+    _render_rolling_correlation(overlap_prices)
     diversifiers = sorted([p for p in pairs if p[2] <= 0.30], key=lambda p: p[2])
     if diversifiers:
         st.caption(
@@ -3831,6 +3943,7 @@ def _render_overlap_section() -> None:
         "· SCHD เน้นปันผล ทับซ้อน VOO บางส่วน · XLV = healthcare ล้วน (ซึ่งอยู่ใน VOO ด้วย) "
         "· GLDM = ทองคำ ไม่ใช่หุ้น — ตัวเลข correlation ข้างบนคือพฤติกรรมจริงย้อนหลัง ไม่ใช่การพยากรณ์"
     )
+    _render_lookthrough()
 
 
 _UNKNOWN_MONEY_TEXT = "ไม่ทราบ"

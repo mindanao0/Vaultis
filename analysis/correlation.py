@@ -98,3 +98,50 @@ def calculate_correlation_matrix(price_df: pd.DataFrame) -> pd.DataFrame:
         return corr
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการคำนวณ Correlation Matrix: {exc}") from exc
+
+
+#: หน้าต่างของ rolling correlation — 252 วันทำการ ≈ 1 ปี
+ROLLING_WINDOW_DAYS = 252
+
+
+def rolling_correlation_summary(
+    price_df: pd.DataFrame, base: str, window: int = ROLLING_WINDOW_DAYS
+) -> pd.DataFrame:
+    """สรุป correlation แบบ **เลื่อนหน้าต่าง** ของทุกกองเทียบ ``base``.
+
+    ทำไมค่าเดียวไม่พอ (FIX_PLAN เฟส 4③): ตัวเลข correlation ค่าเดียวของทั้งช่วงซ่อน
+    ความจริงที่สำคัญที่สุดไว้ — **ตัวที่ควรกระจายความเสี่ยงมักหยุดกระจายพอดีตอนที่
+    ต้องการมันที่สุด** วัดตอนตรวจ: SCHD เทียบ VOO แสดงค่าเดียว 0.76 ทั้งที่ rolling
+    1 ปีเคยขึ้นถึง **0.94** (ตอนตลาดพัง ทุกอย่างวิ่งไปทางเดียวกัน) และตอนนี้อยู่ที่ 0.29
+    ⇒ เลขที่โชว์ไม่ตรงกับทั้งสถานะปัจจุบันและกรณีเลวร้าย · เกณฑ์เตือน ``>= 0.85`` ที่ดู
+    ค่าเดียวจึงจับได้แค่ QQQM
+
+    คืน DataFrame index = ticker (ไม่รวม ``base``) คอลัมน์ ``min``/``mean``/``max``/``current``
+    และ ``n_windows`` — กองที่หน้าต่างไม่พอจะไม่อยู่ในผลลัพธ์ (ไม่เดาค่าแทน)
+
+    ``ValueError`` เมื่อไม่มีคอลัมน์ ``base`` หรือข้อมูลสั้นกว่าหน้าต่าง
+    """
+    if base not in price_df.columns:
+        raise ValueError(f"ไม่มีข้อมูลราคาของ {base} — เทียบ correlation ไม่ได้")
+    returns = price_df.pct_change(fill_method=None)
+    if len(returns) <= window:
+        raise ValueError(
+            f"ข้อมูล {len(returns)} แถว สั้นกว่าหน้าต่าง {window} วัน — คิด rolling correlation ไม่ได้"
+        )
+    rows: dict[str, dict[str, float]] = {}
+    for column in price_df.columns:
+        if column == base:
+            continue
+        series = returns[column].rolling(window).corr(returns[base]).dropna()
+        if series.empty:
+            continue
+        rows[str(column)] = {
+            "min": float(series.min()),
+            "mean": float(series.mean()),
+            "max": float(series.max()),
+            "current": float(series.iloc[-1]),
+            "n_windows": int(len(series)),
+        }
+    if not rows:
+        raise ValueError("ไม่มีกองไหนมีข้อมูลยาวพอสำหรับหน้าต่างที่ขอ")
+    return pd.DataFrame.from_dict(rows, orient="index")
