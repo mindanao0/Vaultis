@@ -69,7 +69,7 @@ Vaultis/
    `python main.py` หรือ `python main.py --job all`  
    งานเดี่ยว: `--job weekly_summary`, `monthly_advice`, `price_alert`
 
-**หมายเหตุ:** `backend/main.py` ลงทะเบียน APScheduler ให้รัน `run_daily_screener` ทุกวัน 07:00 เวลา `Asia/Bangkok`
+**หมายเหตุ:** `backend/main.py` ลงทะเบียน APScheduler ไว้ **2 งาน** (เขตเวลา `Asia/Bangkok`): `run_daily_screener` ทุกวัน 07:00 และ `generate_and_save_report` (รายงานรายเดือน — **ส่ง Telegram**) ทุกวันที่ 1 เวลา 08:00 · เปิด backend ทิ้งไว้ = ทั้งสองงานทำงานเอง
 
 ---
 
@@ -79,8 +79,9 @@ Vaultis/
 
 - สร้างตาราง SQLite จาก `Base.metadata.create_all`
 - เปิด CORS แบบเปิดกว้าง (`allow_origins=["*"]`) — เหมาะสำหรับพัฒนา; โปรดจำกัดใน production
-- รวม router ทั้งหมด: ETF, backtest, forecast, etf_analysis, portfolio, analysis, alerts, ai, sentiment, screener, websocket
-- ตั้ง `AsyncIOScheduler` สำหรับสกรีนเนอร์รายวัน
+- รวม router ทั้งหมด 19 ไฟล์: etf, etf_analysis, backtest, forecast, portfolio, rebalance, analysis, alerts, ai, sentiment, screener, transactions, goals, reports, networth, cashflow, debt, emergency_fund, websocket (แผนที่ prefix ฉบับเต็มอยู่ในหัวข้อ "Backend Router Map" ของ `CLAUDE.md` ซึ่งมีเทสต์ตรึงไม่ให้ตกหล่น)
+- ตั้ง `AsyncIOScheduler` สำหรับสกรีนเนอร์รายวัน 07:00 และรายงานรายเดือนวันที่ 1 เวลา 08:00
+- ตั้งค่า logging ของทั้งโปรเซสด้วย `configure_logging()` (ปรับระดับได้ที่ `VAULTIS_LOG_LEVEL` ดีฟอลต์ `INFO`)
 
 ### `backend/database.py`
 
@@ -256,7 +257,8 @@ Vaultis/
 
 ## CI/CD (`.github/workflows/scheduler.yml`)
 
-- รันตาม cron: เซนติเมนต์ + สรุปรายสัปดาห์ (วันจันทร์), AI Advisor (วันที่ 1), `jobs/daily_check.py` วันทำการ
+- รันตาม cron: สรุปรายสัปดาห์ (วันจันทร์), AI Advisor (วันที่ 1), `jobs/daily_check.py` วันทำการ
+- งาน sentiment รายสัปดาห์ **ปิดอยู่โดยดีฟอลต์** เพราะเรียก LLM จริงทุกรอบ (มีค่าใช้จ่าย) — เปิดด้วย repository variable `VAULTIS_SENTIMENT_ENABLED=1` แล้ว step จะตั้ง `VAULTIS_LLM_AUTO=1` ให้เอง ถ้าเปิดแล้วแต่ไม่มี `DATABASE_URL`/`ANTHROPIC_API_KEY` step จะแดงทันที ไม่รันเงียบ ๆ
 - ต้องตั้ง GitHub Secrets ที่ workflow อ้างถึง
 
 ---

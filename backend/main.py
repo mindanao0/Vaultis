@@ -1,10 +1,14 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .database import Base, engine
 from .routers import (
@@ -30,7 +34,49 @@ from .routers import (
 from .routers import websocket as prices_ws
 from .screener.scheduler_job import run_daily_screener
 from .security import allowed_origins, require_api_key
+from .services.json_safe import json_safe
 from .services.report_service import generate_and_save_report as run_monthly_report
+
+DEFAULT_LOG_LEVEL = "INFO"
+LOG_LEVEL_ENV = "VAULTIS_LOG_LEVEL"
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def configure_logging(level: str | None = None) -> None:
+    """ตั้งค่า logging ของทั้งโปรเซส — ต้องเรียกที่ "ทางเข้า" เท่านั้น ห้ามโรยตามโมดูล.
+
+    ก่อนแก้: ไม่มีที่ไหนในระบบเรียก ``basicConfig``/``dictConfig`` เลย และ
+    ``docker-compose.yml`` รัน uvicorn โดยไม่ส่ง ``--log-level`` (ซึ่งต่อให้ส่งก็ไม่ช่วย
+    เพราะ uvicorn ตั้งค่าเฉพาะ logger ชื่อ ``uvicorn*``) logger ของแอปจึงตกไปที่ root
+    ที่มีแต่ ``lastResort`` ระดับ WARNING ⇒ **ทุก ``logger.info`` ถูกทิ้งเงียบ**
+    รวมถึงบรรทัดสรุปของ screener ``"Screener run complete: %d/%d symbols passed,
+    %d ตรวจไม่ได้"`` ที่เขียนไว้เพื่อกฎ C1 โดยเฉพาะ และบรรทัด ``scheduler started``
+    ผลคือแยกไม่ออกระหว่าง "งาน 07:00 รันแล้วไม่มีสัญญาณ" กับ "งานไม่ได้รันเลย"
+    (AUDIT_ROUND2_2026-08-07 — วัดจริงใน container: grep 'Screener run complete' → 0 บรรทัด
+    ขณะที่ WARNING/ERROR ผ่านได้ปกติ)
+
+    ระดับ log ปรับได้ที่ ``VAULTIS_LOG_LEVEL`` (ดีฟอลต์ ``INFO``) ค่าที่ไม่รู้จักไม่ทำให้
+    โปรเซสตาย แต่ถอยไปใช้ ``INFO`` พร้อมเตือน — log ที่ตั้งค่าผิดต้องไม่ทำให้ backend ล่ม
+
+    ไม่ใช้ ``force=True`` โดยตั้งใจ: ถ้ามีใครตั้ง handler ไว้ก่อนแล้ว (deploy ที่มี
+    dictConfig ของตัวเอง หรือ plugin logging ของ pytest) ``basicConfig`` จะไม่ทำอะไร
+    ซึ่งถูกต้องแล้ว — ทางเข้าตั้งค่าให้ "เมื่อไม่มีใครตั้ง" ไม่ใช่แย่งของคนอื่น
+    """
+    raw = level if level is not None else os.getenv(LOG_LEVEL_ENV, "")
+    name = (raw or DEFAULT_LOG_LEVEL).strip().upper()
+    resolved = int(name) if name.isdigit() else logging.getLevelNamesMapping().get(name)
+    unknown = resolved is None
+    if unknown:
+        resolved = logging.INFO
+    logging.basicConfig(level=resolved, format=LOG_FORMAT)
+    if unknown:
+        logging.getLogger(__name__).warning(
+            "%s=%r ไม่ใช่ระดับ log ที่รู้จัก — ใช้ %s แทน", LOG_LEVEL_ENV, raw, DEFAULT_LOG_LEVEL
+        )
+
+
+# เรียกตอน import: uvicorn/gunicorn โหลดโมดูลนี้เป็นทางเข้าเดียวของ backend
+configure_logging()
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +132,26 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 ต้องส่งออกได้เสมอ แม้ค่าที่ผู้ใช้ส่งมาเป็น ``inf``/``NaN``.
+
+    ตัวจัดการมาตรฐานของ FastAPI สะท้อนค่าที่ผิดกลับไปในช่อง ``input`` แล้ว
+    ``JSONResponse`` render ด้วย ``allow_nan=False`` ⇒ ``inf`` ทำให้ **ทั้งคำตอบ**
+    กลายเป็น 500 "Internal Server Error" ภาษาอังกฤษ ทั้งที่ความจริงคือ "อินพุตผิด"
+    (เจอตอนปิด G8: ``{"weights": {"VOO": Infinity}}`` ควรได้ 422 ที่อ่านออก)
+
+    ``json_safe`` แปลงเฉพาะค่าที่ JSON ไม่รองรับให้เป็น ``null`` — รูปร่าง body
+    (``detail`` เป็น array ของ object ที่มี ``loc``/``msg``) ยังตรงกับ openapi เหมือนเดิม
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"detail": json_safe(jsonable_encoder(exc.errors()))},
+        media_type="application/json; charset=utf-8",
+    )
+
 
 # เดิม allow_origins=["*"] → เว็บใดก็ยิง API นี้จากเบราว์เซอร์ผู้ใช้ได้ (AUDIT.md H1)
 app.add_middleware(

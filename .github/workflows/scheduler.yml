@@ -28,10 +28,40 @@ jobs:
         run: pip install -r requirements.txt
       # Secrets ที่ต้องมี: ANTHROPIC_API_KEY (Claude Sonnet 5 สำหรับ AI Advisor),
       # DISCORD_WEBHOOK_URL, FRED_API_KEY, NEWSAPI_KEY, DATABASE_URL
-      - name: Run Sentiment Analysis
-        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
-        run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
+      #
+      # งาน sentiment เป็นงานอัตโนมัติ "ที่จ่ายเงินจริง" (LLM ชุดละข่าว × 5 สัญลักษณ์ต่อรอบ)
+      # CLAUDE.md จึงบังคับให้ปิดโดยดีฟอลต์ — `run_sentiment_job()` เช็ค `auto_enabled()`
+      # เป็นบรรทัดแรกและ return ทันทีถ้าไม่ได้ตั้ง VAULTIS_LLM_AUTO
+      # เดิม step นี้ส่ง secrets 5 ตัวเข้าไปทุกวันจันทร์ แต่ **ไม่เคยตั้ง VAULTIS_LLM_AUTO**
+      # ⇒ ทุกรอบพิมพ์ "ข้ามการวิเคราะห์ sentiment" แล้วจบ ตาราง sentiment_results/
+      # sentiment_summary จึงว่างเปล่าถาวรใน production, `/api/sentiment/{symbol}` ตอบ 404
+      # ตลอดกาล และกล่องบริบทในหน้า AI Advisor สัญญาว่า "รอ scheduled job รอบถัดไป"
+      # ที่ไม่มีวันมาถึง (AUDIT_ROUND2_2026-08-07)
+      #
+      # แก้แบบไม่แอบใช้เงินของผู้ใช้: สวิตช์อยู่ที่เดียวและมองเห็นได้ —
+      # ตั้ง repository variable `VAULTIS_SENTIMENT_ENABLED=1` (Settings → Secrets and
+      # variables → Actions → Variables) เท่านั้น step นี้ถึงจะรัน และ "รัน" = จ่ายจริง
+      # ทุกสัปดาห์ ถ้าไม่ตั้ง step ถูกข้ามทั้ง step (secrets ไม่ถูกส่งเข้า runner ด้วยซ้ำ)
+      # แทนพฤติกรรมเดิมที่ "รันแล้วเงียบ" ซึ่งแยกไม่ออกจากงานที่ทำงานได้
+      - name: Run Sentiment Analysis (ต้องเปิดเอง — มีค่าใช้จ่าย LLM ทุกรอบ)
+        if: ${{ vars.VAULTIS_SENTIMENT_ENABLED == '1' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1')) }}
+        # เปิดแล้วต้องทำงานจริงหรือแดง — ห้ามเงียบ: ไม่มี DATABASE_URL แปลว่าผลวิเคราะห์
+        # ที่จ่ายเงินไปแล้วไม่มีที่เก็บ และไม่มี ANTHROPIC_API_KEY แปลว่าวิเคราะห์ไม่ได้เลย
+        # (`run_sentiment_job()` พิมพ์ "DATABASE_URL not set; aborting." แล้ว exit 0 —
+        #  เป็นความล้มเหลวที่หน้า Actions ขึ้นสีเขียว จึงต้องดักก่อนด้วย exit 1)
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::VAULTIS_SENTIMENT_ENABLED=1 แต่ไม่ได้ตั้ง secret DATABASE_URL — งาน sentiment ไม่มีที่เก็บผล"
+            exit 1
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::VAULTIS_SENTIMENT_ENABLED=1 แต่ไม่ได้ตั้ง secret ANTHROPIC_API_KEY — วิเคราะห์ sentiment ไม่ได้"
+            exit 1
+          fi
+          python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
         env:
+          # งานอัตโนมัติต้องประกาศเจตนาจ่ายเงินตรงนี้ — ไม่มีบรรทัดนี้ job ข้ามตัวเองเงียบ ๆ
+          VAULTIS_LLM_AUTO: '1'
           # llm.py ใช้ Claude อย่างเดียว (ถอด Groq ออกแล้ว 2026-08-02)
           # ทำให้ job เดียวในระบบที่วิ่งคนละโมเดลกับที่อื่นโดยไม่มีใครตั้งใจ
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -43,13 +43,14 @@ No linter config is present. No build step required.
 
 **The default test run must not need the internet.** `pytest.ini` sets `addopts = -m "not network"`, and the four suites that hit live yfinance/Prophet (`test_etf_analysis`, `test_screener`, `test_backtest`, `test_forecast`) carry `pytestmark = pytest.mark.network`. Before this, `test_etf_analysis.py` and `test_screener.py` called `asyncio.run(test())` at module level, so collection itself downloaded prices — offline the whole suite died with `Interrupted: 2 errors during collection` and not one test ran, while online the pass count depended on Yahoo's uptime (AUDIT_2026-08-06 §0-B). Never call a test body at module scope, and mark any new test that reaches the network. `tests/pipeline_smoke.py` is deliberately not named `test_*` — it calls `get_ai_advice()` and costs real money; run it by hand only. `tests/test_offline_collection.py` fails if any of this regresses.
 
-**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Postgres is the one exception — it uses the named volume `pgdata`, not a bind mount**: the postgres image runs as its own uid inside the container and `initdb` fails on a directory owned by the host uid. Back it up with `pg_dump`, not by copying files. `DATABASE_URL` is set in `environment:` (not `env_file`) so containers reach it as `postgres:5432` while `.env` keeps the `localhost:5432` form for running outside Docker; the `tests` service clears it because the suite must pass with no database at all. **The `tests` service must never see the real data.** It mounts no host volume and sets `VAULTIS_DB_PATH=/tmp/test_vaultis.db`, so SQLite lives inside the container and dies with `--rm`. It used to mount `./.docker-data:/data` while inheriting the image's `VAULTIS_DB_PATH=/data/vaultis.db`, so anything the suite ran that touched `SessionLocal` wrote straight through to the user's real goals/net-worth/reports database — and it did (AUDIT_2026-08-06 §0.1). `tests/test_db_isolation.py` fails if that mount or an in-`/data` path comes back. Note the run command mounts the repo at `/app`: that is the working tree, so the ledger CSV and `alerts/data/*.json` are writable during a test run — tests must stub those paths, never write the real files. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
+**Docker specifics.** The container runs as `${DOCKER_UID:-1000}` so files it writes (ledger, alerts, `vaultis.db`) stay owned by the host user; set `DOCKER_UID`/`DOCKER_GID` in `.env` if yours differ. All caches point at `/tmp` (`NUMBA_CACHE_DIR`, `MPLCONFIGDIR`, `HOME`) because a non-root uid cannot write to site-packages — without this `vectorbt` dies on import. Data lives on the host via bind mounts (`portfolio/data`, `alerts/data`, `./.docker-data` for SQLite), so rebuilds never lose it. **Postgres is the one exception — it uses the named volume `pgdata`, not a bind mount**: the postgres image runs as its own uid inside the container and `initdb` fails on a directory owned by the host uid. Back it up with `pg_dump`, not by copying files. `DATABASE_URL` is set in `environment:` (not `env_file`) so containers reach it as `postgres:5432` while `.env` keeps the `localhost:5432` form for running outside Docker; the `tests` service clears it because the suite must pass with no database at all. **The `tests` service must never see the real data.** It mounts no host volume and sets `VAULTIS_DB_PATH=/tmp/test_vaultis.db`, so SQLite lives inside the container and dies with `--rm`. It used to mount `./.docker-data:/data` while inheriting the image's `VAULTIS_DB_PATH=/data/vaultis.db`, so anything the suite ran that touched `SessionLocal` wrote straight through to the user's real goals/net-worth/reports database — and it did (AUDIT_2026-08-06 §0.1). `tests/test_db_isolation.py` fails if that mount or an in-`/data` path comes back. Note the run command mounts the repo at `/app`: that is the working tree, so the ledger CSV, `alerts/data/*.json` and `config.json` are physically writable during a test run — and a probe that called `_save_alerts()`/`delete_transaction()` without stubbing did wipe the user's alert store (AUDIT_ROUND2_2026-08-07). Two mechanisms now enforce it instead of a convention: the `tests` service sets `VAULTIS_LEDGER_PATH` / `VAULTIS_ALERTS_PATH` under `/tmp` (read once at import by `portfolio/tracker.py` and `alerts/price_alert.py` — keep them module-level constants, tests monkeypatch them by name), and `tests/conftest.py`'s autouse `_isolate_user_data_files` moves any path still pointing at a real user file into a per-test sandbox, re-checks after each test, and fingerprints the two gitignored stores across the whole session. Never publish a fix that makes those functions read the env on every call — that silently disables the net. `tests/test_data_file_isolation.py` covers all three layers. **Protected routes return 503 in Docker unless `VAULTIS_API_KEY` is set** — requests arrive from the bridge IP, not `127.0.0.1`, so the localhost exemption in `backend/security.py` does not apply. That is the intended fail-closed behavior; the dashboard is unaffected because it calls `analysis/` directly.
 
 ## Architecture
 
 ```
 backend/          FastAPI REST + WebSocket server
-  main.py           App init; APScheduler daily screener at 07:00 Asia/Bangkok
+  main.py           App init + `configure_logging()`; APScheduler (Asia/Bangkok):
+                    daily screener 07:00 **and** monthly report on the 1st at 08:00 (sends Telegram)
   database.py       SQLAlchemy / SQLite (vaultis.db)
   schemas.py        All Pydantic request/response models
   models/orm.py     ORM models: Transaction, PriceAlert, Config, ...
@@ -116,7 +117,7 @@ When adding a new LLM call, thread `user_initiated` from the entry point. Never 
 **ข่าวกับ sentiment เป็นคนละเส้นทางกัน — อย่ารวมกลับเป็นเส้นเดียว.**
 
 - **หน้า News (ฟรี)** — `render_news_page()` เรียก `get_news_with_status()` ตรง ๆ: ไม่ผ่าน LLM ไม่ผ่านฐานข้อมูล จึงใช้ได้เสมอแม้ `DATABASE_URL` ล่มและแม้ไม่มี API key สักตัว (Yahoo RSS + StockTwits ไม่ต้องใช้ key) แคช 30 นาทีด้วย `st.cache_data` — **ล้มเหลวไม่ถูกแคช** เพราะ `cached_news()` โยน `NewsSourcesUnavailable` เมื่อแหล่งข่าวจริงพังหมด (Streamlit ไม่เก็บผลของ call ที่ throw)
-- **sentiment (มีค่าใช้จ่าย)** — `run_sentiment_job()` → LLM ต่อบทความ → PostgreSQL → `/api/sentiment/{symbol}` + กล่องบริบทในหน้า AI Advisor ต้องมีครบทั้ง `VAULTIS_LLM_AUTO=1` และ `DATABASE_URL` ที่ต่อได้ ไม่งั้น job ข้ามตัวเองเงียบ ๆ ตามนโยบายคุมค่าใช้จ่าย
+- **sentiment (มีค่าใช้จ่าย)** — `run_sentiment_job()` → LLM ต่อบทความ → PostgreSQL → `/api/sentiment/{symbol}` + กล่องบริบทในหน้า AI Advisor ต้องมีครบทั้ง `VAULTIS_LLM_AUTO=1` และ `DATABASE_URL` ที่ต่อได้ ไม่งั้น job ข้ามตัวเองเงียบ ๆ ตามนโยบายคุมค่าใช้จ่าย · step รายสัปดาห์ใน `.github/workflows/scheduler.yml` **ปิดอยู่โดยดีฟอลต์**: ต้องตั้ง repository variable `VAULTIS_SENTIMENT_ENABLED=1` ก่อน step ถึงจะรัน (แล้ว step นั้นตั้ง `VAULTIS_LLM_AUTO=1` ให้เอง = ยอมจ่ายทุกวันจันทร์) เดิม step ส่ง secrets เข้าไปทุกสัปดาห์แต่ไม่เคยตั้ง `VAULTIS_LLM_AUTO` จึง return ทันทีทุกรอบ ⇒ ตาราง sentiment ว่างเปล่าถาวรและ `/api/sentiment/{symbol}` ตอบ 404 ตลอด (AUDIT_ROUND2_2026-08-07) · เปิดแล้วแต่ไม่มี `DATABASE_URL`/`ANTHROPIC_API_KEY` = step แดง ไม่ใช่เขียวเงียบ
 - **`ดึงไม่สำเร็จ` ≠ `ไม่มีข่าว`** ทุก `fetch_*_status` คืนสถานะ `ok`/`error`/`off` (`off` = ไม่ได้ตั้ง key ซึ่งไม่ใช่ความล้มเหลว) หน้าจอต้องเตือนเมื่อ `error` ห้ามแสดงลิสต์ว่างเป็น "ไม่มีข่าว" (C1)
 - ข่าว/sentiment เป็น**บริบทข้าง ๆ เท่านั้น — ห้ามเข้าเลขคะแนนหรือการจัดสรร DCA** (invariant เดียวกับ `trend_channel.py`)
 
@@ -180,7 +181,23 @@ Required for full functionality:
 | `NEWSAPI_KEY` | News sentiment analysis |
 | `REDDIT_CLIENT_ID/SECRET` | Reddit sentiment via PRAW |
 
+Vaultis's own switches — all optional, all read with `os.getenv`. **Every `VAULTIS_*` name the code reads must have a row here**; `tests/test_docs_and_deps.py` scans the source and goes red on one that ships undocumented. That is exactly how `VAULTIS_WS_URL` and `VAULTIS_LOG_LEVEL` shipped in AUDIT_ROUND2_2026-08-07 — read by the code, mentioned in neither this table, `.env.example`, nor `docker-compose.yml`, so the one deployment mode that needed `VAULTIS_WS_URL` (Docker) had no way to know it existed.
+
+| Variable | Default when unset | Used by |
+|---|---|---|
+| `VAULTIS_API_KEY` | localhost-only (fail closed) | `backend/security.py` — see Backend Auth. **Must be set under Docker**: requests arrive from the bridge IP, so the localhost exemption never applies |
+| `VAULTIS_ALLOWED_ORIGINS` | `http://localhost:8501`, `http://127.0.0.1:8501` | CORS allow-list (comma-separated) in `backend/security.py` |
+| `VAULTIS_LLM_AUTO` | off — automatic jobs never pay | `analysis/llm.py`; `1` lets cron/CI/screener spend money every run |
+| `VAULTIS_LOG_LEVEL` | `INFO` | Both entry points (`backend/main.py`, `main.py`) — see Scheduled Jobs |
+| `VAULTIS_WS_URL` | derived from `BACKEND_URL`, with an on-screen note when it had to guess | Dashboard real-time price ticker. This URL is dialled by the **user's browser**, so it is a different network view from `BACKEND_URL` (used from inside the container) — never copy one into the other: `ws://backend:8000` is unresolvable outside the compose network. Compose sets it to `ws://127.0.0.1:8000/ws/prices` for the dashboard service only |
+| `VAULTIS_DB_PATH` | `./vaultis.db` | `backend/database.py` — SQLite location. Compose points it at `/data/vaultis.db`; the `tests` service at `/tmp` so a suite run can never touch the real goals/net-worth DB |
+| `VAULTIS_LEDGER_PATH` | `portfolio/data/transactions.csv` | `portfolio/tracker.py` — **read once at import**, on purpose (see the Docker section) |
+| `VAULTIS_ALERTS_PATH` | `alerts/data/price_alerts.json` | `alerts/price_alert.py` — **read once at import**, on purpose (see the Docker section) |
+| `VAULTIS_PDF_THAI_FONT` | auto-detected from system font paths | `utils/pdf_export.py` — path to a Thai-capable `.ttf`. With no font found the PDF prints an English note instead of boxes, never silently blank text |
+
 ## Backend Router Map
+
+Every prefix the app registers must appear here — `tests/test_docs_and_deps.py` compares this table against `backend.main.app.routes` and goes red on drift. (It listed 11 of 18 until AUDIT_ROUND2_2026-08-07: `/api/goals`, `/api/reports`, `/api/networth`, `/api/debt` and four more existed with no mention anywhere, which is exactly how a duplicate route gets written — the bug `tests/test_route_uniqueness.py` exists to catch.)
 
 | Prefix | File | Notes |
 |---|---|---|
@@ -189,11 +206,20 @@ Required for full functionality:
 | `/api/backtest` | `routers/backtest.py` | vectorbt RSI+MACD strategy |
 | `/api/forecast` | `routers/forecast.py` | Prophet forecaster, walk-forward backtester |
 | `/api/portfolio` | `routers/portfolio.py` | Transaction CRUD, portfolio summary |
+| `/api/portfolio/rebalance` | `routers/rebalance.py` | Rebalance plan — same prefix as `portfolio.py`, different file |
 | `/api/alerts` | `routers/alerts.py` | Price alert CRUD + `/check` |
 | `/api/ai` | `routers/ai.py` | Monthly advice, history, suggest-alerts |
 | `/api/sentiment` | `routers/sentiment.py` | Reads PostgreSQL sentiment_results |
 | `/api/screener` | `routers/screener.py` | Run presets/custom screener rules |
-| `/api/analysis` | `routers/analysis.py` | Backtest, DCA sim, macro, DCF, full analysis |
+| `/api/analysis` | `routers/analysis.py` | `/analysis/backtest`, `/analysis/dcf/{ticker}`, `/analysis/full` |
+| `/api/dca` | `routers/analysis.py` | `/dca/simulate` — same file as `/api/analysis`, different prefix |
+| `/api/macro` | `routers/analysis.py` | FRED macro snapshot (needs `FRED_API_KEY`) |
+| `/api/goals` | `routers/goals.py` | Goal CRUD + `/progress`, `/contribute` (SQLite) |
+| `/api/reports` | `routers/reports.py` | `/generate`, list, `/{month}` — monthly PDF/report store (SQLite) |
+| `/api/networth` | `routers/networth.py` | `/current`, `/history`, `/snapshot` (SQLite) |
+| `/api/cashflow` | `routers/cashflow.py` | `/forecast`, `/scenario`, `/transactions/bulk` |
+| `/api/debt` | `routers/debt.py` | `/optimize` (snowball/avalanche), `/sensitivity` |
+| `/api/emergency-fund` | `routers/emergency_fund.py` | `/calculate` — months-of-expenses target |
 | `/api/transactions` | `routers/transactions.py` | Slip OCR via Anthropic vision |
 | `/ws/prices` | `routers/websocket.py` | Real-time price WebSocket |
 
@@ -203,8 +229,12 @@ Required for full functionality:
 
 ## Scheduled Jobs
 
-Two separate scheduling systems run in parallel:
+Three separate scheduling systems run in parallel:
 
-1. **APScheduler** (inside FastAPI process) — daily screener only
+1. **APScheduler** (inside FastAPI process) — **two** jobs, both registered in `lifespan()`: the daily screener at 07:00 and `report_service.generate_and_save_report` on the 1st at 08:00. The monthly one **sends Telegram**, so `uvicorn backend.main:app` or `docker compose up -d` left running notifies the outside world on its own — it costs no LLM money (`user_initiated` defaults to `False`). The docs used to say "daily screener only" and undercounted what leaves the machine automatically (AUDIT_ROUND2_2026-08-07).
 2. **Python `schedule` library** (`main.py`) — weekly summary, monthly advice, DCA reminders
-3. **GitHub Actions** (`.github/workflows/scheduler.yml`) — production cron triggers for jobs/daily_check.py and AI advice
+3. **GitHub Actions** (`.github/workflows/scheduler.yml`) — production cron triggers for jobs/daily_check.py and AI advice, plus the weekly sentiment job, which is **off unless the repository variable `VAULTIS_SENTIMENT_ENABLED=1` is set** (see the news/sentiment section: it is the one automatic job that spends money every run)
+
+Logging is configured **once per process at the entry point** — `backend.main.configure_logging()` honours `VAULTIS_LOG_LEVEL` (default `INFO`) and is the reason `logger.info` lines are visible at all. uvicorn's own `--log-level` does not help: it only configures loggers named `uvicorn*`, so before this every application INFO line — including the screener's `Screener run complete: … ตรวจไม่ได้` summary written for rule C1 — was dropped by the root `lastResort` handler at WARNING (AUDIT_ROUND2_2026-08-07). Do not sprinkle `basicConfig` into modules; libraries configure nothing, entry points configure once.
+
+**There are two entry points and both must call it.** `backend/main.py` calls it at import (uvicorn loads that module). `main.py` — the `vaultis-scheduler` container — calls `_configure_logging_for_scheduler()` at the top of its `__main__` block, which imports the *same* function rather than defining a second one; that import is lazy because `backend.main` pulls in FastAPI and every router (~3s) and is only worth paying in the real process, not in the test files that import `main.py` as a library. The scheduler was missed on the first pass, and it is the container where it matters most: `analysis/llm.py`'s token+cost INFO line is the only record that a `VAULTIS_LLM_AUTO=1` run spent money, and `sentiment_analyzer`'s "ข้าม sentiment — LLM ปิดอยู่" is what separates "the job ran and skipped itself" from "the job never ran". `tests/test_logging_config.py` pins both entry points behaviourally (subprocess probes) and fails if any module outside `backend/main.py` calls `basicConfig`.
