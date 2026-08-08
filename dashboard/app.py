@@ -64,7 +64,12 @@ from analysis.news_fetcher import (
 from analysis.ta_compat import ta
 from analysis.returns import calculate_period_returns, monthly_seasonality, real_bars
 from analysis.macro import get_thai_inflation
-from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
+from analysis.risk import (
+    calculate_risk_metrics,
+    drawdown_episodes,
+    mix_vs_benchmark_test,
+    underwater_series,
+)
 from analysis.trend_channel import fit_trend_channel
 from alerts.notifier import test_alert
 from alerts.price_alert import (
@@ -3245,6 +3250,63 @@ def _upper_set(values) -> set[str]:
 _BENCHMARK_MIN_AGE_DAYS = 90
 
 
+def _render_mix_vs_voo_significance(priced: pd.DataFrame, prices: pd.DataFrame) -> None:
+    """ตอบ "ส่วนผสมนี้ดีกว่า VOO จริงไหม" พร้อมช่วงความเชื่อมั่น — ไม่ใช่ตัวเลขจุดเดียว.
+
+    สามช่องด้านบนตอบคำถาม "สมุดของฉันจบที่เท่าไรเทียบกับเงาที่ซื้อ VOO" ซึ่งเป็นผลที่
+    **เกิดขึ้นแล้วหนึ่งเส้นทาง** (money-weighted จากไม้จริง) — มันไม่ได้บอกว่าส่วนต่างนั้น
+    ใหญ่กว่าความผันผวนของตัวมันเองหรือเปล่า ⇒ ถ้าปล่อยไว้ลอย ๆ ผู้ใช้จะอ่านเป็นคำตัดสินว่า
+    กลยุทธ์ดีกว่า/แย่กว่า แล้วเปลี่ยนพอร์ตตามเสียงรบกวน (FIX_PLAN เฟส 4②)
+
+    ที่นี่จึงทดสอบคำถามที่ถูกต้อง: **paired t-test บนผลตอบแทนรายเดือน** ของส่วนผสมปัจจุบัน
+    เทียบ VOO · "แยกไม่ออกจากศูนย์" ต้อง**พูดออกมาตรง ๆ** และไม่ใช่คำเดียวกับ "เท่ากัน"
+    """
+    weights: dict[str, float] = {}
+    for _, row in priced.iterrows():
+        ticker = str(row.get("Ticker") or "").strip().upper()
+        value = _to_number(row.get("Current Value (USD)"))
+        if ticker and value is not None and value > 0:
+            weights[ticker] = value
+    if not weights:
+        return
+    try:
+        stats = mix_vs_benchmark_test(prices, weights, benchmark="VOO")
+    except ValueError as exc:
+        st.caption(f"ยังทดสอบนัยสำคัญของส่วนต่างไม่ได้: {exc}")
+        return
+
+    diff = float(stats["diff_annual_pct"])
+    se = float(stats["se_annual_pct"])
+    low, high = float(stats["ci95_low_pct"]), float(stats["ci95_high_pct"])
+    head = (
+        f"ส่วนต่างในสามช่องด้านบนคือผลที่**เกิดขึ้นแล้ว**ของสมุดคุณหนึ่งเส้นทาง — "
+        "คำถามว่า *ส่วนผสมนี้ดีกว่า VOO จริงไหม* ต้องตอบด้วยผลตอบแทนรายเดือนย้อนหลัง "
+        f"(ส่วนผสมปัจจุบัน สมมติปรับสมดุลรายเดือน · {stats['n_periods']} เดือน "
+        f"{stats['overlap_start']} ถึง {stats['overlap_end']}): "
+    )
+    if se == 0.0:
+        st.caption(
+            head + "ส่วนผสมของคุณคือ VOO ล้วน จึงไม่มีส่วนต่างให้ทดสอบ (เท่ากันทุกเดือนโดยนิยาม)"
+        )
+        return
+    body = f"**{diff:+.2f}%/ปี** · CI95 **[{low:+.2f}, {high:+.2f}]**"
+    if stats["distinguishable_from_zero"]:
+        st.info(
+            head + body + " ⇒ ส่วนต่างนี้**ต่างจากศูนย์อย่างมีนัยสำคัญ** "
+            "(ยังเป็นสถิติอดีต ไม่ใช่การรับประกันอนาคต)"
+        )
+        return
+    tail = " ⇒ **แยกไม่ออกจากศูนย์** — ข้อมูลเท่านี้ยังตอบไม่ได้ว่าดีกว่าหรือแย่กว่า "
+    years_needed = stats["years_needed"]
+    if years_needed is not None:
+        tail += (
+            f"(ต้องมีข้อมูลราว {float(years_needed):,.0f} ปีถึงจะสรุปผลขนาดนี้ได้ · "
+            f"เล็กสุดที่ข้อมูลชุดนี้จับได้คือ {float(stats['mde_annual_pct']):.2f}%/ปี) "
+        )
+    tail += "**ห้ามอ่านว่า 'เท่ากัน'** และห้ามเปลี่ยนพอร์ตเพราะตัวเลขในกำแพงเสียงรบกวนนี้"
+    st.warning(head + body + tail)
+
+
 def _zero_safe(value: float, digits: int = 2) -> float:
     """ปัดที่ความละเอียดที่จะแสดงจริง แล้วกลบ ``-0.0`` ทิ้ง.
 
@@ -3450,6 +3512,8 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
             f"({invested_usd:,.2f} USD) — เงินสุทธิจากภายนอกไม่เป็นบวก จึงไม่แสดงเปอร์เซ็นต์ "
             "(ตัวหารที่ ≤ 0 ทำให้ % พลิกเครื่องหมายได้) · มูลค่าและส่วนต่างข้างบนยังเทียบกันได้ตามปกติ"
         )
+    # ตัวเลขจุดเดียวข้างบนต้องไม่ยืนอยู่คนเดียว — คำถาม "ชนะไหม" ต้องมาพร้อมช่วงความเชื่อมั่น
+    _render_mix_vs_voo_significance(priced, benchmark_prices)
     if shadow["payout_rounds"] == 0 and comparable_age_days >= _BENCHMARK_MIN_AGE_DAYS:
         # ไม่มีแถวปันผลเลยทั้งที่พอร์ตอายุเกิน 90 วัน = ขาเงาได้ปันผล VOO ลงทุนต่อฟรี ๆ
         # (Adjusted Close = total return) ขณะที่ขาพอร์ตจริงตีมูลค่าด้วยราคาล้วน

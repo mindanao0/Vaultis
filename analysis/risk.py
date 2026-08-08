@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
+from scipy import stats as _scipy_stats
 
 from utils.cache import cache_data_1h
 
@@ -15,6 +18,14 @@ DEFAULT_RISK_FREE_RATE = 0.02
 # จำนวนวันทำการต่อปีที่ใช้ annualize ทุกตัวเลขในโมดูลนี้ (ค่าเดียวกับพารามิเตอร์
 # ``annualization`` ของ Volatility/Sharpe) — เปลี่ยนที่นี่ที่เดียวถ้าต้องเปลี่ยน
 TRADING_DAYS_PER_YEAR = 252
+
+MONTHS_PER_YEAR = 12
+
+#: ระดับความเชื่อมั่นของช่วง (two-sided) — 0.95
+CONFIDENCE_LEVEL = 0.95
+#: ``z(1−α/2) + z(power)`` ที่ α=0.05, power=80% = 1.9600 + 0.8416 — ตัวคูณของ MDE
+#: (minimum detectable effect: ส่วนต่างที่เล็กที่สุดที่ข้อมูลชุดนี้มีโอกาส 80% จะจับได้)
+_MDE_Z_SUM = 2.8016
 
 
 def calculate_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
@@ -204,6 +215,156 @@ def portfolio_return_stats(price_df: pd.DataFrame, weights: dict[str, float]) ->
         "window_days_available": rows_available,
         "window_years": days_used / TRADING_DAYS_PER_YEAR,
     }
+
+
+def paired_diff_stats(
+    a: pd.Series,
+    b: pd.Series,
+    *,
+    periods_per_year: int = MONTHS_PER_YEAR,
+    label_a: str = "a",
+    label_b: str = "b",
+) -> dict[str, object]:
+    """paired t-test ของผลตอบแทนสองแขนที่วัด**ช่วงเวลาเดียวกัน** — ต่างจริง หรือเสียงรบกวน.
+
+    **ทำไมต้องมี** (FIX_PLAN เฟส 4②) — การตัดสิน "ชนะไหม" ด้วยการเทียบตัวเลขปลายทาง
+    จุดเดียว (``final_value_a > final_value_b``) ไม่มีข้อมูลว่าส่วนต่างนั้นใหญ่กว่า
+    ความผันผวนของตัวมันเองหรือเปล่า ทั้งที่อนุกรมผลตอบแทนรายเดือนอยู่ในมือแล้ว
+    วัดจริงบนพอร์ตนี้: ``พอร์ต 5 ตัว vs VOO = −0.93%/ปี`` แต่ ``CI95 [−2.59, +0.73]``
+    ⇒ **แยกไม่ออกจากศูนย์** และต้องใช้ข้อมูลราว 96 ปีถึงจะสรุปได้ที่ขนาดผลเท่านี้
+
+    **จับคู่ (paired) ไม่ใช่สองกลุ่มอิสระ** — สองแขนเจอตลาดเดียวกันทุกเดือน จึงสหสัมพันธ์
+    กันสูงมาก การทดสอบแบบจับคู่หักส่วนที่เหมือนกันออกก่อน เหลือแต่ส่วนต่างที่กลยุทธ์ทำ
+    ⇒ power ดีกว่าการเทียบสองกลุ่มแยกกันหลายเท่า (MDE ของด่าน edge นี้อยู่ที่ ~0.22%/ปี
+    ซึ่งละเอียดพอจะใช้เป็นด่านจริงได้ทันทีโดยไม่ต้องหาข้อมูลเพิ่ม)
+
+    ใช้ **ส่วนต่างของ log return** (``ln(1+r_a) − ln(1+r_b)``) เพราะค่าเฉลี่ยของมันคูณ
+    ``periods_per_year`` = ส่วนต่างของอัตราทบต้นต่อปีพอดี ไม่ใช่การประมาณ — ช่วงความเชื่อมั่น
+    ที่ได้จึงอ่านเป็น "จุด/ปี" ได้ตรง ๆ (เทียบกับส่วนต่างเลขคณิตที่ต้องแปลงอีกชั้น)
+
+    คืน ``{n_periods, diff_annual_pct, se_annual_pct, t_stat, ci95_low_pct,
+    ci95_high_pct, distinguishable_from_zero, mde_annual_pct, periods_needed,
+    years_needed, overlap_start, overlap_end, label_a, label_b}``
+
+    ``distinguishable_from_zero`` = ช่วง CI95 **ไม่คร่อมศูนย์** — เท็จ ไม่ได้แปลว่า
+    "สองแขนเท่ากัน" แต่แปลว่า **ข้อมูลเท่านี้ยังตอบไม่ได้** ผู้เรียกต้องเขียนให้ต่างกัน
+    (ยุบสองอย่างนี้เป็นอันเดียวคือบั๊กชนิดเดียวกับ "ดึงไม่ได้ ≠ ไม่มีข้อมูล")
+
+    ``ValueError`` เมื่อ: ช่วงที่ทับกันสั้นกว่า 2 งวด · มีงวดที่ผลตอบแทน ≤ −100%
+    (ทบต้นไม่ได้ ห้ามปัดเป็นเลขสวย)
+    """
+    frame = pd.concat(
+        [
+            pd.to_numeric(pd.Series(a), errors="coerce").rename("a"),
+            pd.to_numeric(pd.Series(b), errors="coerce").rename("b"),
+        ],
+        axis=1,
+        join="inner",
+    ).dropna()
+    if len(frame) < 2:
+        raise ValueError(
+            f"ช่วงเวลาที่ {label_a} กับ {label_b} ทับกันมีแค่ {len(frame)} งวด — "
+            "ทดสอบนัยสำคัญไม่ได้ (ต้องมีอย่างน้อย 2 งวด)"
+        )
+    if float((1.0 + frame).min().min()) <= 0.0:
+        raise ValueError("มีงวดที่ผลตอบแทน ≤ −100% — คำนวณส่วนต่างอัตราทบต้นไม่ได้")
+
+    diff = np.log1p(frame["a"]) - np.log1p(frame["b"])
+    n = int(len(diff))
+    scale = float(periods_per_year) * 100.0
+    mean_annual = float(diff.mean()) * scale
+    sd = float(diff.std(ddof=1))
+    se_annual = sd / math.sqrt(n) * scale
+
+    if se_annual > 0.0:
+        t_crit = float(_scipy_stats.t.ppf(0.5 + CONFIDENCE_LEVEL / 2.0, n - 1))
+        half_width = t_crit * se_annual
+        t_stat: float | None = mean_annual / se_annual
+    else:
+        # สองแขนต่างกันเท่ากันทุกงวด (หรือเหมือนกันเป๊ะ) — ส่วนต่างไม่มีความผันผวนให้ทดสอบ
+        half_width = 0.0
+        t_stat = None
+    ci_low, ci_high = mean_annual - half_width, mean_annual + half_width
+    mde_annual = _MDE_Z_SUM * se_annual
+
+    periods_needed: int | None = None
+    if mean_annual != 0.0 and se_annual > 0.0:
+        # SE ลดลงตาม 1/√n ⇒ ต้องมี n × (MDE/ผลที่วัดได้)² งวด ถึงจะจับผลขนาดนี้ได้ที่ power 80%
+        periods_needed = int(math.ceil(n * (mde_annual / abs(mean_annual)) ** 2))
+
+    return {
+        "n_periods": n,
+        "diff_annual_pct": mean_annual,
+        "se_annual_pct": se_annual,
+        "t_stat": t_stat,
+        "ci95_low_pct": ci_low,
+        "ci95_high_pct": ci_high,
+        # ไม่คร่อมศูนย์ = แยกออกจากศูนย์ได้ · เท็จ = "ข้อมูลยังตอบไม่ได้" ไม่ใช่ "เท่ากัน"
+        "distinguishable_from_zero": bool(ci_low > 0.0 or ci_high < 0.0),
+        "mde_annual_pct": mde_annual,
+        "periods_needed": periods_needed,
+        "years_needed": None if periods_needed is None else periods_needed / float(periods_per_year),
+        "overlap_start": _window_label(frame.index[0]),
+        "overlap_end": _window_label(frame.index[-1]),
+        "label_a": label_a,
+        "label_b": label_b,
+    }
+
+
+def mix_vs_benchmark_test(
+    price_df: pd.DataFrame,
+    weights: dict[str, float],
+    benchmark: str = "VOO",
+) -> dict[str, object]:
+    """paired t-test "ส่วนผสมนี้ดีกว่า ``benchmark`` จริงไหม" บนผลตอบแทน**รายเดือน**.
+
+    ตอบคำถามที่หัวข้อ "ชนะ VOO ไหม" ถามจริง ๆ ซึ่ง**คนละคำถาม**กับ "สมุดของฉันจบที่เท่าไร":
+    มูลค่าปลายทางของสมุดคือผลที่เกิดขึ้นแล้วหนึ่งเส้นทาง ไม่ใช่หลักฐานว่าส่วนผสมดีกว่า
+    — ต้องมีช่วงความเชื่อมั่นกำกับ ไม่งั้นเลขจุดเดียวจะถูกอ่านเป็นคำตัดสิน
+    (FIX_PLAN เฟส 4②)
+
+    สมมติฐานที่ต้องบอกผู้ใช้: **น้ำหนักคงที่ ปรับสมดุลรายเดือน** และวัดจากราคา
+    Adjusted Close รายเดือนของ**ช่วงที่ทุกกองมีข้อมูลพร้อมกัน** (``dropna``) ซึ่งสั้นกว่า
+    ช่วงที่ขอมาเมื่อกองใดกองหนึ่งลิสต์ทีหลัง — ``overlap_start``/``overlap_end``
+    ที่คืนมาคือช่วงจริง ป้ายบนจอต้องรายงานค่านั้น ไม่ใช่ช่วงที่ขอ
+
+    คืนผลของ :func:`paired_diff_stats` ตรง ๆ (เพิ่ม ``benchmark`` กับ ``tickers``)
+    ``ValueError`` เมื่อไม่มี ticker ที่ใช้ได้ / ไม่มีคอลัมน์ benchmark / เดือนที่ทับกันน้อยกว่า 2
+    """
+    bench = str(benchmark).strip().upper()
+    if bench not in price_df.columns:
+        raise ValueError(f"ไม่มีข้อมูลราคาของ benchmark ({bench}) — เทียบไม่ได้")
+    tickers = [t for t, w in weights.items() if float(w) > 0 and t in price_df.columns]
+    if not tickers:
+        raise ValueError("ไม่มี ticker ที่มีทั้งน้ำหนักและข้อมูลราคา")
+
+    columns = list(dict.fromkeys([*tickers, bench]))
+    # ยุบเป็นราคาปิดของแท่งสุดท้ายในแต่ละเดือนด้วย ``to_period`` ไม่ใช่ ``resample`` —
+    # ชื่อ alias ของ resample เปลี่ยนไปมาระหว่างรุ่น pandas (``M``/``ME``) ส่วน period
+    # เสถียรกว่า และ ``dropna(how="any")`` ให้ "ช่วงที่ทุกกองมีข้อมูลพร้อมกัน" ตรง ๆ
+    numeric = price_df[columns].apply(pd.to_numeric, errors="coerce")
+    monthly = numeric.groupby(numeric.index.to_period("M")).last().dropna(how="any")
+    if len(monthly) < 3:
+        raise ValueError(
+            f"ช่วงที่ทุกกองมีราคาพร้อมกันมีแค่ {len(monthly)} เดือน — ทดสอบนัยสำคัญไม่ได้"
+        )
+    monthly.index = monthly.index.to_timestamp(how="end").normalize()
+
+    # ``fill_method=None`` บังคับตาม B11 — ดีฟอลต์ ``'pad'`` ของ pandas 2.2 คือการ
+    # forward-fill ราคาก่อนคำนวณ ⇒ เดือนที่กองใดกองหนึ่งไม่มีแท่งจะกลายเป็น 0.00% พอดี
+    # (ที่นี่ ``dropna(how="any")`` ข้างบนตัดไปแล้ว ค่าจึงเท่าเดิม แต่ห้ามพึ่งดีฟอลต์
+    #  ที่กุตัวเลขบนเส้นทางราคา — ``tests/test_pct_change_fill_method.py`` ตรึงกฎนี้ไว้)
+    returns = monthly.pct_change(fill_method=None).dropna(how="any")
+    normalized = pd.Series({t: float(weights[t]) for t in tickers})
+    normalized = normalized / normalized.sum()
+    mix = (returns[tickers] * normalized).sum(axis=1)
+
+    stats = paired_diff_stats(
+        mix, returns[bench], label_a="ส่วนผสมพอร์ต", label_b=bench, periods_per_year=MONTHS_PER_YEAR
+    )
+    stats["benchmark"] = bench
+    stats["tickers"] = tickers
+    return stats
 
 
 def portfolio_mu_sigma(price_df: pd.DataFrame, weights: dict[str, float]) -> tuple[float, float]:
