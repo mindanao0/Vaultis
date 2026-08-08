@@ -478,9 +478,87 @@ class TestPartiallyBrokenStore:
         assert _read_raw(store["path"]) == raw, "แถวที่ระบบอ่านไม่เข้าใจ ต้องยังอยู่ในไฟล์ครบ"
 
 
+class TestWritesOnlyWhenSomethingChanged:
+    """"เขียนคลังเฉพาะตอนที่มีอะไรเปลี่ยนจริง" — กติกาที่ซอร์สเขียนคอมเมนต์บังคับตัวเองไว้.
+
+    ก่อนมีเทสต์นี้ การถอดเงื่อนไข ``if triggered_items:`` ที่ครอบ ``_save_alerts(alerts)``
+    (= เขียนไฟล์ทับทุกครั้งที่ตรวจ) รอดชุดเทสต์ทั้ง 1296 ตัวโดยไม่มีตัวไหนแดง
+    (AUDIT_ROUND2_2026-08-07 · มิวแทนต์ M14)
+
+    ทำไมถึงสำคัญ: ``alerts/data/price_alerts.json`` เป็นแหล่งเดียวของ price alert ตาม
+    CLAUDE.md และ scheduler ตรวจวันละ 2 รอบ — การเขียนทับทุกรอบคือการเปิดหน้าต่างให้
+    ไฟล์เสียตอนถูกฆ่ากลางคัน โดยไม่ได้อะไรกลับมาเลย
+
+    วัดด้วย ``st_mtime_ns`` + ``st_ino`` เพราะ ``_save_alerts`` ใช้ ``os.replace``
+    (เปลี่ยน inode ทุกครั้ง) — การเทียบเนื้อไฟล์อย่างเดียวจับ "เขียนทับด้วยเนื้อเดิม" ไม่ได้
+    """
+
+    @staticmethod
+    def _fingerprint(path: Path) -> tuple[int, int, str]:
+        info = path.stat()
+        return (info.st_mtime_ns, info.st_ino, _read_raw(path))
+
+    def test_no_trigger_leaves_the_file_untouched(self, store, monkeypatch):
+        _write(store["path"], [_alert("VOO", "below", price=100.0, alert_id="v")])
+        _set_prices(monkeypatch, {"VOO": 500.0})  # ห่างเป้าลิบ — ไม่มีทางติด
+        before = self._fingerprint(store["path"])
+
+        result = pa.check_alerts()
+
+        assert result["checked"] == 1 and result["triggered"] == [], "ต้องเป็นรอบที่ตรวจแล้วไม่ติด"
+        assert self._fingerprint(store["path"]) == before, "ไม่มีอะไรเปลี่ยน = ห้ามแตะไฟล์คลัง"
+        assert not pa._backup_path().exists(), "ไม่มีการเขียน ก็ต้องไม่มี .bak เกิดขึ้น"
+
+    def test_unchecked_alerts_do_not_trigger_a_write_either(self, store, monkeypatch):
+        """ดึงราคาไม่ได้ = ไม่รู้ผล ยิ่งห้ามเขียนทับคลังใหญ่."""
+        _write(store["path"], [_alert("VOO", "below", price=100.0, alert_id="v")])
+        _set_prices(monkeypatch, {})
+        before = self._fingerprint(store["path"])
+
+        result = pa.check_alerts()
+
+        assert [row["ticker"] for row in result["unchecked"]] == ["VOO"]
+        assert self._fingerprint(store["path"]) == before
+
+    def test_a_real_trigger_is_still_persisted(self, store, monkeypatch):
+        """อีกด้านของตาข่าย: ห้ามแก้จนกลายเป็น "ไม่เขียนเลย" — alert ที่ติดแล้วต้องถูกบันทึก."""
+        _write(store["path"], [_alert("VOO", "below", price=1000.0, alert_id="v")])
+        _set_prices(monkeypatch, {"VOO": 500.0})
+        before = self._fingerprint(store["path"])
+
+        result = pa.check_alerts()
+
+        assert [row["ticker"] for row in result["triggered"]] == ["VOO"]
+        assert self._fingerprint(store["path"]) != before
+        saved = json.loads(_read_raw(store["path"]))["alerts"]
+        assert saved[0]["triggered"] is True
+
+
 _REAL_STORE_FINGERPRINT = (
     (REAL_STORE.stat().st_mtime_ns, REAL_STORE.stat().st_size) if REAL_STORE.exists() else None
 )
+
+
+def _assert_store_untouched(path: Path, fingerprint: tuple[int, int] | None) -> None:
+    """เทียบลายนิ้วมือคลังจริงกับตอน import — แยก "ถูกแก้" ออกจาก "หายไปทั้งไฟล์".
+
+    เดิมโค้ดเรียก ``REAL_STORE.stat()`` ตรง ๆ ⇒ ถ้าไฟล์ **หาย** ระหว่างรัน จะได้
+    ``FileNotFoundError`` เปล่า ๆ ซึ่งอ่านเหมือน "เทสต์พัง" ไม่ใช่ "ข้อมูลจริงของผู้ใช้
+    หายไปแล้ว" — และเรื่องนี้เกิดขึ้นจริงระหว่างรอบตรวจ 2026-08-07 (ไฟล์หายไปจาก
+    เครื่องระหว่างที่มีเอเจนต์หลายตัวรันบน working tree เดียวกัน)
+    (AUDIT_ROUND2_2026-08-07 — แนวแก้ข้อ 2)
+
+    ``skip`` เมื่อไม่มีไฟล์ **ตั้งแต่ตอน import** = เครื่องนี้ยังไม่เคยตั้ง alert
+    ซึ่งเป็นคนละเรื่องกับ "มีตอนเริ่ม แล้วหายระหว่างทาง" ที่ต้องดังเป็น AssertionError
+    """
+    if fingerprint is None:
+        pytest.skip("ไม่มีไฟล์คลัง alert จริงในเครื่องนี้ตั้งแต่ตอนเริ่มรัน")
+    assert path.exists(), (
+        f"คลัง alert จริงหายไประหว่างรันชุดเทสต์ ({path}) — ไฟล์นี้ถูก gitignore ไว้ "
+        "จึงไม่มีสำเนาใน git ให้กู้ ต้องหาตัวที่ลบให้เจอก่อนรันต่อ"
+    )
+    now = (path.stat().st_mtime_ns, path.stat().st_size)
+    assert now == fingerprint, f"คลัง alert จริงถูกเขียนทับระหว่างรันชุดเทสต์ ({path})"
 
 
 class TestRealStoreUntouched:
@@ -489,7 +567,34 @@ class TestRealStoreUntouched:
 
     def test_real_store_is_byte_identical_after_the_suite(self, store):
         """ตาข่ายกันเทสต์ชุดนี้เผลอเขียนสมุด alert จริงของผู้ใช้."""
-        if _REAL_STORE_FINGERPRINT is None:
-            pytest.skip("ไม่มีไฟล์คลัง alert จริงในเครื่องนี้")
-        now = (REAL_STORE.stat().st_mtime_ns, REAL_STORE.stat().st_size)
-        assert now == _REAL_STORE_FINGERPRINT
+        _assert_store_untouched(REAL_STORE, _REAL_STORE_FINGERPRINT)
+
+
+class TestTheNetItselfFailsReadably:
+    """ตาข่ายด้านบนต้องรายงานเป็นข้อความไทยที่อ่านรู้เรื่อง ไม่ใช่ ``FileNotFoundError`` เปล่า ๆ."""
+
+    def test_file_deleted_mid_run_says_so_in_thai(self, tmp_path):
+        decoy = tmp_path / "price_alerts.json"
+        decoy.write_text('{"alerts": []}\n', encoding="utf-8")
+        fingerprint = (decoy.stat().st_mtime_ns, decoy.stat().st_size)
+        decoy.unlink()  # จำลอง "ไฟล์หายระหว่างรัน" แบบที่เกิดขึ้นจริง
+
+        with pytest.raises(AssertionError) as excinfo:
+            _assert_store_untouched(decoy, fingerprint)
+
+        assert "หายไประหว่างรันชุดเทสต์" in str(excinfo.value)
+
+    def test_file_rewritten_mid_run_is_a_different_message(self, tmp_path):
+        decoy = tmp_path / "price_alerts.json"
+        decoy.write_text('{"alerts": []}\n', encoding="utf-8")
+        fingerprint = (decoy.stat().st_mtime_ns, decoy.stat().st_size)
+        decoy.write_text('{"alerts": [{"id": "x"}]}\n', encoding="utf-8")
+
+        with pytest.raises(AssertionError) as excinfo:
+            _assert_store_untouched(decoy, fingerprint)
+
+        assert "ถูกเขียนทับ" in str(excinfo.value)
+
+    def test_absent_from_the_start_is_a_skip_not_a_failure(self, tmp_path):
+        with pytest.raises(pytest.skip.Exception):
+            _assert_store_untouched(tmp_path / "never_existed.json", None)

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import functools
+import logging
+import math
 import time
 from calendar import monthrange
 from datetime import datetime, timedelta
@@ -24,14 +26,18 @@ def _now_bangkok() -> datetime:
 
 from alerts.line_notifier import send_line_message
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
-from alerts.price_alert import ALERTS_PATH, check_alerts
+from alerts.price_alert import ALERTS_PATH, check_alerts, check_result_contract_error
 from analysis.ai_advisor import get_monthly_advice
-from analysis.returns import calculate_period_returns
+from analysis.returns import calculate_period_returns, real_bars
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
 from utils.config import load_config
+
+# ตั้งชื่อ logger เองแทน ``__name__`` เพราะไฟล์นี้ถูกรันเป็นสคริปต์ (``python main.py``)
+# ⇒ ``__name__ == "__main__"`` ซึ่งอ่านแล้วไม่รู้เลยว่าเป็นทางเข้าไหนในสองทางเข้าของระบบ
+logger = logging.getLogger("vaultis.scheduler")
 
 
 def get_default_weights() -> Dict[str, float]:
@@ -45,10 +51,13 @@ def _real_bars(prices: pd.DataFrame, ticker: str) -> pd.Series:
 
     ``data/fetcher.fetch_adjusted_close_data`` ใช้ ``dropna(how="all")`` ซึ่งตัดเฉพาะ
     แถวที่ NaN ทุกคอลัมน์ — คอลัมน์เดียวที่ NaN ท้าย ๆ จึงรอดมาถึงที่นี่เสมอ
+
+    นิยาม "แท่งจริง" มาจาก ``analysis.returns.real_bars`` ที่เดียว (G7) — ที่นี่เหลือแค่
+    ส่วนที่ต่างจริง ๆ คือ "ไม่มีคอลัมน์นี้ในเฟรมเลย"
     """
     if ticker not in prices.columns:
         return pd.Series(dtype=float)
-    return pd.to_numeric(prices[ticker], errors="coerce").dropna()
+    return real_bars(prices[ticker])
 
 
 def _stale_reason(bars: pd.Series, frame_last) -> str | None:
@@ -327,37 +336,69 @@ def check_and_send_dca_reminder(webhook_url: str) -> None:
 # ต้องแยก "รันแล้วไม่มีอะไรถึงเงื่อนไข" (0) ออกจาก "รันแล้วตาบอด" ให้ได้
 PRICE_ALERT_STORE_ERROR_EXIT_CODE = 2
 
-# คีย์ที่ ``check_alerts()`` รับประกันว่าคืนเสมอ (ทั้งเส้นทางปกติและ store failure)
-_PRICE_ALERT_RESULT_KEYS = ("store_error", "checked", "triggered", "unchecked")
-
 _REPORT_SEP = "─" * 31
 
-
-def _price_alert_contract_error(result: Any) -> str | None:
-    """คืนข้อความเมื่อผลลัพธ์ **ผิดสัญญา** จน "สรุปสถานะไม่ได้" — ``None`` เมื่อใช้ได้.
-
-    ห้ามใช้ ``result.get("checked", 0)`` กับคีย์ที่สัญญาบอกว่ามีเสมอ: คีย์หาย
-    แล้วกลายเป็น 0 อ่านออกมาเป็น "ตรวจแล้ว ไม่มีอะไร" ซึ่งเป็นการกุข้อสรุป
-    """
-    if not isinstance(result, dict):
-        return f"ผลลัพธ์ไม่ใช่ dict (ได้ {type(result).__name__})"
-    missing = [key for key in _PRICE_ALERT_RESULT_KEYS if key not in result]
-    if missing:
-        return f"ขาดคีย์ {', '.join(missing)}"
-    if not result["store_error"]:
-        try:
-            int(result["checked"])
-        except (TypeError, ValueError):
-            return f"คีย์ checked ไม่ใช่จำนวนเต็ม ({result['checked']!r})"
-    return None
+# ตัวตรวจสัญญาย้ายไปอยู่ข้าง **ผู้ผลิต** แล้ว (``alerts/price_alert.check_result_contract_error``)
+# — เดิมประกาศไว้ที่นี่ที่เดียว ผู้เรียกรายอื่น (``backend/services/alert_service.py``,
+# หน้าแดชบอร์ด) จึงเติมค่าดีฟอลต์กันเอง แล้ว "ผลลัพธ์ผิดสัญญา" กลายเป็น
+# "ตรวจแล้วไม่มีอะไร" บนหน้าจอผู้ใช้ (AUDIT_ROUND2_2026-08-07)
 
 
 def _fmt_price(value: Any) -> str:
-    """ราคาที่อ่านไม่ได้ต้องเป็น ``?`` ไม่ใช่ ``0.00`` (ห้ามกุตัวเลข)."""
+    """ราคาที่อ่านไม่ได้ต้องเป็น ``?`` ไม่ใช่ ``0.00`` (ห้ามกุตัวเลข).
+
+    บรรทัดนี้อยู่บนเส้นทางเงินจริง: รายการ triggered ที่พิมพ์ลง stdout ของ scheduler
+    และส่งเข้า Discord  ``$0.00`` คือ "ราคาเป้าหมาย 0 ดอลลาร์" ซึ่งเป็นตัวเลขที่ระบบ
+    แต่งขึ้นเองจากข้อมูลที่หายไป — ผู้ใช้แยกไม่ออกจากราคาจริง
+
+    NaN/inf นับเป็น "อ่านไม่ได้" ด้วย: ไม่ใช่ราคา และ ``f"{nan:,.2f}"`` พิมพ์ ``$nan``
+    ซึ่งอ่านเหมือนระบบพัง มากกว่าจะบอกว่า "ไม่รู้ราคา"
+    (ตรึงไว้ด้วย tests/test_fmt_price.py — AUDIT_ROUND2_2026-08-07)
+    """
     try:
-        return f"${float(value):,.2f}"
+        number = float(value)
     except (TypeError, ValueError):
         return "$?"
+    if not math.isfinite(number):
+        return "$?"
+    return f"${number:,.2f}"
+
+
+def _no_pending_lines(result: dict[str, Any]) -> list[str]:
+    """บรรทัดสรุปกรณี "ไม่มีอะไรถูกตรวจเลยในรอบนี้" — แยกตามสถานะ **คลัง** ไม่ใช่ตัวเลข 0.
+
+    ``checked=0, triggered=[], unchecked=[]`` มาจากคนละเรื่องกันได้ 3 แบบ และเดิม
+    ทั้งสามพิมพ์ประโยคเดียวกันว่า "(อ่านคลัง alert ได้ปกติ)":
+
+    - ``missing`` = สภาพแวดล้อมนี้ไม่มีไฟล์คลังเลย (GitHub Actions มองไม่เห็นไฟล์นี้
+      เพราะถูก gitignore) ⇒ "รอบนี้ไม่ได้ตรวจอะไรเลย" ไม่ใช่ "ไม่มี alert ถึงเงื่อนไข"
+    - ``ok``      = มีคลัง อ่านได้ และไม่มี alert ค้างจริง ๆ (สถานะเดียวที่ยืนยันได้)
+    - ไม่มีคีย์   = ผู้เรียกประกอบผลลัพธ์เอง (stub เก่า) ⇒ **ไม่ทราบ** ห้ามยืนยันแทน
+
+    (AUDIT_ROUND2_2026-08-07 — check_alerts() ยุบ "เครื่องนี้ไม่มีคลัง" เข้ากับ "อ่านได้ 0 รายการ")
+    """
+    store_status = result.get("store_status")
+    status = store_status.get("status") if isinstance(store_status, dict) else None
+    store_path = (store_status or {}).get("path") if isinstance(store_status, dict) else None
+
+    if status == "missing":
+        return [
+            f"⚠️ [price alert] เครื่องนี้ไม่มีไฟล์คลัง alert ({store_path or ALERTS_PATH}) — "
+            "รอบนี้ไม่ได้ตรวจอะไรเลย",
+            "⚠️ นี่ไม่ได้แปลว่า 'ไม่มี alert ถึงเงื่อนไข' แต่แปลว่าสภาพแวดล้อมนี้ไม่มีคลังให้ตรวจ",
+            "👉 ไฟล์คลังถูก gitignore ไว้ (ตั้งใจ) — การตรวจ alert รายตัวทำงานเฉพาะจาก "
+            "scheduler ในเครื่อง/Docker ที่ mount ไฟล์จริงเข้ามา",
+        ]
+    if status == "error":
+        # อ่านคลังไม่ได้ตอนสรุปสถานะ ทั้งที่รอบตรวจผ่าน = ไฟล์เพิ่งเสียระหว่างรอบ
+        return [
+            "🚨 [price alert] อ่านคลัง alert ไม่ได้ตอนสรุปสถานะ "
+            f"({(store_status or {}).get('error') or 'ไม่ระบุสาเหตุ'})",
+            "⚠️ ตัวเลขของรอบนี้จึงยืนยันไม่ได้ว่าครบ",
+        ]
+    if status == "ok":
+        return ["[price alert] ไม่มี alert ค้างให้ตรวจ (อ่านคลัง alert ได้ปกติ)"]
+    return ["[price alert] ไม่มี alert ค้างให้ตรวจ (ผลลัพธ์ไม่ได้แนบสถานะคลัง — ไม่ทราบว่ามีคลังให้ตรวจหรือไม่)"]
 
 
 def _discord_delivery_note(result: dict[str, Any]) -> str | None:
@@ -381,8 +422,11 @@ def format_price_alert_report(result: Any) -> str:
 
     ``checked`` จาก ``check_alerts()`` **นับรวมตัวที่ trigger แล้ว** ดังนั้น
     "ตรวจแล้วไม่ถึงเงื่อนไข" = ``checked - len(triggered)``
+
+    สถานะที่ 4 อยู่ใน ``_no_pending_lines()``: "เครื่องนี้ไม่มีคลัง alert เลย"
+    ซึ่งเดิมถูกยุบเข้ากับ "อ่านคลังได้ ไม่มี alert ค้าง"
     """
-    contract_error = _price_alert_contract_error(result)
+    contract_error = check_result_contract_error(result)
     if contract_error is not None:
         return "\n".join(
             [
@@ -413,7 +457,7 @@ def format_price_alert_report(result: Any) -> str:
     not_triggered = checked - len(triggered)
 
     if not checked and not triggered and not unchecked:
-        lines = ["[price alert] ไม่มี alert ค้างให้ตรวจ (อ่านคลัง alert ได้ปกติ)"]
+        lines = _no_pending_lines(result)
         note = _discord_delivery_note(result)
         if note:
             lines.append(note)
@@ -554,10 +598,58 @@ def run_scheduler() -> None:
         print(f"เกิดข้อผิดพลาดใน scheduler: {exc}")
 
 
+def _configure_logging_for_scheduler() -> None:
+    """ตั้งค่า logging ของโปรเซส scheduler — **ยืมนิยามเดียวกับ backend ห้ามเขียนใหม่**.
+
+    ระบบนี้มี "ทางเข้า" สองทาง: ``uvicorn backend.main:app`` กับ ``python main.py``
+    (service ``vaultis-scheduler`` ใน docker-compose) รอบก่อนแก้ให้เฉพาะทางแรก
+    ทางนี้จึงยังรันด้วย root logger เปล่า ๆ ที่มีแต่ ``lastResort`` ระดับ WARNING
+    ⇒ ทุกบรรทัด ``logger.info`` ในคอนเทนเนอร์นี้หายเงียบ รวมถึงสองบรรทัดที่สำคัญ:
+
+    - ``analysis/llm.py`` log จำนวนโทเคน + ค่าใช้จ่ายโดยประมาณเป็น INFO ซึ่งเป็น
+      **หลักฐานชิ้นเดียว** ว่ารอบที่ตั้ง ``VAULTIS_LLM_AUTO=1`` ใช้เงินไปเท่าไร
+    - ``analysis/sentiment_analyzer.py`` log ``"ข้าม sentiment — LLM ปิดอยู่"``
+      ซึ่งเป็นตัวแยก "งานรันแล้วข้ามตัวเอง" ออกจาก "งานไม่ได้รัน"
+
+    (AUDIT_ROUND2_2026-08-07 — ข้อเดียวกับของ backend แต่หลุดไปหนึ่งทางเข้า)
+
+    **import หนัก จึงทำแบบ lazy ในฟังก์ชันนี้ ไม่ใช่ที่หัวไฟล์**: ``backend.main``
+    ลาก FastAPI + router ทุกตัว (~3 วินาที) และสร้างตาราง SQLite ตอน import
+    ไฟล์นี้ถูก ``import`` โดยเทสต์หลายไฟล์ในฐานะไลบรารี — ต้นทุนนั้นจึงต้องตกอยู่กับ
+    **การรันจริงเท่านั้น** (เรียกจากบล็อก ``__main__``)  ส่วน ``AsyncIOScheduler``
+    ของ backend ถูก "สร้าง" ตอน import แต่ ``start()`` อยู่ใน lifespan ของ FastAPI
+    การ import จากที่นี่จึงไม่ได้จุด scheduler ตัวที่สองขึ้นมา
+
+    import ล้มเหลว = **เตือนดัง ๆ แล้วเดินต่อ** ไม่ใช่ล้มทั้งโปรเซส: ปรัชญาเดียวกับ
+    ``run_scheduler()`` (ไม่มี webhook ก็ยังต้องตรวจ price alert ต่อ) การตั้ง log ไม่ได้
+    ไม่ใช่เหตุให้เลิกตรวจ alert — แต่ต้องไม่เงียบ เพราะคนอ่าน log ต้องรู้ว่าทำไม
+    บรรทัด INFO ถึงไม่มา  (สคริปต์นี้รายงานงานของตัวเองด้วย ``print`` อยู่แล้ว
+    ข้อความของ scheduler เองจึงไม่หายไปด้วย)
+    """
+    try:
+        from backend.main import configure_logging
+    except Exception as exc:  # โมดูล backend พังทั้งตัวเท่านั้นถึงจะมาถึงบรรทัดนี้
+        print(
+            "[scheduler] ⚠️ ตั้งค่า logging ไม่สำเร็จ (import backend.main ไม่ได้: "
+            f"{exc}) — บรรทัดระดับ INFO รวมถึงค่าใช้จ่าย LLM จะไม่ออกใน log รอบนี้ "
+            "งานตามเวลายังทำงานต่อตามปกติ"
+        )
+        return
+    configure_logging()
+
+
 if __name__ == "__main__":
+    # ต้องตั้งก่อน dispatch ทุกงาน — ไม่ใช่ในแต่ละสาขา ไม่งั้นงานที่เพิ่มทีหลัง
+    # จะเงียบอีกรอบโดยไม่มีใครสังเกต (ตรึงไว้ด้วย tests/test_logging_config.py)
+    _configure_logging_for_scheduler()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--job", type=str, default="all")
     args = parser.parse_args()
+
+    # บรรทัดแรกของทุกโปรเซส: มีเวลากำกับ ⇒ แยก "รอบนี้ไม่มีอะไรเข้าเงื่อนไข" ออกจาก
+    # "โปรเซสไม่ได้เริ่มเลย" ได้จาก log อย่างเดียว (ปัญหาเดียวกับ screener ฝั่ง backend)
+    logger.info("ทางเข้า scheduler เริ่มทำงาน: job=%s", args.job)
 
     if args.job == "weekly_summary":
         config = load_config()
@@ -577,7 +669,7 @@ if __name__ == "__main__":
         price_alert_result = run_price_alert_job()
         # "อ่านคลังไม่ได้" ต้องดังถึงระดับ exit code — cron ที่เห็น exit 0
         # จะเข้าใจว่ารอบนี้ตรวจสำเร็จและไม่มีอะไรถึงเงื่อนไข
-        if _price_alert_contract_error(price_alert_result) is not None or price_alert_result["store_error"]:
+        if check_result_contract_error(price_alert_result) is not None or price_alert_result["store_error"]:
             raise SystemExit(PRICE_ALERT_STORE_ERROR_EXIT_CODE)
     elif args.job == "daily_check":
         run()

@@ -29,7 +29,25 @@ except ImportError:  # pragma: no cover - Windows
 
 logger = logging.getLogger(__name__)
 
-ALERTS_PATH = Path(__file__).resolve().parent / "data" / "price_alerts.json"
+DEFAULT_ALERTS_PATH = Path(__file__).resolve().parent / "data" / "price_alerts.json"
+
+
+def _alerts_path_from_env() -> Path:
+    """path ของคลัง alert — ตั้งทับได้ด้วย ``VAULTIS_ALERTS_PATH``.
+
+    มีไว้ให้คอนเทนเนอร์ทดสอบชี้ออกไป ``/tmp`` (คำสั่งรันเทสต์ mount repo ทับ ``/app``
+    ⇒ ค่าดีฟอลต์คือไฟล์จริงของผู้ใช้บน host — เคยถูกโพรบล้างมาแล้วจริง)
+
+    **อ่านค่าตอน import แล้วเก็บเป็นค่าคงที่ระดับโมดูลเหมือนเดิม** ห้ามเปลี่ยนไปอ่าน
+    env ใหม่ทุกครั้งที่เรียก: เทสต์หลายไฟล์ (และ fixture กลางใน ``tests/conftest.py``)
+    ควบคุม path ด้วยการ monkeypatch ``pa.ALERTS_PATH`` ตรง ๆ ถ้าฟังก์ชันไปอ่าน env เอง
+    การ monkeypatch จะไม่มีผล = ตาข่ายกันเขียนไฟล์จริงหลุดทั้งชุด
+    """
+    raw = os.environ.get("VAULTIS_ALERTS_PATH", "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_ALERTS_PATH
+
+
+ALERTS_PATH = _alerts_path_from_env()
 ALLOWED_ALERT_TYPES = {"above", "below"}
 DAILY_CHECK_TICKERS = ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]
 
@@ -40,6 +58,16 @@ class AlertStoreUnavailable(RuntimeError):
     **ห้ามแปลงเป็นลิสต์ว่าง** — "อ่านไม่ได้" กับ "ไม่มี alert" คนละความหมาย
     เดิม ``_load_alerts()`` มี ``except Exception: return []`` แล้ว ``check_alerts()``
     เขียนลิสต์ว่างนั้นกลับลงไฟล์ ⇒ alert ของผู้ใช้หายถาวร (AUDIT_2026-08-06 ข้อ H2)
+    """
+
+
+class AlertCheckContractError(RuntimeError):
+    """ผลลัพธ์ของ ``check_alerts()`` ผิดสัญญาจน **สรุปสถานะไม่ได้**.
+
+    คนละเรื่องกับ ``AlertStoreUnavailable`` (นั่นคือ "อ่านคลังไม่ได้" ซึ่งเป็นผลลัพธ์
+    ที่ถูกสัญญา) — ตัวนี้แปลว่า "ไม่รู้ด้วยซ้ำว่าเกิดอะไรขึ้น" ผู้เรียกต้องแสดงว่า
+    **ยังไม่รู้** ห้ามเติมค่าดีฟอลต์ให้กลายเป็น "ตรวจแล้วไม่มีอะไร"
+    (AUDIT_ROUND2_2026-08-07 — check_alerts() ที่ผิดสัญญาถูกแปลงเป็น "ตรวจแล้วไม่มีอะไร")
     """
 
 
@@ -442,9 +470,48 @@ def _store_failure_result(webhook_url: str, exc: AlertStoreUnavailable) -> dict[
         "checked": 0,
         "triggered": [],
         "unchecked": [],
+        # แนบสถานะคลังไปด้วยเสมอ — ผู้เรียกจะได้ไม่ต้องเดาว่า "0 รายการ" มาจากอะไร
+        "store_status": get_store_status(),
         "daily_summary": message,
         "daily_discord_result": discord_result,
     }
+
+
+# คีย์ที่ ``check_alerts()`` รับประกันว่าคืนเสมอ — ทั้งเส้นทางปกติและเส้นทาง store failure
+# (เดิมสัญญานี้ถูกประกาศไว้ใน ``main.py`` ฝั่งผู้เรียก ⇒ ผู้เรียกรายอื่น — alert_service,
+# หน้าแดชบอร์ด — ไม่รู้จักมันเลยและใช้ ``.get(key, 0)`` กันเอง  ตอนนี้ย้ายมาอยู่ข้าง
+# **ผู้ผลิต** ที่เดียว ผู้เรียกทุกรายเรียก ``check_result_contract_error()`` ตัวเดียวกัน)
+CHECK_RESULT_KEYS = ("success", "store_error", "checked", "triggered", "unchecked")
+
+# ``store_status`` เป็นคีย์ **เสริม**: ``check_alerts()`` แนบมาให้เสมอ แต่ตัวตรวจสัญญา
+# ไม่บังคับว่าต้องมี เพราะ stub เก่าในชุดเทสต์/ผู้เรียกภายนอกที่ประกอบ dict เองยังไม่มีคีย์นี้
+# ผู้เรียกต้องแยก "ไม่มีคีย์" = **ไม่ทราบสถานะคลัง** ออกจาก ``status == "ok"`` เสมอ
+# ห้ามอ่านการไม่มีคีย์เป็น "อ่านคลังได้ปกติ"
+STORE_STATUS_VALUES = ("ok", "missing", "error")
+
+
+def check_result_contract_error(result: Any) -> str | None:
+    """คืนข้อความเมื่อผลลัพธ์ของ ``check_alerts()`` **ผิดสัญญา** — ``None`` เมื่อใช้ได้.
+
+    ห้ามผู้เรียกใช้ ``result.get("checked", 0)`` กับคีย์ที่สัญญาบอกว่ามีเสมอ: คีย์หาย
+    แล้วกลายเป็น 0 อ่านออกมาเป็น "ตรวจแล้ว ไม่มีอะไร" ซึ่งเป็นการกุข้อสรุป
+    (ความล้มเหลวถูกอ่านเป็นคำยืนยัน — ผิดกฎข้อ "ดึงไม่สำเร็จ ≠ ไม่มีข้อมูล")
+    """
+    if not isinstance(result, dict):
+        return f"ผลลัพธ์ไม่ใช่ dict (ได้ {type(result).__name__})"
+    missing = [key for key in CHECK_RESULT_KEYS if key not in result]
+    if missing:
+        return f"ขาดคีย์ {', '.join(missing)}"
+    if not result["store_error"]:
+        try:
+            int(result["checked"])
+        except (TypeError, ValueError):
+            return f"คีย์ checked ไม่ใช่จำนวนเต็ม ({result['checked']!r})"
+    status = result.get("store_status")
+    if status is not None:
+        if not isinstance(status, dict) or status.get("status") not in STORE_STATUS_VALUES:
+            return f"คีย์ store_status ผิดรูปแบบ ({status!r})"
+    return None
 
 
 def check_alerts() -> dict[str, Any]:
@@ -455,6 +522,10 @@ def check_alerts() -> dict[str, Any]:
     1. อ่านคลังไม่ได้ → หยุดทันที **ห้ามเขียนกลับ** (เดิมเขียนลิสต์ว่างทับ = alert หายถาวร)
     2. ยิงราคา (ช้า ~1 วิ) **นอก** ล็อก แล้วค่อยอ่านคลังใหม่ใต้ล็อกก่อนตัดสิน/บันทึก —
        ไม่งั้น alert ที่ผู้ใช้เพิ่มจากแดชบอร์ดระหว่างนั้นถูกเขียนทับหาย (lost update)
+
+    ผลลัพธ์มีคีย์ตาม ``CHECK_RESULT_KEYS`` เสมอ บวก ``store_status`` (ผลของ
+    ``get_store_status()``) ที่บอกว่า **เครื่องนี้มีคลังให้ตรวจหรือเปล่า** — ผู้เรียก
+    ต้องตรวจผลด้วย ``check_result_contract_error()`` ห้ามเติมค่าดีฟอลต์เอง
     """
     config = load_config()
     tracked_tickers = DAILY_CHECK_TICKERS.copy()
@@ -548,8 +619,16 @@ def check_alerts() -> dict[str, Any]:
             triggered_records.append((alert, current_price))
 
         # เขียนเฉพาะตอนที่มีอะไรเปลี่ยนจริง — การเขียนทุกครั้งคือความเสี่ยงไฟล์เสียโดยไม่ได้อะไร
+        # (ตรึงไว้ด้วย tests/test_price_alert_store.py::TestWritesOnlyWhenSomethingChanged)
         if triggered_items:
             _save_alerts(alerts)
+
+        # อ่านสถานะคลัง **ใต้ล็อกเดียวกัน หลังบันทึกเสร็จ** — ค่าที่ได้จึงตรงกับไฟล์จริง
+        # ณ ตอนจบรอบ  ต้องแนบไปกับผลลัพธ์เสมอ เพราะ "เครื่องนี้ไม่มีไฟล์คลังเลย" กับ
+        # "อ่านคลังได้ แต่ไม่มี alert สักรายการ" ให้ payload หน้าตาเหมือนกันทุกช่อง
+        # (checked=0, triggered=[], unchecked=[], store_error=False) ⇒ scheduler เคยพิมพ์
+        # "อ่านคลัง alert ได้ปกติ" ทั้งที่ไม่เคยมีคลังให้อ่าน (AUDIT_ROUND2_2026-08-07)
+        store_status = get_store_status()
 
     # ยิง Discord หลังปล่อยล็อกและหลังบันทึกแล้ว — ไม่ถือล็อกคร่อม network I/O
     if webhook_url:
@@ -586,6 +665,7 @@ def check_alerts() -> dict[str, Any]:
         "checked": checked,
         "triggered": triggered_items,
         "unchecked": unchecked,
+        "store_status": store_status,
         "daily_summary": daily_summary,
         "daily_discord_result": daily_result,
     }

@@ -9,7 +9,7 @@ AUDIT_2026-08-06 ข้อ A1: store โยน ``AlertStoreUnavailable`` เม�
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from alerts.price_alert import AlertStoreUnavailable
+from alerts.price_alert import AlertCheckContractError, AlertStoreUnavailable
 
 from ..schemas import PriceAlertCreate
 from ..services import alert_service
@@ -17,6 +17,7 @@ from ..services import alert_service
 router = APIRouter(prefix="/api/alerts", tags=["Alerts"])
 
 _STORE_ERROR_PREFIX = "อ่านคลัง price alert ไม่ได้ — ระบบไม่ได้แตะไฟล์ของคุณ"
+_CONTRACT_ERROR_PREFIX = "สรุปสถานะ price alert ไม่ได้ — **ยังไม่รู้** ว่ามี alert ถึงเงื่อนไขหรือไม่"
 
 
 def _store_unavailable(exc: AlertStoreUnavailable) -> HTTPException:
@@ -76,5 +77,9 @@ def check_alerts():
         )
     except AlertStoreUnavailable as exc:  # ปกติ check_alerts() จับเองแล้วคืน store_error
         raise _store_unavailable(exc) from exc
+    except AlertCheckContractError as exc:
+        # ผลลัพธ์ผิดสัญญา = สรุปไม่ได้ ต้องตอบ 503 พร้อมสาเหตุ ห้ามตอบ 200 ที่หน้าตา
+        # เหมือน "ตรวจแล้วไม่มีอะไร" (AUDIT_ROUND2_2026-08-07)
+        raise HTTPException(status_code=503, detail=f"{_CONTRACT_ERROR_PREFIX}: {exc}") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
