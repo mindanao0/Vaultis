@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict
 
 import numpy as np
@@ -53,6 +54,36 @@ RETURN_WINDOWS: Dict[str, int] = {
     "5Y": 1260,
     "10Y": 2520,
 }
+
+#: แท่งที่หน้าต่างยาวสุดต้องมี — ``period_return_pct`` ต้องการ ``bars + 1`` แท่ง
+#: (แท่งอ้างอิงหนึ่งแท่ง + ``bars`` แท่งของช่วง)
+MIN_BARS_REQUIRED = max(RETURN_WINDOWS.values()) + 1
+
+#: วันทำการต่อปีที่ **สังเกตได้จริง** จาก yfinance — ต่ำกว่า 252 ตามทฤษฎี
+#: (วัดจริง 2026-08-08: ขอ 10 ปีได้ 2,511 แท่ง = 251.1 แท่ง/ปี)
+_OBSERVED_BARS_PER_YEAR = 251.0
+
+
+def years_needed_for_windows(margin_years: float = 0.5) -> int:
+    """จำนวนปีที่ต้องขอจาก fetcher ให้ **ทุก** หน้าต่างใน :data:`RETURN_WINDOWS` คำนวณได้จริง.
+
+    ที่มา (FIX_PLAN ข้อ 2.8): แถว ``10Y`` เป็น ``N/A`` เสมอทั้งบนจอและใน PDF ทั้งที่
+    backend คำนวณได้ 308% — เพราะหน้าต่างวัดเป็น **แท่ง** (2,520 + 1 แท่งอ้างอิง) แต่
+    ผู้เรียกขอข้อมูลเป็น **ปีปฏิทิน** (``years=10``) ซึ่งให้แค่ ~2,511 แท่ง
+    สั้นกว่าที่ต้องใช้ 10 แท่ง แล้ว ``period_return_pct`` คืน ``NaN`` อย่างถูกต้อง
+    ตามกฎ C1 — ความผิดอยู่ที่ผู้เรียกขอข้อมูลมาไม่พอ ไม่ใช่ที่สูตร
+
+    คิดจาก :data:`RETURN_WINDOWS` เสมอ **ห้ามฮาร์ดโค้ดจำนวนปีที่ผู้เรียก** — วันที่ใครเพิ่ม
+    หน้าต่าง ``15Y`` เข้าไป ตัวเลขนี้ต้องขยับตามเอง ไม่ใช่กลายเป็น ``N/A`` เงียบ ๆ อีกรอบ
+    """
+    return int(math.ceil(MIN_BARS_REQUIRED / _OBSERVED_BARS_PER_YEAR + margin_years))
+
+
+#: **นิยามเดียวทั้งระบบ** ของ "ต้องดึงราคากี่ปีให้ตาราง Returns คำนวณได้ครบทุกหน้าต่าง"
+#: — ``backend/services/etf_service.py`` เคยมีค่าคงที่ส่วนตัวเป็น ``11`` (AUDIT.md M16)
+#: ขณะที่หน้าจอกับ PDF ยังขอ 10 ปี ⇒ backend ตอบแถว 10Y ได้ แต่อีกสองทางเป็น N/A
+#: เลขซ้ำสองที่ไม่พัง มันแค่เพี้ยนกัน — ตอนนี้ทุกผู้เรียกอ่านค่านี้
+RETURNS_HISTORY_YEARS = years_needed_for_windows()
 
 
 def real_bars(closes: pd.Series) -> pd.Series:

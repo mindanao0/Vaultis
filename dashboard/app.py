@@ -62,7 +62,12 @@ from analysis.news_fetcher import (
     get_news_with_status,
 )
 from analysis.ta_compat import ta
-from analysis.returns import calculate_period_returns, monthly_seasonality, real_bars
+from analysis.returns import (
+    RETURNS_HISTORY_YEARS,
+    calculate_period_returns,
+    monthly_seasonality,
+    real_bars,
+)
 from analysis.macro import get_thai_inflation
 from analysis.risk import (
     calculate_risk_metrics,
@@ -134,6 +139,20 @@ from utils.pdf_export import generate_monthly_report
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def cached_returns_prices(tickers: list[str]) -> pd.DataFrame:
+    """ราคายาวพอสำหรับหน้าต่าง 10Y ของตาราง Returns — **แยกจากเฟรมหลักโดยตั้งใจ**.
+
+    หน้าต่างผลตอบแทนวัดเป็น **แท่ง** (10Y = 2,520 + 1 แท่งอ้างอิง) แต่ผู้เรียกขอข้อมูลเป็น
+    **ปีปฏิทิน** — ขอ 10 ปีได้ ~2,511 แท่ง สั้นกว่าที่ต้องใช้ ⇒ แถว 10Y เป็น N/A **เสมอ**
+    ทั้งบนจอและใน PDF ทั้งที่ backend คำนวณได้ (FIX_PLAN ข้อ 2.8)
+
+    **ห้ามแก้ด้วยการขยายเฟรมหลัก** — risk/correlation/backtest อ่านเฟรมนั้น การขยายช่วง
+    จะเปลี่ยนตัวเลขความเสี่ยงและ correlation เงียบ ๆ ทั้งที่ไม่มีใครขอให้เปลี่ยน
+    (กติกาเดียวกับ ``etf_service._prices_df_for_returns`` ที่แยก cache ไว้ด้วยเหตุผลนี้)
+    """
+    return cached_prices(list(tickers), years=RETURNS_HISTORY_YEARS)
+
+
 def cached_prices(tickers: list[str], years: int = 10) -> pd.DataFrame:
     """ดึงราคา (cache 1 ชม.) — เดิม Streamlit rerun ทุกครั้งที่กดปุ่มแล้วยิง yfinance ใหม่
     ทำให้โดน rate limit บ่อยจนกลายเป็นสัญญาณปลอม (AUDIT.md H3/C1)
@@ -672,8 +691,21 @@ def _stale_price_notes(prices: pd.DataFrame) -> list[str]:
     return notes
 
 
-def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
-    return_df = calculate_period_returns(prices)
+def _render_overview_metrics(
+    prices: pd.DataFrame,
+    tickers: list[str],
+    returns_prices: pd.DataFrame | None = None,
+    returns_history_error: str | None = None,
+) -> None:
+    """การ์ดภาพรวม — ``returns_prices`` คือเฟรมที่ยาวพอสำหรับหน้าต่าง 10Y (FIX_PLAN ข้อ 2.8).
+
+    เฟรมหลัก 10 ปีให้ ~2,511 แท่ง สั้นกว่า 2,521 ที่หน้าต่าง 10Y ต้องการ ⇒ แถวนั้นเป็น
+    ``N/A`` เสมอ · **ผู้เรียกต้องส่งเฟรมยาวเข้ามา ห้ามให้ฟังก์ชันนี้ไปดึงเน็ตเอง** —
+    ตัวเรนเดอร์ที่แอบยิงเน็ตทำให้ผลลัพธ์ไม่ขึ้นกับอาร์กิวเมนต์ที่รับมา (เทสต์ที่ป้อนเฟรม
+    สังเคราะห์เข้ามาจะได้ตัวเลขของข้อมูลจริงแทน) และย้ายการจัดการ error ออกจากที่ที่มันอยู่
+    """
+    long_history_error = returns_history_error
+    return_df = calculate_period_returns(prices if returns_prices is None else returns_prices)
     # return_df: แถว = ช่วงเวลา (1M/3M/.../10Y), คอลัมน์ = ticker
     # บั๊กเดิม (AUDIT.md H4): หาคอลัมน์ "1Y (%)" ที่ไม่มีจริง → ไปหยิบคอลัมน์ ticker ตัวสุดท้าย
     # ทำให้การ์ด Best/Worst ETF โชว์ชื่อช่วงเวลาแทนชื่อ ETF
@@ -682,13 +714,28 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
     else:
         sortable = pd.Series(dtype=float)
 
+    # การ์ดนี้วัดจาก **ช่วงที่ทุกกองมีข้อมูลพร้อมกัน** ไม่ใช่ 10 ปี — ป้าย "10Y blended
+    # performance" เดิมจึงเป็นตัวเลขที่ติดป้ายผิด (กองที่ลิสต์ทีหลังย่นช่วงร่วมลง: QQQM
+    # เพิ่งลิสต์ปี 2020 ⇒ ใช้จริงราว 5.8 ปี) ซึ่งเป็นการกุข้อมูลชนิดเดียวกับป้าย
+    # "ย้อนหลัง 10 ปี" ของหน้า Goals ที่เพิ่งแก้ไป — ป้ายต้องรายงานช่วงจริงเสมอ
     total_return = 0.0
-    if len(prices.index) > 1:
-        base_idx = prices.ffill().dropna().index[0]
-        latest = prices.ffill().iloc[-1]
-        base = prices.ffill().loc[base_idx]
+    basket_window = ""
+    common = prices.ffill().dropna()
+    if len(prices.index) > 1 and len(common) > 1:
+        latest = common.iloc[-1]
+        base = common.iloc[0]
         basket = (latest / base).mean()
         total_return = (float(basket) - 1.0) * 100
+        span_days = (common.index[-1] - common.index[0]).days
+        # ถ้อยคำต้องตรงกับสิ่งที่วัดจริง: ``ffill().dropna()`` = นับจากวันที่ **ทุกกองมี
+        # ข้อมูลแล้ว** (ไม่ใช่ "ทุกกองมีแท่งของวันนั้น" — กองที่ผู้ให้ข้อมูลหยุดส่งจะถูก
+        # เติมค่าเดิมไปข้างหน้า ซึ่ง ``_stale_price_notes`` เตือนแยกอยู่แล้ว)
+        basket_window = (
+            f"{span_days / 365.25:.1f} ปี นับจากวันที่ทุกกองมีข้อมูลครบ "
+            f"({common.index[0]:%m/%Y}–{common.index[-1]:%m/%Y})"
+        )
+    else:
+        basket_window = "ยังไม่มีช่วงที่ทุกกองมีข้อมูลครบพร้อมกัน"
 
     best_etf = sortable.idxmax() if not sortable.empty else "-"
     best_val = float(sortable.max()) if not sortable.empty else 0.0
@@ -703,6 +750,14 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
     except Exception:
         vix_value = None
 
+    if long_history_error:
+        # ดึงประวัติช่วงยาวไม่สำเร็จต้องถึงผู้ใช้ ไม่ใช่ลงไปนอนใน log — ตัวเลขบางช่วง
+        # (10Y) จะเป็น N/A ด้วยเหตุผลที่ไม่ใช่ "ยังไม่มีข้อมูล"
+        st.caption(
+            f"⚠️ ดึงราคาช่วงยาวไม่สำเร็จ ({long_history_error}) — "
+            "ตัวเลขช่วง 10Y ด้านล่างจะเป็น N/A เพราะข้อมูลไม่พอ ไม่ใช่เพราะไม่มีผลตอบแทน"
+        )
+
     total_return_class = "metric-change-positive" if total_return >= 0 else "metric-change-negative"
     cards = st.columns(4)
     with cards[0]:
@@ -711,7 +766,7 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
             <div class="metric-card">
               <div class="metric-title">Total Return (Basket)</div>
               <div class="metric-value">{total_return:+.2f}%</div>
-              <div class="{total_return_class}">10Y blended performance</div>
+              <div class="{total_return_class}">{basket_window}</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -5035,6 +5090,20 @@ def render_dashboard() -> None:
             )
             return
 
+        # เฟรมที่ยาวพอสำหรับหน้าต่าง 10Y — **แยกจากเฟรมหลักโดยตั้งใจ** เพราะ
+        # risk/correlation/backtest อ่านเฟรมหลัก การขยายช่วงจะเปลี่ยนตัวเลขความเสี่ยง
+        # เงียบ ๆ ทั้งที่ไม่มีใครขอ (กติกาเดียวกับ ``etf_service._prices_df_for_returns``)
+        # ดึงไม่สำเร็จ = ถอยไปใช้เฟรมหลัก **พร้อมบอกเหตุผล** ไม่ใช่ทำให้หน้าดับ และไม่ใช่
+        # ปล่อยให้ N/A ของ 10Y ถูกอ่านว่า "ไม่มีผลตอบแทน" (FIX_PLAN ข้อ 2.8)
+        returns_prices = prices
+        returns_history_error: str | None = None
+        try:
+            returns_prices = cached_returns_prices(tickers)
+        except PriceDataUnavailableError as exc:
+            # **ห้าม return ตรงนี้** — เฟรมหลักดึงมาได้แล้ว หน้าอื่นทั้งหน้าใช้ได้ปกติ
+            # ขาดแค่แท่งส่วนเกินของหน้าต่าง 10Y ⇒ เดินต่อโดยใช้เฟรมหลักแล้วบอกเหตุผล
+            returns_history_error = str(exc)
+
         # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
         # ผ่าน _tracked_target_weights() ตัวเดียวกับหน้า Scorecard เพื่อไม่ให้มีสองทางเข้า
         #
@@ -5070,7 +5139,7 @@ def render_dashboard() -> None:
         )
         st.divider()
         _render_realtime_price_ticker_bar()
-        _render_overview_metrics(prices, tickers)
+        _render_overview_metrics(prices, tickers, returns_prices, returns_history_error)
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         st.subheader("Price Trend (Normalized = 100)")
         normalized_prices = prices.ffill().apply(
@@ -5083,8 +5152,8 @@ def render_dashboard() -> None:
 
         with col1:
             st.subheader("Return Analysis")
-            with st.spinner(" ..."):
-                returns_df = calculate_period_returns(prices)
+            with st.spinner("กำลังคำนวณผลตอบแทนย้อนหลัง..."):
+                returns_df = calculate_period_returns(returns_prices)
             st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
             st.caption("*QQQM เริ่มซื้อขายปี 2020 — ช่วงก่อนหน้าจึงไม่มีข้อมูล")
             # N/A ในตารางมีได้สองเหตุผล (ยังไม่เกิด / ดึงไม่ได้) — แยกให้ผู้ใช้เห็น (G7)

@@ -4,7 +4,7 @@ import pandas as pd
 
 from alerts.price_alert import get_current_prices
 from analysis.correlation import calculate_correlation_matrix
-from analysis.returns import calculate_period_returns, real_bars
+from analysis.returns import RETURNS_HISTORY_YEARS, calculate_period_returns, real_bars
 from analysis.risk import calculate_risk_metrics
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
@@ -19,7 +19,11 @@ _LATEST_PRICE_TTL = 5 * 60  # 5 นาที — ราคาล่าสุด�
 # หน้าต่างผลตอบแทนที่ยาวสุดคือ 10Y = 2,520 แถวเทรด แต่ข้อมูล 10 ปีให้มาแค่ ~2,510 แถว
 # → เงื่อนไข ``len(price_df) <= window`` เป็นจริงเสมอ แถว 10Y จึงเป็น NaN ทั้งแถว
 # ตั้งแต่เขียนมา (AUDIT.md M16) ต้องดึงยาวกว่าหน้าต่างจริงถึงจะคำนวณได้
-_RETURNS_HISTORY_YEARS = 11
+#
+# ค่านี้เคยเป็นเลข ``11`` ส่วนตัวของไฟล์นี้ ขณะที่หน้าจอกับ PDF ยังขอ 10 ปี ⇒ endpoint
+# ตอบแถว 10Y ได้ แต่อีกสองทางเป็น N/A มาตลอด (FIX_PLAN ข้อ 2.8) — ตอนนี้อ่านนิยามเดียว
+# จาก ``analysis/returns.py`` ซึ่งคิดจาก ``RETURN_WINDOWS`` เอง
+_RETURNS_HISTORY_YEARS = RETURNS_HISTORY_YEARS
 
 
 def _prices_df() -> pd.DataFrame:

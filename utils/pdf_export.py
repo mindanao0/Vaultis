@@ -52,12 +52,27 @@ from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, 
 
 from analysis.ai_advisor import get_monthly_advice
 from analysis.risk import calculate_risk_metrics
-from analysis.returns import calculate_period_returns
+from analysis.returns import RETURNS_HISTORY_YEARS, calculate_period_returns
 from data.fetcher import fetch_adjusted_close_data
 from portfolio.tracker import get_portfolio_summary, get_total_summary
 from utils.config import get_tickers
 
 logger = logging.getLogger(__name__)
+
+
+def _last_n_years(prices: "pd.DataFrame", years: int) -> "pd.DataFrame":
+    """หั่นเฟรมราคาเหลือ ``years`` ปีล่าสุด (นับจากวันที่จริง ไม่ใช่จำนวนแถว).
+
+    ใช้เมื่อเฟรมถูกดึงยาวกว่าที่ผู้อ่านต้องการ — ตาราง Returns ต้องการแท่งเพิ่มเพื่อให้
+    หน้าต่าง 10Y คำนวณได้ (FIX_PLAN ข้อ 2.8) แต่ตาราง Risk ต้องคิดจากช่วงเดิม
+    ไม่งั้น MaxDD/Volatility ในกระดาษจะเปลี่ยนเงียบ ๆ เพราะเหตุผลที่ไม่เกี่ยวกับมันเลย
+
+    ดัชนีที่ไม่ใช่วันที่ (หรือเฟรมว่าง) คืนของเดิม — ไม่เดาแล้วหั่นผิด
+    """
+    if prices.empty or not isinstance(prices.index, pd.DatetimeIndex):
+        return prices
+    cutoff = prices.index[-1] - pd.DateOffset(years=years)
+    return prices.loc[prices.index >= cutoff]
 
 NA = "N/A"
 
@@ -432,7 +447,10 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
     # ดึงราคาไม่สำเร็จ ≠ ไม่มีข้อมูล — ต้องเก็บสาเหตุไว้พิมพ์ ห้ามกลืน (M-PDF-1)
     price_error: BaseException | None = None
     try:
-        prices = fetch_adjusted_close_data(tickers=tickers, years=10)
+        # ยาวพอสำหรับหน้าต่าง 10Y ของตาราง Returns (FIX_PLAN ข้อ 2.8) — เดิมขอ 10 ปี
+        # (~2,511 แท่ง) ให้หน้าต่างที่ต้องการ 2,521 แท่ง ⇒ แถว 10Y เป็น N/A ในกระดาษ
+        # ทุกฉบับ ทั้งที่ API ตอบได้ · ตาราง Risk ยังคิดจากช่วง 10 ปีเท่าเดิม (ดูด้านล่าง)
+        prices = fetch_adjusted_close_data(tickers=tickers, years=RETURNS_HISTORY_YEARS)
     except Exception as exc:
         price_error = exc
         prices = pd.DataFrame()
@@ -442,7 +460,11 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
             exc,
         )
     returns_df = calculate_period_returns(prices) if not prices.empty else pd.DataFrame()
-    risk_df = calculate_risk_metrics(prices) if not prices.empty else pd.DataFrame()
+    # ความเสี่ยงคิดจาก **10 ปีล่าสุด** เท่าเดิม — การขยายช่วงเพราะตาราง Returns ต้องการ
+    # แท่งเพิ่ม ต้องไม่ทำให้ MaxDD/Volatility ในกระดาษเปลี่ยนเงียบ ๆ โดยไม่มีใครขอ
+    risk_df = (
+        calculate_risk_metrics(_last_n_years(prices, 10)) if not prices.empty else pd.DataFrame()
+    )
 
     # ticker ที่ "ไม่มีราคาเลย" — ทั้งที่หายไปทั้งคอลัมน์ และที่มีคอลัมน์แต่ NaN ล้วน
     # (คนละชุดกับ missing_prices ของสมุดบัญชี ซึ่งเป็นราคา ณ ปัจจุบัน)
