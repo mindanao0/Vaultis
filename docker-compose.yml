@@ -8,6 +8,32 @@
 # ข้อมูลจริงอยู่บน host ทั้งหมดผ่าน volume — rebuild image กี่ครั้งก็ไม่หาย
 # และ .dockerignore กันไม่ให้ ledger/.env/vaultis.db ถูกอบเข้า image layer
 
+# ตัวแปรสภาพแวดล้อมที่ทั้งสาม service ใช้ร่วมกัน — **แยกเป็น anchor ของตัวเอง**
+# เพราะ merge key ของ YAML (``<<: *app``) รวมแบบ **ชั้นเดียว**: service ที่ประกาศ
+# ``environment:`` ของตัวเองจะ *แทนที่* ก้อนนี้ทั้งก้อน ไม่ใช่รวมกัน  ถ้าไม่แยกไว้
+# การเติมตัวแปรตัวเดียวให้ dashboard (VAULTIS_WS_URL) จะทำให้ BACKEND_URL /
+# VAULTIS_DB_PATH / DATABASE_URL หายไปจาก service นั้นทั้งชุดโดยไม่มี error ให้เห็น
+x-app-env: &app-env
+  TZ: Asia/Bangkok
+  # dashboard และ jobs/daily_check.py อ่านตัวนี้ ค่า default ในโค้ดชี้ไป Render
+  # ซึ่งไม่ใช่สิ่งที่ต้องการเมื่อรันครบชุดในเครื่อง
+  BACKEND_URL: http://backend:8000
+  VAULTIS_DB_PATH: /data/vaultis.db
+  # ระดับ log ของ "ทางเข้า" ทั้งสองทาง (uvicorn backend.main:app และ python main.py)
+  # ไม่ตั้ง = INFO ตามค่าในโค้ด · ตั้ง WARNING เพื่อหรี่, DEBUG เพื่อไล่ปัญหา
+  # uvicorn --log-level ใช้แทนกันไม่ได้ มันตั้งเฉพาะ logger ชื่อ uvicorn*
+  # (AUDIT_ROUND2_2026-08-07: บรรทัด INFO ของแอปหายหมดทั้ง 2 คอนเทนเนอร์)
+  VAULTIS_LOG_LEVEL: ${VAULTIS_LOG_LEVEL:-INFO}
+  # ใน container คำขอจาก host มาถึงเป็น IP ของ bridge (172.x) ไม่ใช่ 127.0.0.1
+  # ข้อยกเว้น "localhost ไม่ต้องใช้คีย์" จึงไม่มีผล → route ที่แก้ข้อมูล/เรียก LLM
+  # จะตอบ 503 จนกว่าจะตั้งคีย์  ตั้งใน .env: VAULTIS_API_KEY=... แล้วส่ง header X-API-Key
+  # (dashboard ไม่ได้รับผลกระทบ — มันเรียกโมดูล analysis ตรง ๆ ใช้ BACKEND_URL แค่ WebSocket)
+  VAULTIS_API_KEY: ${VAULTIS_API_KEY:-}
+  # Postgres ในเครื่อง (sentiment + ประวัติ screener) — เขียนทับค่าใน .env เสมอ
+  # เพราะ .env ต้องเก็บ URL แบบ localhost ไว้ให้ตอนรันนอก Docker ส่วนใน network
+  # ของ compose ต้องเรียกด้วยชื่อ service  (compose: environment ชนะ env_file)
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-vaultis}:${POSTGRES_PASSWORD:-vaultis}@postgres:5432/${POSTGRES_DB:-vaultis}
+
 x-app: &app
   build:
     context: .
@@ -21,21 +47,7 @@ x-app: &app
     # (LLM ปิด, Discord เงียบ, ใช้ค่า default ใน config.json) ต้องใช้ Compose v2.24+
     - path: .env
       required: false
-  environment:
-    TZ: Asia/Bangkok
-    # dashboard และ jobs/daily_check.py อ่านตัวนี้ ค่า default ในโค้ดชี้ไป Render
-    # ซึ่งไม่ใช่สิ่งที่ต้องการเมื่อรันครบชุดในเครื่อง
-    BACKEND_URL: http://backend:8000
-    VAULTIS_DB_PATH: /data/vaultis.db
-    # ใน container คำขอจาก host มาถึงเป็น IP ของ bridge (172.x) ไม่ใช่ 127.0.0.1
-    # ข้อยกเว้น "localhost ไม่ต้องใช้คีย์" จึงไม่มีผล → route ที่แก้ข้อมูล/เรียก LLM
-    # จะตอบ 503 จนกว่าจะตั้งคีย์  ตั้งใน .env: VAULTIS_API_KEY=... แล้วส่ง header X-API-Key
-    # (dashboard ไม่ได้รับผลกระทบ — มันเรียกโมดูล analysis ตรง ๆ ใช้ BACKEND_URL แค่ WebSocket)
-    VAULTIS_API_KEY: ${VAULTIS_API_KEY:-}
-    # Postgres ในเครื่อง (sentiment + ประวัติ screener) — เขียนทับค่าใน .env เสมอ
-    # เพราะ .env ต้องเก็บ URL แบบ localhost ไว้ให้ตอนรันนอก Docker ส่วนใน network
-    # ของ compose ต้องเรียกด้วยชื่อ service  (compose: environment ชนะ env_file)
-    DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-vaultis}:${POSTGRES_PASSWORD:-vaultis}@postgres:5432/${POSTGRES_DB:-vaultis}
+  environment: *app-env
   volumes:
     # สมุดบัญชี (CSV) — แหล่งเดียวของธุรกรรมตาม CLAUDE.md
     - ./portfolio/data:/app/portfolio/data
@@ -91,6 +103,18 @@ services:
   dashboard:
     <<: *app
     container_name: vaultis-dashboard
+    environment:
+      # ต้องมี <<: *app-env เสมอ — merge key รวมชั้นเดียว ประกาศ environment: ที่นี่
+      # โดยไม่ merge = ทับก้อนของ x-app ทั้งก้อน (BACKEND_URL/DATABASE_URL หายเงียบ)
+      <<: *app-env
+      # URL ที่ **เบราว์เซอร์ของผู้ใช้** ใช้ต่อ WebSocket ราคาเรียลไทม์ — คนละมุมมอง
+      # เครือข่ายกับ BACKEND_URL ซึ่งใช้จาก *ในคอนเทนเนอร์*  ห้ามตั้งเป็นค่าเดียวกัน:
+      # ``ws://backend:8000`` เบราว์เซอร์บนโฮสต์ resolve ไม่ได้ (ERR_NAME_NOT_RESOLVED)
+      # ⇒ แถบราคาขึ้น "⚠️ ดึงไม่ได้ (WS error)" ครบทุกตัวตลอดเวลา
+      # ค่าดีฟอลต์นี้ = พอร์ตที่ service backend เปิดไว้บนโฮสต์ (127.0.0.1:8000)
+      # เข้าถึงจากเครื่องอื่น/หลัง reverse proxy ให้ตั้ง VAULTIS_WS_URL ใน .env เอง
+      # (AUDIT_ROUND2_2026-08-07)
+      VAULTIS_WS_URL: ${VAULTIS_WS_URL:-ws://127.0.0.1:8000/ws/prices}
     ports:
       - "127.0.0.1:8501:8501"
     # ต้องเขียนทับ healthcheck ที่ติดมากับ image (มันเช็ค :8000 ของ backend)
@@ -148,6 +172,16 @@ services:
       # และเคยเขียนไปแล้วจริง (AUDIT_2026-08-06 ข้อ 0.1 / H1) — ห้ามผูก volume นั้นกลับมา
       # ตาข่ายกันพลาด: tests/test_db_isolation.py
       VAULTIS_DB_PATH: /tmp/test_vaultis.db
+      # สมุดบัญชี (CSV) และคลัง alert (JSON) ก็ต้องออกนอก repo ด้วยเหตุผลเดียวกัน:
+      # service นี้ไม่ได้ mount โฟลเดอร์ข้อมูล แต่ **คำสั่งรันเทสต์ mount repo ทับ /app**
+      #   docker compose --profile dev run --rm -v "$PWD:/app" tests
+      # ⇒ ค่าดีฟอลต์ในโค้ด (/app/portfolio/data, /app/alerts/data) คือไฟล์จริงบน host
+      # เคยโดนมาแล้วจริง: โพรบเรียก _save_alerts()/delete_transaction() โดยไม่ stub path
+      # แล้วคลัง alert ของผู้ใช้ถูกล้างเป็น {"alerts": []} (AUDIT_ROUND2_2026-08-07)
+      # ตาข่ายกันพลาดชั้นที่สอง (เผื่อลืมตั้งค่าตรงนี้): fixture `_isolate_user_data_files`
+      # ใน tests/conftest.py · เทสต์ที่ตรวจทั้งสองชั้น: tests/test_data_file_isolation.py
+      VAULTIS_LEDGER_PATH: /tmp/vaultis-test-data/transactions.csv
+      VAULTIS_ALERTS_PATH: /tmp/vaultis-test-data/price_alerts.json
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
       DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"

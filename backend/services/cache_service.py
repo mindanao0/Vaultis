@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -99,6 +100,33 @@ def _payload_is_all_empty(value: Any) -> bool:
         return False
     payload = [v for k, v in value.items() if str(k).strip().lower() not in _IDENTITY_KEYS]
     return not any(_has_value(v) for v in payload)
+
+
+def _non_finite_path(value: Any, path: str = "") -> Optional[str]:
+    """ตำแหน่งของค่า NaN/inf ตัวแรกใน payload — ``None`` = ไม่มีเลย.
+
+    payload ของ ``CacheService`` ทุกตัวเดินต่อไปเป็น response body และ Starlette
+    serialize ด้วย ``json.dumps(allow_nan=False)`` ⇒ NaN/inf ตัวเดียวทำให้ทั้งคำตอบ
+    โยน ``ValueError`` **นอก** ตัว handler (เราเตอร์ดักไม่ทัน ผู้ใช้ได้ 500 เปล่า)
+    การแคชของแบบนี้จึงเท่ากับตรึง 500 ไว้ทั้ง TTL — ``ETF_INFO_TTL`` คือ 6 ชั่วโมง
+    (AUDIT_ROUND2_2026-08-07 G5) ไม่แคชแล้วคำนวณใหม่ทุกครั้ง ยังมีโอกาสหาย
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return f"{path or '<root>'} = {value}"
+    if isinstance(value, dict):
+        for k, v in value.items():
+            found = _non_finite_path(v, f"{path}.{k}" if path else str(k))
+            if found:
+                return found
+        return None
+    if isinstance(value, (list, tuple)):
+        for i, v in enumerate(value):
+            found = _non_finite_path(v, f"{path}[{i}]")
+            if found:
+                return found
+    return None
 
 
 def _present_keys(value: Any) -> Optional[set[str]]:
@@ -188,6 +216,15 @@ class CacheService:
                 "ไม่แคช %s: ทุกช่องไม่มีค่า เหลือแต่คีย์ระบุตัวตน = ดึงไม่สำเร็จ "
                 "(ดึงไม่สำเร็จ ≠ ไม่มีข้อมูล) — ต้องดึงใหม่ครั้งหน้า",
                 key,
+            )
+            return
+        non_finite = _non_finite_path(value)
+        if non_finite is not None:
+            logger.warning(
+                "ไม่แคช %s: มีค่า NaN/inf ที่ %s ⇒ serialize เป็น JSON ไม่ได้ "
+                "การแคชจะตรึงคำตอบ 500 ไว้ทั้ง TTL — ต้องคำนวณใหม่ครั้งหน้า (G5)",
+                key,
+                non_finite,
             )
             return
         if expect_keys is not None:
