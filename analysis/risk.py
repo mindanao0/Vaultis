@@ -378,19 +378,76 @@ def portfolio_mu_sigma(price_df: pd.DataFrame, weights: dict[str, float]) -> tup
     return float(stats["mu_arithmetic"]), float(stats["sigma"])
 
 
+#: ชื่อคอลัมน์ช่วงข้อมูลที่ทุกตารางความเสี่ยงต้องพก — ผู้เรียกอ่านด้วยชื่อ ห้ามอ้างตำแหน่ง
+WINDOW_COLUMNS = ("Data Start", "Data End", "Days")
+
+
+def _column_windows(price_df: pd.DataFrame) -> pd.DataFrame:
+    """ช่วงข้อมูล **ที่ใช้จริงของแต่ละคอลัมน์** — วันเริ่ม/วันจบ/จำนวนแท่ง.
+
+    ใช้ ``analysis.returns.real_bars`` ซึ่งเป็นนิยามเดียวของ "แท่งจริง" ทั้งระบบ
+    (ตัดทั้ง NaN และ inf) — ETF ที่ลิสต์ทีหลังหรือที่ผู้ให้ข้อมูลหยุดส่งจะมีช่วงสั้นกว่าเพื่อน
+    """
+    from analysis.returns import real_bars
+
+    rows: dict[str, dict[str, object]] = {}
+    for column in price_df.columns:
+        bars = real_bars(price_df[column])
+        rows[str(column)] = {
+            "Data Start": _window_label(bars.index[0]) if len(bars) else "",
+            "Data End": _window_label(bars.index[-1]) if len(bars) else "",
+            "Days": int(len(bars)),
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 @cache_data_1h
 def calculate_risk_metrics(
-    price_df: pd.DataFrame, risk_free_rate: float = DEFAULT_RISK_FREE_RATE
+    price_df: pd.DataFrame,
+    risk_free_rate: float = DEFAULT_RISK_FREE_RATE,
+    *,
+    common_window: bool = False,
 ) -> pd.DataFrame:
-    """รวมผลลัพธ์ตัวชี้วัดความเสี่ยงเป็นตารางเดียว."""
+    """รวมผลลัพธ์ตัวชี้วัดความเสี่ยงเป็นตารางเดียว **พร้อมช่วงข้อมูลที่ใช้จริงของแต่ละกอง**.
+
+    ทุกสูตรในไฟล์นี้ข้าม ``NaN`` รายคอลัมน์ (``std``/``mean``/``cummax`` ของ pandas)
+    ⇒ แต่ละ ETF ถูกวัดด้วย **ช่วงเวลาของตัวเอง** แล้ววางเรียงกันในตารางเดียวเหมือนเทียบกันได้
+    ซึ่งไม่จริง (FIX_PLAN ข้อ 2.7) วัดจริงบนพอร์ตนี้ (ช่วงร่วม n=1,456)::
+
+              ตามที่โชว์   ช่วงร่วมจริง       Δ
+        VOO    −33.99%      −24.52%      −9.47
+        QQQM   −35.04%      −35.04%       0.00
+        SCHD   −33.37%      −16.84%     −16.52
+
+    บนจอ QQQM ดู "แย่กว่า VOO นิดเดียว" ทั้งที่เทียบช่วงเดียวกันห่างกัน **10.5 จุด**
+    (QQQM ลิสต์ปี 2020 จึงไม่เคยเจอโควิดครัชและวิกฤตก่อนหน้า) และ "ตัวที่ drawdown ตื้นสุด"
+    เปลี่ยนตัวจาก GLDM เป็น SCHD — คำตอบพลิกเพราะฐานเวลา ไม่ใช่เพราะความเสี่ยง
+
+    ``common_window=True`` ตัดเหลือเฉพาะวันที่ **ทุกคอลัมน์มีข้อมูลพร้อมกัน**
+    (``dropna(how="any")``) = โหมดที่เทียบกันได้จริง · ค่าเริ่มต้นยังเป็นช่วงเต็มของแต่ละกอง
+    เพื่อไม่ให้ตัวเลขที่มีอยู่เปลี่ยนโดยไม่มีใครขอ **แต่ผู้เรียกต้องแสดงคอลัมน์ช่วงข้อมูล
+    เสมอ** ไม่งั้นก็กลับไปเป็นตารางที่เทียบคนละฐานโดยไม่บอกเหมือนเดิม
+
+    ``ValueError`` เมื่อ ``common_window=True`` แล้วไม่มีวันไหนที่ทุกกองมีข้อมูลพร้อมกัน —
+    "เทียบไม่ได้" ต้องดัง ห้ามคืนตารางว่างที่อ่านเหมือน "ความเสี่ยงเป็นศูนย์"
+    """
     try:
+        frame = price_df
+        if common_window:
+            frame = price_df.dropna(how="any")
+            if frame.empty:
+                raise ValueError(
+                    "ไม่มีวันที่ทุกกองมีข้อมูลพร้อมกันเลย — เทียบความเสี่ยงบนช่วงร่วมไม่ได้"
+                )
         metrics = pd.DataFrame(
             {
-                "Volatility": calculate_volatility(price_df),
-                "Sharpe Ratio": calculate_sharpe_ratio(price_df, risk_free_rate=risk_free_rate),
-                "Max Drawdown": calculate_max_drawdown(price_df),
+                "Volatility": calculate_volatility(frame),
+                "Sharpe Ratio": calculate_sharpe_ratio(frame, risk_free_rate=risk_free_rate),
+                "Max Drawdown": calculate_max_drawdown(frame),
             }
         )
-        return metrics
+        return metrics.join(_column_windows(frame))
+    except ValueError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการรวม Risk Metrics: {exc}") from exc

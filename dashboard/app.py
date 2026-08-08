@@ -5162,9 +5162,51 @@ def render_dashboard() -> None:
 
         with col2:
             st.subheader("Risk Metrics")
-            with st.spinner(" ..."):
-                risk_df = calculate_risk_metrics(prices)
-            st.dataframe(risk_df.style.format("{:.4f}"))
+            # ทุกสูตรความเสี่ยงข้าม NaN รายคอลัมน์ ⇒ แต่ละ ETF ถูกวัดด้วย **ช่วงเวลาของ
+            # ตัวเอง** แล้ววางเรียงกันเหมือนเทียบกันได้ (FIX_PLAN ข้อ 2.7) — QQQM ลิสต์ปี
+            # 2020 จึงไม่เคยเจอโควิดครัช วัดจริงแล้วช่องว่างระหว่าง VOO กับ QQQM ห่างกัน
+            # 10.5 จุดเมื่อเทียบช่วงเดียวกัน และ "ตัวที่ drawdown ตื้นสุด" เปลี่ยนตัว
+            # หน้า Return Analysis ข้าง ๆ มี caption เตือนเรื่องนี้อยู่แล้ว ตารางนี้ไม่มี
+            common_only = st.toggle(
+                "เทียบเฉพาะช่วงที่ทุกกองมีข้อมูลพร้อมกัน",
+                value=False,
+                key="risk_common_window",
+                help=(
+                    "ปิดอยู่ = แต่ละกองใช้ประวัติของตัวเองเต็มช่วง (ตัวเลขเยอะกว่าแต่ "
+                    "**เทียบข้ามกองไม่ได้**) · เปิด = ตัดเหลือช่วงร่วม ซึ่งเป็นโหมดเดียว "
+                    "ที่เอาตัวเลขมาเรียงเทียบกันได้จริง"
+                ),
+            )
+            with st.spinner("กำลังคำนวณตัวชี้วัดความเสี่ยง..."):
+                try:
+                    risk_df = calculate_risk_metrics(prices, common_window=common_only)
+                except ValueError as exc:
+                    st.warning(f"เทียบช่วงร่วมไม่ได้: {exc}")
+                    risk_df = calculate_risk_metrics(prices)
+                    common_only = False
+            st.dataframe(
+                risk_df.style.format(
+                    {
+                        "Volatility": "{:.4f}",
+                        "Sharpe Ratio": "{:.4f}",
+                        "Max Drawdown": "{:.4f}",
+                        "Days": "{:,.0f}",
+                    },
+                    na_rep="N/A",
+                )
+            )
+            if common_only:
+                st.caption(
+                    "โหมดช่วงร่วม: ทุกกองถูกวัดบนวันเดียวกันทั้งหมด ⇒ ตัวเลขในคอลัมน์เดียวกัน"
+                    "เอามาเรียงเทียบกันได้ · ช่วงจะสั้นเท่ากองที่ลิสต์ทีหลังที่สุด"
+                )
+            else:
+                st.caption(
+                    "⚠️ แต่ละกองวัดจาก **ช่วงเวลาของตัวเอง** (ดูคอลัมน์ Data Start/Days) — "
+                    "กองที่ลิสต์ทีหลังยังไม่เคยเจอวิกฤตที่กองเก่าเจอมาแล้ว ตัวเลข MaxDD/"
+                    "Volatility จึงดูดีกว่าโดยไม่ได้แปลว่าเสี่ยงน้อยกว่า "
+                    "เปิดสวิตช์ด้านบนเพื่อเทียบบนช่วงเดียวกัน"
+                )
 
         st.subheader("Correlation Heatmap")
         with st.spinner(" ..."):
