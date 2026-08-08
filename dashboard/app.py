@@ -569,12 +569,28 @@ def _render_realtime_price_ticker_bar() -> None:
         Object.entries(prices).forEach(([ticker, info]) => {{
             const el = document.getElementById("price-" + ticker);
             if (el) {{
-                const color = info.change_pct >= 0 ? "#3FB950" : "#F85149";
-                const sign = info.change_pct >= 0 ? "+" : "";
+                // %เปลี่ยนแปลงที่คำนวณไม่ได้มาเป็น null — ห้ามเทียบ `>= 0` ตรง ๆ เด็ดขาด
+                // เพราะ JS แปลง null เป็น 0 ⇒ `null >= 0` เป็น true ⇒ ช่องที่ "ไม่รู้ค่า"
+                // ถูกวาดเป็น "+null%" สีเขียว = อ่านได้ว่าวันนี้บวก ทั้งที่แปลว่าไม่ทราบ
+                // (AUDIT_ROUND2_2026-08-07 — กฎเดียวกับฝั่ง backend: คำนวณไม่ได้ ≠ ไม่ขยับ)
+                const pctUnknown = (
+                    info.change_pct === null ||
+                    info.change_pct === undefined ||
+                    !isFinite(info.change_pct)
+                );
+                const color = pctUnknown
+                    ? "#8B949E"
+                    : (info.change_pct >= 0 ? "#3FB950" : "#F85149");
+                const pctText = pctUnknown
+                    ? "% ไม่ทราบ"
+                    : ((info.change_pct >= 0 ? "+" : "") + info.change_pct + "%");
                 el.style.opacity = "1";
+                // ใส่เหตุผลผ่าน property ไม่ใช่ innerHTML — ข้อความจาก payload ต้องไม่ถูก parse เป็น HTML
+                el.title = pctUnknown
+                    ? (info.note || "คำนวณ %เปลี่ยนแปลงไม่ได้")
+                    : "";
                 el.innerHTML = ticker + " $" + info.price +
-                    ' <span style="color:' + color + '">' +
-                    sign + info.change_pct + "%</span>";
+                    ' <span style="color:' + color + '">' + pctText + "</span>";
             }}
         }});
         // ตัวที่ดึงไม่ได้ต้องล้างราคาเก่าทิ้ง ไม่ใช่ปล่อยค้างไว้จนดูเหมือนราคาไม่เปลี่ยน

@@ -12,6 +12,10 @@ from utils.cache import cache_data_1h
 # (AUDIT.md M4: เดิม backtest ใช้ 0% ส่วนหน้า Risk ใช้ 2% → เทียบกันไม่ได้)
 DEFAULT_RISK_FREE_RATE = 0.02
 
+# จำนวนวันทำการต่อปีที่ใช้ annualize ทุกตัวเลขในโมดูลนี้ (ค่าเดียวกับพารามิเตอร์
+# ``annualization`` ของ Volatility/Sharpe) — เปลี่ยนที่นี่ที่เดียวถ้าต้องเปลี่ยน
+TRADING_DAYS_PER_YEAR = 252
+
 
 def calculate_daily_returns(price_df: pd.DataFrame) -> pd.DataFrame:
     """คำนวณผลตอบแทนรายวันจากราคา Adjusted Close.
@@ -122,29 +126,95 @@ def drawdown_episodes(prices: pd.Series, min_depth: float = 0.10) -> list[dict]:
     return episodes
 
 
-def portfolio_mu_sigma(price_df: pd.DataFrame, weights: dict[str, float]) -> tuple[float, float]:
-    """μ/σ ต่อปีของพอร์ตตามน้ำหนักที่ให้ — ตัวป้อน Monte Carlo (Roadmap ข้อ 15).
+def _portfolio_daily_returns(
+    price_df: pd.DataFrame, weights: dict[str, float]
+) -> tuple[pd.Series, list[str], int]:
+    """ผลตอบแทนรายวันของพอร์ต (ถ่วงน้ำหนัก, สมมติ rebalance รายวัน) — ตัวกลางของ μ/σ ทุกตัว.
 
-    ใช้ผลตอบแทนรายวันย้อนหลังของ ticker ที่มีทั้งน้ำหนัก > 0 และราคา
-    (น้ำหนัก normalize ภายใน จึงส่งเป็นมูลค่าถือครองดิบ ๆ ได้เลย)
-
-    ข้อมูล/น้ำหนักใช้ไม่ได้ → raise ValueError — ผู้เรียกค่อย fallback ไปค่า preset
-    อย่างโปร่งใส ห้ามเงียบ ๆ กลายเป็นเลขคงที่ (AUDIT.md C1)
+    คืน ``(ซีรีส์รายวัน, ticker ที่ใช้จริง, จำนวนแถวก่อน dropna)``
+    แถวก่อน/หลัง ``dropna`` ต่างกันเมื่อกองใดกองหนึ่งมีประวัติสั้นกว่าเพื่อน (เช่น QQQM
+    เพิ่งลิสต์ปี 2020) — ผู้เรียก **ต้องรายงานส่วนต่างนี้** ไม่ใช่ปล่อยให้ป้ายบอกช่วงที่ขอมา
+    (AUDIT_ROUND2_2026-08-07 · FIX_PLAN เฟส 4①)
     """
     tickers = [t for t, w in weights.items() if w > 0 and t in price_df.columns]
     if not tickers:
         raise ValueError("ไม่มี ticker ที่มีทั้งน้ำหนักและข้อมูลราคา")
-    daily_returns = calculate_daily_returns(price_df[tickers]).dropna()
+    all_returns = calculate_daily_returns(price_df[tickers])
+    rows_available = int(len(all_returns))
+    daily_returns = all_returns.dropna()
     if daily_returns.empty:
         raise ValueError("ผลตอบแทนรายวันว่าง — คำนวณ μ/σ ไม่ได้")
     normalized = pd.Series({t: float(weights[t]) for t in tickers})
     normalized = normalized / normalized.sum()
-    portfolio_daily = (daily_returns * normalized).sum(axis=1)
-    mu = float(portfolio_daily.mean() * 252)
-    sigma = float(portfolio_daily.std() * np.sqrt(252))
-    if not np.isfinite(mu) or not np.isfinite(sigma) or sigma <= 0:
+    return (daily_returns * normalized).sum(axis=1), tickers, rows_available
+
+
+def _window_label(value: object) -> str:
+    """ป้ายวันที่ของขอบหน้าต่างข้อมูล — คืนสตริงเสมอเพื่อให้ JSON-serializable."""
+    try:
+        return pd.Timestamp(value).date().isoformat()
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def portfolio_return_stats(price_df: pd.DataFrame, weights: dict[str, float]) -> dict[str, object]:
+    """สถิติผลตอบแทนของพอร์ต **พร้อมช่วงข้อมูลที่ใช้จริง** — ตัวป้อน Monte Carlo (Roadmap ข้อ 15).
+
+    คืนค่าเฉลี่ยผลตอบแทนต่อปี **สองตัวที่ห้ามสลับกัน** (AUDIT_ROUND2_2026-08-07 ·
+    FIX_PLAN เฟส 4①) — เดิมมีแค่ตัวเลขคณิตตัวเดียวแล้วปลายทางเอาไปทบต้น:
+
+    - ``mu_arithmetic`` = ``mean(รายวัน) × 252`` — ค่าเฉลี่ยเลข**คณิต** ตัวเดียวกับที่
+      ``calculate_sharpe_ratio`` ใช้ เหมาะกับการเป็น *drift ต่องวด* ของการจำลองที่มี
+      ความผันผวน (Monte Carlo) เพราะการทบต้นในตัวจำลองจะหักส่วนต่างออกให้เอง
+      **ห้ามเอาไปยกกำลังทบต้นตรง ๆ** — มันสูงกว่าอัตราทบต้นจริงราว σ²/2 ต่อปี
+      (σ 15% ⇒ สูงเกิน ~1.1 จุด/ปี ⇒ บอกให้ผู้ใช้ออมน้อยกว่าที่ต้องออมจริง)
+    - ``mu_geometric`` = ``prod(1+r)^(252/n) − 1`` — อัตราทบต้นต่อปี (CAGR) คือตัวเดียว
+      ที่ถูกต้องเมื่อจะ "โตทบต้น" เช่นสูตร PMT / มูลค่าคาดการณ์ปลายทาง
+
+    และช่วงข้อมูลที่ใช้จริง: ``window_start`` / ``window_end`` (วันของ**ผลตอบแทน**แถวแรก
+    และแถวสุดท้ายหลัง ``dropna``), ``window_days`` (แถวที่ใช้), ``window_days_available``
+    (แถวที่ดึงมาได้ก่อนตัด) และ ``window_years`` = ``window_days / 252``
+
+    ข้อมูล/น้ำหนักใช้ไม่ได้ → raise ValueError — ผู้เรียกค่อย fallback ไปค่า preset
+    อย่างโปร่งใส ห้ามเงียบ ๆ กลายเป็นเลขคงที่ (AUDIT.md C1)
+    """
+    portfolio_daily, tickers, rows_available = _portfolio_daily_returns(price_df, weights)
+
+    mu_arithmetic = float(portfolio_daily.mean() * TRADING_DAYS_PER_YEAR)
+    sigma = float(portfolio_daily.std() * np.sqrt(TRADING_DAYS_PER_YEAR))
+    if not np.isfinite(mu_arithmetic) or not np.isfinite(sigma) or sigma <= 0:
         raise ValueError("μ/σ ที่ได้ไม่สมเหตุสมผล (ข้อมูลอาจสั้น/นิ่งเกินไป)")
-    return mu, sigma
+
+    # ทบต้นได้ก็ต่อเมื่อไม่มีวันไหนที่มูลค่าหายเกิน 100% — เจอเมื่อไหร่ต้องดัง ห้ามปัดเป็นเลขสวย
+    if float((1.0 + portfolio_daily).min()) <= 0.0:
+        raise ValueError("มีวันที่ผลตอบแทนพอร์ต ≤ −100% — คำนวณอัตราทบต้น (CAGR) ไม่ได้")
+    mu_geometric = float(np.expm1(np.log1p(portfolio_daily).mean() * TRADING_DAYS_PER_YEAR))
+    if not np.isfinite(mu_geometric):
+        raise ValueError("อัตราทบต้น (CAGR) ที่ได้ไม่สมเหตุสมผล")
+
+    days_used = int(len(portfolio_daily))
+    return {
+        "mu_arithmetic": mu_arithmetic,
+        "mu_geometric": mu_geometric,
+        "sigma": sigma,
+        "tickers": tickers,
+        "window_start": _window_label(portfolio_daily.index[0]),
+        "window_end": _window_label(portfolio_daily.index[-1]),
+        "window_days": days_used,
+        "window_days_available": rows_available,
+        "window_years": days_used / TRADING_DAYS_PER_YEAR,
+    }
+
+
+def portfolio_mu_sigma(price_df: pd.DataFrame, weights: dict[str, float]) -> tuple[float, float]:
+    """μ (เลข**คณิต**) / σ ต่อปีของพอร์ต — รูปย่อของ :func:`portfolio_return_stats`.
+
+    ⚠ ``mu`` ที่คืนคือค่าเฉลี่ยเลขคณิต (ตัวเดียวกับที่ Sharpe ใช้) **ห้ามเอาไปทบต้น**
+    ผู้เรียกที่ต้องการอัตราทบต้นให้ใช้ ``portfolio_return_stats()["mu_geometric"]``
+    (AUDIT_ROUND2_2026-08-07 · FIX_PLAN เฟส 4①)
+    """
+    stats = portfolio_return_stats(price_df, weights)
+    return float(stats["mu_arithmetic"]), float(stats["sigma"])
 
 
 @cache_data_1h

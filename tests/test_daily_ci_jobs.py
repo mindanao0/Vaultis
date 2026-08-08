@@ -533,6 +533,123 @@ class TestDailyTechnicalAlerts:
 
 
 # --------------------------------------------------------------------------- #
+# AUDIT_ROUND2_2026-08-07 — เกณฑ์ RSI ของงานนี้ต้องมาจาก technical/signal_rules.py
+# --------------------------------------------------------------------------- #
+class TestDailyTechnicalAlertRsiThresholdSource:
+    """``main.py`` เคยเขียน ``if 30 <= latest_rsi <= 70: continue`` เอง.
+
+    เลข 30/70 คือ ``RSI_OVERSOLD``/``RSI_OVERBOUGHT`` ของนิยามกลางที่ถูกพิมพ์ซ้ำ —
+    ไม่พังวันนี้ แต่พังวันที่มีคนแก้ค่ากลาง เพราะงานแจ้งเตือนจะยังใช้เส้นเก่าต่อไป
+    เงียบ ๆ ⇒ "โซนกลาง" ของ Discord ไม่ตรงกับของหน้าจอ/สกรีนเนอร์/AI
+
+    เทสต์ชุดนี้จึงไม่ตรึงเลข 30/70 (ซึ่ง ``tests/test_signal_rules_thresholds.py``
+    ตรึงไว้แล้ว) แต่ตรึง **ที่มา**: เลื่อนค่ากลางตอนรัน แล้วพฤติกรรมของ ``main.py``
+    ต้องเลื่อนตาม ถ้ายังฮาร์ดโค้ดอยู่จะไม่ขยับและเทสต์แดง
+    """
+
+    @pytest.fixture
+    def sent(self, monkeypatch):
+        alerts: list[dict] = []
+        monkeypatch.setattr(
+            scheduler_main,
+            "send_technical_alert",
+            lambda **kw: alerts.append(kw) or {"success": True},
+        )
+        monkeypatch.setattr(
+            scheduler_main, "send_discord_webhook", lambda **kw: {"success": True}
+        )
+        return alerts
+
+    @staticmethod
+    def _rising_frame() -> pd.DataFrame:
+        """ราคาที่ครบเงื่อนไขทุกด่านก่อนถึงการตัดสินโซน RSI (>200 แท่ง, ไม่มีช่องว่าง)."""
+        n = 400
+        idx = pd.bdate_range("2024-01-01", periods=n)
+        return pd.DataFrame({"VOO": [100.0 + i * 0.10 for i in range(n)]}, index=idx)
+
+    def _run_with_rsi(self, monkeypatch, value: float) -> None:
+        """บังคับให้ RSI ล่าสุดของ VOO เท่ากับ ``value`` พอดี แล้วรันงานหนึ่งรอบ."""
+        monkeypatch.setattr(scheduler_main, "DEFAULT_TICKERS", ["VOO"])
+        monkeypatch.setattr(
+            scheduler_main, "fetch_adjusted_close_data", lambda *a, **k: self._rising_frame()
+        )
+
+        def _fake_rsi(df, period=14):
+            out = df.copy()
+            out["RSI"] = float(value)
+            return out
+
+        monkeypatch.setattr(scheduler_main, "calculate_rsi", _fake_rsi)
+        scheduler_main.generate_daily_technical_alerts("https://discord.example/webhook/AAA")
+
+    def test_ขอบล่างพอดีคือ_ตรวจแล้วปกติ(self, monkeypatch, sent):
+        """RSI = RSI_OVERSOLD พอดี ต้องไม่แจ้งเตือน (พฤติกรรมขอบเดิมของ ``30 <= rsi``)"""
+        from technical.signal_rules import RSI_OVERSOLD
+
+        self._run_with_rsi(monkeypatch, float(RSI_OVERSOLD))
+        assert not sent, f"RSI {RSI_OVERSOLD} (ขอบพอดี = โซนกลาง) ไม่ควรถูกแจ้งเตือน: {sent}"
+
+    def test_ขอบบนพอดีคือ_ตรวจแล้วปกติ(self, monkeypatch, sent):
+        """RSI = RSI_OVERBOUGHT พอดี ต้องไม่แจ้งเตือน (พฤติกรรมขอบเดิมของ ``rsi <= 70``)"""
+        from technical.signal_rules import RSI_OVERBOUGHT
+
+        self._run_with_rsi(monkeypatch, float(RSI_OVERBOUGHT))
+        assert not sent, f"RSI {RSI_OVERBOUGHT} (ขอบพอดี = โซนกลาง) ไม่ควรถูกแจ้งเตือน: {sent}"
+
+    def test_ต่ำกว่าขอบล่างต้องแจ้งเตือน(self, monkeypatch, sent):
+        from technical.signal_rules import RSI_OVERSOLD
+
+        self._run_with_rsi(monkeypatch, float(RSI_OVERSOLD) - 0.1)
+        assert len(sent) == 1, f"RSI ต่ำกว่า {RSI_OVERSOLD} ต้องถูกแจ้งเตือน: {sent}"
+
+    def test_เลื่อนค่ากลางแล้วงานแจ้งเตือนต้องเลื่อนตาม(self, monkeypatch, sent):
+        """ด่านจริงของ "one signal definition".
+
+        ``rsi_zone()`` อ่าน ``RSI_OVERSOLD`` ตอนถูกเรียก การเลื่อนค่านี้จึงมีผลทันที
+        กับผู้เรียกที่ใช้นิยามกลางจริง ๆ  ถ้า ``main.py`` กลับไปเขียน ``30 <=`` เอง
+        RSI 35 จะยังถูกมองว่า "ปกติ" ต่อไป และเทสต์นี้จะแดง
+        """
+        from technical import signal_rules
+
+        monkeypatch.setattr(signal_rules, "RSI_OVERSOLD", 40.0)
+        self._run_with_rsi(monkeypatch, 35.0)
+        assert len(sent) == 1, (
+            "เลื่อน RSI_OVERSOLD เป็น 40 แล้ว RSI 35 ต้องกลายเป็น oversold และถูกแจ้งเตือน "
+            "— ยังเงียบอยู่แปลว่าเกณฑ์ RSI ถูกฮาร์ดโค้ดซ้ำใน main.py ไม่ได้มาจาก "
+            "technical/signal_rules.py"
+        )
+
+    def test_ตรวจไม่ได้ต้องไม่ถูกพิมพ์ว่า_ส่งไม่สำเร็จ(self, monkeypatch, capsys):
+        """``send_technical_alert()`` คืน ``data_ok=False`` เมื่อข้อมูลไม่พอตัดสินสัญญาณ.
+
+        มันมาพร้อม ``success=False`` ด้วย ผู้เรียกที่อ่านแต่ ``success`` จึงพิมพ์ว่า
+        "ส่ง Technical Alert ไม่สำเร็จ" ซึ่งผู้ใช้อ่านเป็น "เน็ต/เว็บฮุคมีปัญหา"
+        ทั้งที่แปลว่า **ยังไม่รู้** ว่า ticker นี้มีสัญญาณหรือไม่ — สองเรื่องนี้ต้องแยกกัน
+        """
+        monkeypatch.setattr(
+            scheduler_main,
+            "send_technical_alert",
+            lambda **kw: {
+                "success": False,
+                "skipped": True,
+                "data_ok": False,
+                "reason": "VOO: ข้อมูลไม่พร้อม (RSI/ราคา/MA200 ขาดหรือคำนวณไม่ได้)",
+                "error": "VOO: ข้อมูลไม่พร้อม (RSI/ราคา/MA200 ขาดหรือคำนวณไม่ได้)",
+            },
+        )
+        monkeypatch.setattr(
+            scheduler_main, "send_discord_webhook", lambda **kw: {"success": True}
+        )
+        self._run_with_rsi(monkeypatch, 20.0)
+
+        out = capsys.readouterr().out
+        assert "ตรวจไม่ได้" in out, f"ไม่ได้บอกว่า 'ตรวจไม่ได้' เลย: {out!r}"
+        assert "ส่ง Technical Alert ไม่สำเร็จ" not in out, (
+            f"ยุบ 'ตรวจไม่ได้' เข้ากับ 'ส่งไม่สำเร็จ' ผู้ใช้แยกไม่ออกว่าต้องไปแก้อะไร: {out!r}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # M-CI-4 — scheduler ต้องไม่ตายเพราะ job เดียวพัง
 # --------------------------------------------------------------------------- #
 _BASE_CONFIG = {

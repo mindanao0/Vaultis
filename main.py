@@ -33,6 +33,7 @@ from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
+from technical.signal_rules import rsi_zone
 from utils.config import load_config
 
 # ตั้งชื่อ logger เองแทน ``__name__`` เพราะไฟล์นี้ถูกรันเป็นสคริปต์ (``python main.py``)
@@ -187,6 +188,15 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
 
     ticker ที่ตรวจไม่ได้จะถูกรวบไปแจ้งเป็นข้อความเดียว — "ตรวจไม่ได้" ต้องออกไปให้
     ผู้ใช้เห็น ห้ามตัดทิ้งเงียบ
+
+    **เกณฑ์ RSI ไม่ได้อยู่ในไฟล์นี้** ทั้งโซนกลางที่ใช้ตัดสินว่า "ไม่ต้องแจ้งเตือน" และ
+    ป้าย/สีของการ์ดที่ ``alerts/notifier.py`` ประกอบ ล้วนมาจาก
+    ``technical/signal_rules.py`` ที่เดียว (AUDIT_ROUND2_2026-08-07)
+
+    ค่าที่ ``send_technical_alert()`` คืนกลับมีสามความหมาย ห้ามยุบรวมกัน:
+    ส่งสำเร็จ · ตรวจแล้วไม่มีสัญญาณ (``skipped`` + ``data_ok=True`` เงียบได้) ·
+    **ตรวจไม่ได้** (``data_ok=False`` + ``success=False`` — ข้อมูลไม่พร้อมจนตัดสินไม่ได้
+    ซึ่งเป็นคนละเรื่องกับ "ยิง Discord ไม่ออก" และต้องอ่านออกจาก log ว่าเป็นคนละเรื่อง)
     """
     try:
         prices = fetch_adjusted_close_data(DEFAULT_TICKERS, years=2)
@@ -210,7 +220,17 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
                 continue
 
             latest_rsi = float(rsi_df["RSI"].iloc[-1])
-            if 30 <= latest_rsi <= 70:
+            # โซน RSI มาจาก ``technical/signal_rules.py`` ที่เดียว — เดิมบรรทัดนี้พิมพ์
+            # เลข 30/70 ซ้ำเอง ทั้งที่มันคือ RSI_OVERSOLD/RSI_OVERBOUGHT ของนิยามกลาง
+            # ⇒ วันที่ใครแก้ค่ากลาง งานนี้จะเงียบ ๆ ใช้เส้นเก่าต่อไป แล้ว "โซนกลาง" ของ
+            # การแจ้งเตือนจะไม่ตรงกับของหน้าจอ/สกรีนเนอร์/AI โดยไม่มีอะไรร้อง
+            # (รอยเดียวกับที่ ``alerts/notifier.py`` เพิ่งถูกถอดออกทั้งไฟล์
+            #  — AUDIT_ROUND2_2026-08-07)
+            #
+            # ขอบเขตเท่าเดิมทุกประการ: ``rsi_zone()`` คืน "neutral" เมื่อ
+            # RSI_OVERSOLD <= rsi <= RSI_OVERBOUGHT ⇒ RSI 30.0 และ 70.0 พอดี
+            # ยังนับเป็น "ตรวจแล้วปกติ" เหมือนเดิม
+            if rsi_zone(latest_rsi) == "neutral":
                 continue  # ตรวจแล้วปกติ — คนละเรื่องกับ "ตรวจไม่ได้"
 
             latest_price = float(ticker_series.iloc[-1])
@@ -233,6 +253,16 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
             )
             if result.get("success") and not result.get("skipped"):
                 print(f"ส่ง Technical Alert สำเร็จ: {ticker} (RSI {latest_rsi:.1f})")
+            elif result.get("data_ok") is False:
+                # ปลายทางบอกว่า "ข้อมูลไม่พร้อมจนตัดสินสัญญาณไม่ได้" ไม่ใช่ "ส่งไม่ออก"
+                # ถ้าพิมพ์รวมกับกรณีเน็ต/webhook ล่ม ผู้ใช้จะอ่านไม่ออกว่าต้องไปแก้อะไร
+                # และที่แย่กว่าคืออ่านเป็น "ระบบมีปัญหาชั่วคราว" ทั้งที่แปลว่ายังไม่รู้
+                # ว่า ticker นี้มีสัญญาณหรือไม่
+                print(
+                    f"[technical alert] ตรวจไม่ได้ ({ticker}): "
+                    f"{result.get('reason') or result.get('error') or 'ไม่ระบุสาเหตุ'} "
+                    "— ไม่ใช่ 'ส่งไม่สำเร็จ' และไม่ได้แปลว่า RSI ปกติ"
+                )
             elif not result.get("success"):
                 print(f"ส่ง Technical Alert ไม่สำเร็จ ({ticker}): {result.get('error')}")
 

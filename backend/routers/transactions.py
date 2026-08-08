@@ -12,9 +12,25 @@ from typing import Any
 import anthropic
 from fastapi import APIRouter, HTTPException, UploadFile
 
+from analysis.llm import log_anthropic_usage
+
 from ..schemas import SlipUploadResponse
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
+
+# โมเดล vision สำหรับอ่านสลิป — Haiku 4.5 อ่านได้แม่นใกล้เคียง Opus ที่ ~1/5 ของราคา
+# (AUDIT.md L7) นี่คือข้อยกเว้นเดียวที่ CLAUDE.md อนุญาตให้ไม่ผ่าน ``chat_text()``
+# เพราะ ``chat_text()`` รับแต่ข้อความ ส่งรูปไม่ได้
+#
+# เป็นค่าคงที่ไม่ใช่ literal ในคำขอ เพราะชื่อนี้ต้องเป็นทั้ง "โมเดลที่ยิงจริง" และ
+# "คีย์ที่ใช้เปิดตาราง _MODEL_PRICES_USD_PER_MTOK" — สองที่ต้องตรงกันเสมอ ไม่งั้น log
+# จะรายงานราคาของโมเดลผิดตัวโดยไม่มีอะไรร้อง (AUDIT_ROUND2_2026-08-07)
+OCR_MODEL = "claude-haiku-4-5"
+_OCR_COST_LABEL = "slip OCR"
+
+# หมายเหตุเรื่อง thinking: Haiku 4.5 เป็นโมเดลรุ่นก่อน — "ไม่ส่งฟิลด์ thinking" =
+# ไม่คิด (ต่างจาก Sonnet 5 ที่แปลว่าคิดแบบ adaptive) คำขอนี้จึงไม่ต้องส่งอะไรเพิ่ม
+# ถ้าวันหนึ่งเปลี่ยน OCR_MODEL เป็นรุ่น 5 ขึ้นไป ต้องปิด thinking เองเหมือน analysis/llm.py
 
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 CHUNK_SIZE = 256 * 1024  # อ่านทีละก้อน — เพดานหน่วยความจำของ handler ไม่ขึ้นกับขนาดที่ถูกส่งมา
@@ -163,8 +179,7 @@ async def upload_slip(file: UploadFile):
 
     try:
         response = _get_client().messages.create(
-            # Haiku 4.5 อ่านสลิปได้แม่นใกล้เคียง Opus ที่ ~1/5 ของราคา (AUDIT.md L7)
-            model="claude-haiku-4-5",
+            model=OCR_MODEL,
             max_tokens=512,
             system=_SYSTEM_PROMPT,
             messages=[
@@ -186,6 +201,10 @@ async def upload_slip(file: UploadFile):
         )
     except anthropic.APIError as exc:
         raise HTTPException(status_code=502, detail=f"Claude API error: {exc}") from exc
+
+    # เงินออกไปแล้วตั้งแต่บรรทัดบน — บันทึกก่อน parse เสมอ ไม่งั้นใบที่ parse ไม่ผ่าน
+    # (ซึ่งเป็นเคสที่ยังเสียเงินเท่ากัน) จะหายไปจาก log ต้นทุนทั้งหมด
+    log_anthropic_usage(OCR_MODEL, getattr(response, "usage", None), label=_OCR_COST_LABEL)
 
     raw_text = next(
         (block.text for block in response.content if block.type == "text"), ""

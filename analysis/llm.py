@@ -15,7 +15,14 @@
 โดยไม่รู้ตัว ซึ่งขัดหลัก fail-loud ของโปรเจกต์ — ตอนนี้ Anthropic ล้มเหลว = แจ้งชัดเจน
 และตัวเลข/สัญญาณทั้งหมดยังทำงานปกติเพราะคำนวณในโค้ด ไม่ได้พึ่ง LLM
 
+**thinking ถูกปิดทุกการเรียก** (``_THINKING_DISABLED``) — บน Sonnet 5 การไม่ส่งฟิลด์นี้
+แปลว่า "คิดแบบ adaptive" และ ``max_tokens`` เป็นเพดานรวมของ thinking + ข้อความตอบ
+โควตา 512–2500 ของโปรเจกต์นี้จึงถูก thinking กินหมดได้ = จ่ายเงินแล้วไม่ได้คำตอบ
+(ดู AUDIT_ROUND2_2026-08-07 และคอมเมนต์ที่ ``_THINKING_DISABLED``)
+
 ทุกการเรียกจะ log จำนวนโทเคนและค่าใช้จ่ายโดยประมาณ เพื่อให้เห็นต้นทุนจริง
+การเรียก Anthropic ที่ไม่ได้ผ่าน ``chat_text()`` (มีที่เดียว: slip OCR ซึ่งต้องใช้ vision)
+ต้องรายงานต้นทุนผ่าน ``log_anthropic_usage()`` ไม่งั้นเงินก้อนนั้นหายไปจาก log
 """
 
 from __future__ import annotations
@@ -39,8 +46,29 @@ load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 
 ANTHROPIC_MODEL = "claude-sonnet-5"
 
+# ปิด "thinking" ทุกการเรียก — **จำเป็น ไม่ใช่การลดคุณภาพ** (AUDIT_ROUND2_2026-08-07)
+#
+# บน Sonnet 5 การ **ไม่ส่ง** ฟิลด์ ``thinking`` = เปิด adaptive thinking (พฤติกรรมนี้
+# เปลี่ยนจาก Sonnet 4.6 ที่การไม่ส่ง = ไม่คิด) และ ``max_tokens`` บน Sonnet 5 เป็น
+# เพดาน**รวม**ของ thinking + ข้อความตอบ  ผู้เรียกในโปรเจกต์นี้ขอโควตาแค่ 512–2500
+# (ดีฟอลต์ 1500) ⇒ thinking กินโควตาจนไม่เหลือที่ให้ข้อความได้ ผลคือ
+# ``stop_reason="max_tokens"`` โดยไม่มีเนื้อหา แล้วโค้ดด้านล่างต้อง retry ที่ 2 เท่า
+# — **รอบแรกที่ถูกตัดยังถูกเรียกเก็บเงินอยู่** ทุกครั้งที่เกิดจึงจ่ายซ้ำซ้อน
+# และรอบสองก็ยังพลาดได้อีก (RuntimeError)
+#
+# เหตุผลเชิงระบบที่ปิดได้โดยไม่เสียอะไร: กฎ "AI explains, code computes" ของโปรเจกต์
+# แปลว่าตัวเลขทุกตัวคำนวณเสร็จใน Python แล้ว LLM มีหน้าที่เขียนคำอธิบายภาษาไทยอย่างเดียว
+# งานนี้ไม่ต้องใช้การให้เหตุผลหลายขั้น
+#
+# ข้อควรระวัง: ``budget_tokens`` **ถูกถอดออกจาก Sonnet 5 แล้ว** ส่งไปได้ HTTP 400
+# ห้ามใส่กลับมาไม่ว่ากรณีใด — ค่าคงที่นี้จึงมีแค่คีย์เดียว
+_THINKING_DISABLED: dict[str, str] = {"type": "disabled"}
+
 # ราคา (USD ต่อ 1 ล้านโทเคน) input/output — ใช้ประมาณค่าใช้จ่ายเพื่อแสดงให้ผู้ใช้เห็น
 # ต้องอัปเดตพร้อมกับ ANTHROPIC_MODEL เสมอ ไม่งั้น log จะรายงานต้นทุนผิด
+# ต้องครอบ **ทุกโมเดลที่โปรเจกต์เรียกจริง** ไม่ใช่แค่ตัวที่ chat_text() ใช้ —
+# slip OCR ใน ``backend/routers/transactions.py`` ใช้ ``claude-haiku-4-5`` (vision)
+# และรายงานค่าใช้จ่ายผ่าน ``log_anthropic_usage()`` ด้านล่าง
 # หมายเหตุ: Sonnet 5 มีราคาแนะนำตัว $2/$10 ถึง 31 ส.ค. 2026 — ตารางนี้ใช้ราคาเต็ม
 # โดยตั้งใจ เพื่อไม่ให้ตัวเลขที่โชว์ "ต่ำกว่าจริง" หลังหมดโปรโมชัน
 _MODEL_PRICES_USD_PER_MTOK = {
@@ -77,21 +105,38 @@ def _anthropic_available() -> bool:
     return bool(key) and key != "your_key_here"
 
 
-def _log_cost(input_tokens: int, output_tokens: int) -> None:
-    price_in, price_out = _MODEL_PRICES_USD_PER_MTOK.get(ANTHROPIC_MODEL, (0.0, 0.0))
+def _log_cost(
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    model: str | None = None,
+    label: str = "",
+) -> None:
+    """บันทึกโทเคน + ค่าใช้จ่ายโดยประมาณของการเรียก Anthropic หนึ่งครั้ง.
+
+    ``model`` ปล่อยว่างได้เมื่อเป็นการเรียกผ่าน ``chat_text()`` (= ``ANTHROPIC_MODEL``)
+    ผู้เรียกที่ใช้โมเดลอื่น (slip OCR ใช้ vision จึงต้องเป็น Haiku) ต้องส่งชื่อมาเอง
+    ไม่งั้น log จะรายงานราคาของโมเดลผิดตัว
+    """
+    model = model or ANTHROPIC_MODEL
+    suffix = f" [{label}]" if label else ""
+    price_in, price_out = _MODEL_PRICES_USD_PER_MTOK.get(model, (0.0, 0.0))
     if not price_in and not price_out:
         # ไม่รู้ราคาของโมเดลนี้ = ห้ามเดาเป็นเลข (C1) บอกตรง ๆ ว่าไม่ทราบต้นทุน
         logger.info(
-            "LLM %s: in=%d out=%d tokens (ไม่ทราบราคาโมเดลนี้ — เพิ่มใน _MODEL_PRICES_USD_PER_MTOK)",
-            ANTHROPIC_MODEL,
+            "LLM %s%s: in=%d out=%d tokens "
+            "(ไม่ทราบราคาโมเดลนี้ — เพิ่มใน _MODEL_PRICES_USD_PER_MTOK)",
+            model,
+            suffix,
             input_tokens,
             output_tokens,
         )
         return
     usd = input_tokens / 1_000_000 * price_in + output_tokens / 1_000_000 * price_out
     logger.info(
-        "LLM %s: in=%d out=%d tokens ≈ $%.4f (~%.2f บาท)",
-        ANTHROPIC_MODEL,
+        "LLM %s%s: in=%d out=%d tokens ≈ $%.4f (~%.2f บาท)",
+        model,
+        suffix,
         input_tokens,
         output_tokens,
         usd,
@@ -99,13 +144,51 @@ def _log_cost(input_tokens: int, output_tokens: int) -> None:
     )
 
 
+def log_anthropic_usage(model: str, usage: object, *, label: str = "") -> None:
+    """บันทึกต้นทุนของการเรียก Anthropic ที่ **ไม่ได้** ผ่าน ``chat_text()``.
+
+    ที่มา (AUDIT_ROUND2_2026-08-07): slip OCR ใน ``backend/routers/transactions.py``
+    เป็นข้อยกเว้นเดียวที่ CLAUDE.md อนุญาตให้สร้าง ``anthropic.Anthropic()`` เอง
+    (ต้องใช้ vision) แต่เพราะข้ามชั้นนี้ไป มันจึงข้าม ``_log_cost()`` ไปด้วย —
+    เงินที่จ่ายให้ OCR ทุกใบ **ไม่เคยโผล่ใน log ต้นทุนเลย** ผู้ใช้เห็นค่าใช้จ่ายต่ำกว่าจริง
+    ฟังก์ชันนี้คือทางเข้าเดียวที่ทำให้ทุกการเรียก Anthropic ของโปรเจกต์ถูกนับครบ
+
+    ``usage`` รับ object จาก SDK ตรง ๆ (หรือ ``None``) — **ไม่มีโทเคน ≠ ใช้ไป 0 โทเคน**
+    ถ้าผู้ให้บริการไม่ส่งตัวเลขมา จะเตือนระดับ WARNING ว่าไม่ทราบต้นทุนรอบนี้
+    ห้ามบันทึกเป็น 0 (C1: ความล้มเหลวห้ามกลายเป็นตัวเลข) และห้ามโยน exception —
+    การบันทึกต้นทุนต้องไม่ทำให้คำขอที่สำเร็จแล้วพังตาม
+    """
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    valid = [
+        value
+        for value in (input_tokens, output_tokens)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    ]
+    if len(valid) != 2:
+        logger.warning(
+            "LLM %s%s: เรียกสำเร็จแต่ไม่ได้รับจำนวนโทเคนกลับมา (usage=%r) — "
+            "ค่าใช้จ่ายรอบนี้จึงไม่ถูกบันทึก (ไม่ใช่ 0)",
+            model,
+            f" [{label}]" if label else "",
+            usage,
+        )
+        return
+    _log_cost(input_tokens, output_tokens, model=model, label=label)
+
+
 def _chat_anthropic(system: str, user: str, max_tokens: int) -> str:
-    """เรียก Claude — **ห้ามส่ง temperature/top_p/top_k**.
+    """เรียก Claude — **ห้ามส่ง temperature/top_p/top_k** และต้องปิด thinking เสมอ.
 
     Sonnet 5 (และ Opus 4.7 ขึ้นไป) ตอบ 400 ``temperature is deprecated for this model``
     ถ้าส่งค่าที่ไม่ใช่ค่าเริ่มต้น โมเดลรุ่นใหม่ให้คุมพฤติกรรมด้วย prompt แทน
     ``chat_text()`` ยังรับพารามิเตอร์ ``temperature`` ไว้เพื่อไม่ให้ผู้เรียกทั้ง 7 จุดพัง
     แต่จะไม่ถูกส่งต่อไปที่ API
+
+    ``thinking`` ส่งผ่าน ``extra_body`` เพราะ SDK ที่ปักหมุดไว้ (``anthropic==0.42.0``)
+    ยังไม่มีพารามิเตอร์นี้แบบ typed แต่ส่งฟิลด์ดิบเข้า request body ได้
+    (ห้าม unpin เพื่อเรื่องนี้ — requirements.txt ปักทั้ง transitive closure ไว้)
+    เหตุผลว่าทำไมต้องปิด อยู่ที่ ``_THINKING_DISABLED`` ด้านบน
     """
     import anthropic
 
@@ -117,9 +200,15 @@ def _chat_anthropic(system: str, user: str, max_tokens: int) -> str:
             max_tokens=budget,
             system=system,
             messages=[{"role": "user", "content": user}],
+            extra_body={"thinking": dict(_THINKING_DISABLED)},
         )
-        usage = response.usage
-        _log_cost(usage.input_tokens, usage.output_tokens)
+        # เงินออกไปแล้ว — การ "บันทึกต้นทุน" ต้องไม่ทำให้คำขอที่สำเร็จพังตาม
+        # เดิมอ่าน ``response.usage.input_tokens`` ตรง ๆ: ถ้าผู้ให้บริการไม่ส่ง usage
+        # กลับมา จะได้ AttributeError แล้วถูกห่อเป็น RuntimeError ⇒ จ่ายเงินแล้ว
+        # ผู้ใช้ได้ error แทนคำอธิบาย ทั้งที่โมเดลตอบมาครบ  ``log_anthropic_usage()``
+        # คือด่านเดียวกับที่เส้นทาง slip OCR ใช้อยู่แล้ว (ไม่รู้จำนวนโทเคน = WARNING
+        # ว่าไม่ทราบต้นทุน ห้ามบันทึกเป็น 0 และห้ามโยน exception)
+        log_anthropic_usage(ANTHROPIC_MODEL, getattr(response, "usage", None))
 
         text = "".join(
             block.text for block in response.content if getattr(block, "type", "") == "text"
@@ -129,13 +218,20 @@ def _chat_anthropic(system: str, user: str, max_tokens: int) -> str:
         if attempt == 0:
             budget = max_tokens * 2
             continue
-        # โควตาหมดรอบสองแล้วยังไม่มีเนื้อหาเลย (มักเกิดเมื่อ thinking กินโควตาไปหมด)
-        # = จ่ายเงินไป 2 รอบได้ศูนย์ ห้ามคืนหมายเหตุเปล่า ๆ เป็นผลสำเร็จ
+        # โควตาหมดรอบสองแล้วยังไม่มีเนื้อหาเลย = จ่ายเงินไป 2 รอบได้ศูนย์
+        # ห้ามคืนหมายเหตุเปล่า ๆ เป็นผลสำเร็จ
         # (`"" + _TRUNCATION_NOTE` เป็น truthy ทำให้ด่าน `if not text` ใน chat_text ยิงไม่ได้)
+        #
+        # เดิมคอมเมนต์ตรงนี้เขียนว่า "มักเกิดเมื่อ thinking กินโควตาไปหมด" ซึ่งเป็นสาเหตุจริง
+        # ในตอนนั้น — แต่แก้ที่ปลายทางด้วยการ retry (จ่ายซ้ำ) แทนที่จะกันไม่ให้เกิด
+        # ตอนนี้ thinking ถูกปิดที่ต้นทางแล้ว (``_THINKING_DISABLED``) เส้นทางนี้จึงเหลือ
+        # ความหมายเดียว: prompt + คำอธิบายยาวเกินโควตาที่ตั้งไว้จริง ๆ  ยัง retry ต่อไป
+        # เพราะเป็นสาเหตุที่แก้ได้ด้วยการเพิ่มโควตา ไม่ใช่ความล้มเหลวถาวร
         if not text:
             raise RuntimeError(
                 f"โมเดลใช้โควตา {budget} tokens หมดโดยไม่มีเนื้อหาตอบกลับ "
-                "(stop_reason=max_tokens) — เพิ่ม max_tokens หรือย่อ prompt"
+                "(stop_reason=max_tokens) — thinking ถูกปิดไว้แล้ว จึงแปลว่า prompt "
+                "หรือคำตอบยาวเกินโควตาจริง ๆ ให้เพิ่ม max_tokens หรือย่อ prompt"
             )
         return text + _TRUNCATION_NOTE
     raise RuntimeError("เรียก LLM ไม่สำเร็จ: ลูป retry จบโดยไม่ได้คำตอบ (ไม่ควรเกิดขึ้น)")
