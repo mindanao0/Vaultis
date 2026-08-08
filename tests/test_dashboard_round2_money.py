@@ -475,6 +475,7 @@ _SNAPSHOT_COLUMNS = [
     "P&L (USD)",
     "P&L (THB)",
     "Return (%)",
+    "Return USD (%)",
     "Price OK",
 ]
 
@@ -501,7 +502,11 @@ def _snapshot() -> pd.DataFrame:
                 "Fee (THB)": 105.0,
                 "P&L (USD)": 350.0,
                 "P&L (THB)": 7550.0,
-                "Return (%)": 17.5,
+                # ``Return (%)`` ฐานบาท (7550/70000) · ``Return USD (%)`` ฐานดอลลาร์
+                # (350/2000) — สองฐานต่างกันเพราะ FX วันซื้อ 35.00 ต่างจากวันนี้ 33.00
+                # (FIX_PLAN ข้อ 3.3)
+                "Return (%)": 7550.0 / 70000.0 * 100.0,
+                "Return USD (%)": 17.5,
                 "Price OK": True,
             },
             {
@@ -518,6 +523,7 @@ def _snapshot() -> pd.DataFrame:
                 "P&L (USD)": nan,
                 "P&L (THB)": nan,
                 "Return (%)": nan,
+                "Return USD (%)": nan,
                 "Price OK": False,
             },
         ],

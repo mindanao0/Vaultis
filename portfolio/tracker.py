@@ -1097,6 +1097,7 @@ def get_portfolio_summary() -> pd.DataFrame:
                     "P&L (USD)",
                     "P&L (THB)",
                     "Return (%)",
+                    "Return USD (%)",
                     "Price OK",
                 ]
             ),
@@ -1133,7 +1134,19 @@ def get_portfolio_summary() -> pd.DataFrame:
     grouped["current_value_thb"] = grouped["current_value_usd"] * fx_rate
     grouped["pnl_usd"] = grouped["current_value_usd"] - grouped["invested_usd"]
     grouped["pnl_thb"] = grouped["current_value_thb"] - grouped["invested_thb"]
-    grouped["return_pct"] = grouped["pnl_usd"] / grouped["invested_usd"] * 100.0
+    # ``Return (%)`` = **ฐานเงินบาท** — สกุลที่ผู้ใช้จ่ายจริงและวัดผลจริง (FIX_PLAN ข้อ 3.3)
+    #
+    # เดิมเป็น ``pnl_usd / invested_usd`` ซึ่งเป็นฐานดอลลาร์ แล้วถูกวางไว้ในตารางเดียวกับ
+    # ``P&L (THB)`` และไม่ตรงกับ ``get_total_summary()["total_return_pct"]`` ที่ใช้ฐานบาท
+    # ⇒ หน้าจอเดียวโชว์ได้ว่า "ขาดทุน 1,072 บาท" คู่กับ "+14.44%" และ %รายกองบวกกันไม่เท่ากับ
+    # %รวม  เพราะสองฐานต่างกันด้วยผลของอัตราแลกเปลี่ยน: ตัวหารเป็นอัตรา**วันซื้อ** ส่วน
+    # ตัวตั้งเป็นอัตรา**วันนี้** — ช่วงบาทอ่อน/แข็งพอ ตัวเลขพลิกเครื่องหมายกันได้เลย
+    # ไหลออกสี่ทางพร้อมกัน: ตาราง holdings, ``/api/portfolio/*``, AI advisor (top_holdings)
+    # และ PDF รายเดือน — ทั้งสี่ที่วางมันคู่กับตัวเลขฐานบาท
+    grouped["return_pct"] = grouped["pnl_thb"] / grouped["invested_thb"] * 100.0
+    # ฐานดอลลาร์ยังมีประโยชน์ (แยกผลของหุ้นออกจากผลของค่าเงิน) แต่ต้องมี **ป้ายของตัวเอง**
+    # ห้ามใช้ชื่อกลาง ๆ ว่า "Return" ปนกับตัวเลขฐานบาทอีก
+    grouped["return_pct_usd"] = grouped["pnl_usd"] / grouped["invested_usd"] * 100.0
 
     return grouped.rename(
         columns={
@@ -1150,6 +1163,7 @@ def get_portfolio_summary() -> pd.DataFrame:
             "pnl_usd": "P&L (USD)",
             "pnl_thb": "P&L (THB)",
             "return_pct": "Return (%)",
+            "return_pct_usd": "Return USD (%)",
             "price_ok": "Price OK",
         }
     )[
@@ -1167,6 +1181,7 @@ def get_portfolio_summary() -> pd.DataFrame:
             "P&L (USD)",
             "P&L (THB)",
             "Return (%)",
+            "Return USD (%)",
             "Price OK",
         ]
     ].pipe(_with_reports, reports).pipe(_with_fx_source, fx_quote)

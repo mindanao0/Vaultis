@@ -393,13 +393,45 @@ class TestPerTickerPnl:
         assert rows.loc["GLDM", "P&L (THB)"] == pytest.approx(-1_500.0)
 
     def test_pnl_usd_and_return_pct_per_ticker(self, holdings):
+        """``Return (%)`` = **ฐานบาท** · ``Return USD (%)`` = ฐานดอลลาร์ (FIX_PLAN ข้อ 3.3).
+
+        เดิมมีช่องเดียวชื่อ ``Return (%)`` ที่เป็นฐานดอลลาร์ วางไว้ในตารางเดียวกับ
+        ``P&L (THB)`` และไม่ตรงกับ ``total_return_pct`` (ฐานบาท) ของสรุปรวม —
+        ฉากนี้แสดงส่วนต่างชัด ๆ เพราะ FX วันซื้อ (34) ต่างจากวันนี้ (35):
+        VOO ฐานบาท +13.24% แต่ฐานดอลลาร์ +10.00% · GLDM −7.35% กับ −10.00%
+        """
         rows = holdings.get_portfolio_summary().set_index("Ticker")
 
         assert rows.loc["VOO", "P&L (USD)"] == pytest.approx(100.0)
         assert rows.loc["GLDM", "P&L (USD)"] == pytest.approx(-60.0)
-        # % ผลตอบแทนคิดจากฝั่ง USD — อัตราแลกเปลี่ยนที่ขยับต้องไม่ทำให้ % เพี้ยน
-        assert rows.loc["VOO", "Return (%)"] == pytest.approx(10.0)
-        assert rows.loc["GLDM", "Return (%)"] == pytest.approx(-10.0)
+
+        # ฐานบาท = P&L (THB) / Invested (THB) — สกุลที่ผู้ใช้จ่ายจริง รวมผลอัตราแลกเปลี่ยน
+        assert rows.loc["VOO", "Return (%)"] == pytest.approx(4_500.0 / 34_000.0 * 100.0)
+        assert rows.loc["GLDM", "Return (%)"] == pytest.approx(-1_500.0 / 20_400.0 * 100.0)
+        # ฐานดอลลาร์ยังอยู่ แต่มีป้ายของตัวเอง — แยกผลของหุ้นออกจากผลของค่าเงิน
+        assert rows.loc["VOO", "Return USD (%)"] == pytest.approx(10.0)
+        assert rows.loc["GLDM", "Return USD (%)"] == pytest.approx(-10.0)
+        # สองฐานต้องไม่เท่ากันในฉากนี้ ไม่งั้นเทสต์จะผ่านได้แม้โค้ดกลับไปใช้ฐานเดียว
+        for ticker in ("VOO", "GLDM"):
+            assert rows.loc[ticker, "Return (%)"] != pytest.approx(
+                rows.loc[ticker, "Return USD (%)"]
+            )
+
+    def test_per_ticker_return_pct_reconciles_with_total(self, holdings):
+        """%รายกองต้องอยู่ฐานเดียวกับ %รวม — ไม่งั้นตัวเลขบนจอเดียวขัดกันเอง.
+
+        ค่าเฉลี่ยถ่วงน้ำหนักด้วยเงินลงทุน (บาท) ของ %รายกอง ต้องเท่ากับ
+        ``total_return_pct`` เป๊ะ — ฐานดอลลาร์ทำอย่างนี้ไม่ได้เพราะตัวหารคนละสกุล
+        """
+        rows = holdings.get_portfolio_summary()
+        summary = holdings.get_total_summary(rows)
+
+        priced = rows[rows["Price OK"]]
+        weighted = float(
+            (priced["Return (%)"] * priced["Invested (THB)"]).sum()
+            / priced["Invested (THB)"].sum()
+        )
+        assert weighted == pytest.approx(float(summary["total_return_pct"]))
 
     def test_sum_of_priced_rows_equals_total_pnl(self, holdings):
         """invariant: ผลรวม P&L ของแถวที่มีราคา ต้องเท่ากับ ``total_pnl_thb`` เป๊ะ."""

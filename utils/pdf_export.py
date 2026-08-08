@@ -602,7 +602,11 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
         elements.append(body("No portfolio transactions found."))
     else:
         holdings_cols = ["Ticker", "Shares", "Avg Cost (USD)", "Current Price (USD)", "P&L (THB)", "Return (%)"]
-        holdings_table_data: list[list[object]] = [holdings_cols]
+        # หัวตารางต้องบอกสกุลของ % ให้ตรงกับช่องข้าง ๆ — ``Return (%)`` ในกระดาษนี้เป็น
+        # **ฐานเงินบาท** ตัวเดียวกับ ``P&L (THB)`` และกับ %รวมด้านบน (FIX_PLAN ข้อ 3.3)
+        # เดิมคอลัมน์นี้เป็นฐานดอลลาร์ วางคู่กับ P&L บาทโดยไม่มีอะไรบอก
+        holdings_header = holdings_cols[:-1] + ["Return (THB %)"]
+        holdings_table_data: list[list[object]] = [holdings_header]
         for _, row in holdings_df[holdings_cols].iterrows():
             holdings_table_data.append(
                 [

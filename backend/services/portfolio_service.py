@@ -121,7 +121,10 @@ def _holdings_payload(df: pd.DataFrame) -> dict[str, Any]:
                 "current_value_thb": _clean(row["Current Value (THB)"]),
                 "pnl_usd": _clean(row["P&L (USD)"]),
                 "pnl_thb": _clean(row["P&L (THB)"]),
+                # ฐาน **เงินบาท** ตัวเดียวกับ ``total_return_pct`` ของสรุปรวม (FIX_PLAN 3.3)
                 "return_pct": _clean(row["Return (%)"]),
+                # ฐานดอลลาร์แยกช่องพร้อมป้ายของตัวเอง — แยกผลของหุ้นออกจากผลของค่าเงิน
+                "return_pct_usd": _clean(row["Return USD (%)"]),
                 "fee": _clean(row["Fee (THB)"]),
                 "price_ok": bool(row["Price OK"]),
             }

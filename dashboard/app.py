@@ -4101,7 +4101,12 @@ def render_portfolio_page() -> None:
                 "Current Price (USD)",
                 "P&L (USD)",
                 "P&L (THB)",
+                # สองช่องนี้คนละฐานกันโดยตั้งใจ และป้ายต้องบอกให้ชัด (FIX_PLAN ข้อ 3.3) —
+                # ``Return (%)`` ฐานบาท (ตัวเดียวกับ %รวมด้านบน รวมผลอัตราแลกเปลี่ยน)
+                # ``Return USD (%)`` ฐานดอลลาร์ (ผลของหุ้นล้วน)  เดิมมีช่องเดียวชื่อ
+                # ``Return (%)`` ที่เป็นฐานดอลลาร์ วางติดกับ ``P&L (THB)`` ⇒ อ่านคู่กันไม่ลง
                 "Return (%)",
+                "Return USD (%)",
                 "Fee (THB)",
                 "Price OK",
             ]
@@ -4117,6 +4122,7 @@ def render_portfolio_page() -> None:
                     "P&L (USD)": "${:,.2f}",
                     "P&L (THB)": "{:,.2f}",
                     "Return (%)": "{:,.2f}%",
+                    "Return USD (%)": "{:,.2f}%",
                     "Fee (THB)": "{:,.2f}",
                 },
                 na_rep="N/A",
