@@ -95,7 +95,15 @@ def get_holdings() -> dict[str, Any]:
     — ``price_ok=False`` แปลว่าราคาปัจจุบันดึงไม่ได้ (ค่าเป็น None)
     ส่วน ``skipped_rows`` คือธุรกรรมที่ข้อมูลไม่ครบจนไม่ได้เข้าตัวเลขข้างบนเลย
     """
-    df = tracker.get_portfolio_summary()
+    return _holdings_payload(tracker.get_portfolio_summary())
+
+
+def _holdings_payload(df: pd.DataFrame) -> dict[str, Any]:
+    """แปลง snapshot ของ ``tracker.get_portfolio_summary()`` เป็น dict สำหรับ JSON.
+
+    แยกออกมาเพื่อให้ :func:`get_portfolio_summary` ใช้ **snapshot ราคาชุดเดียวกัน**
+    กับที่ส่งให้ ``tracker.get_total_summary()`` ได้ (AUDIT_ROUND2 G2)
+    """
     report = _skipped_report(df)
     if df.empty:
         return {"holdings": [], **report}
@@ -156,9 +164,36 @@ def get_portfolio_summary() -> dict[str, Any]:
     ``fx_is_live=False`` แปลว่าตัวเลขฝั่ง THB ทั้งหมดคิดจาก **ค่าสำรอง** ใน
     ``config.json`` เพราะดึงอัตราสดไม่ได้ (AUDIT_2026-08-06 B9) — ผู้เรียกต้องแสดง
     คำเตือนเหมือน ``missing_prices`` ห้ามปล่อยให้ตัวเลขดูเหมือนคิดจากอัตราจริง
+
+    **ทั้ง payload มาจากการดึงราคา+FX ครั้งเดียว** (AUDIT_ROUND2 G2) — เดิมฝั่ง USD
+    มาจาก ``get_holdings()`` (ดึงรอบที่ 1) ส่วนฝั่ง THB + ``missing_prices`` +
+    ``fx_rate_thb`` มาจาก ``tracker.get_total_summary()`` ที่ดึงรอบที่ 2 เอง
+    ถ้า yfinance ติด rate limit คั่นกลาง จะได้ ``current_value_usd`` ที่ดูสมบูรณ์
+    คู่กับ ``missing_prices`` ที่บอกว่ากองนั้นไม่มีราคา (และ ``current_value_thb=None``)
+    บน payload เดียวกัน ⇒ ต้องเรียก ``tracker.get_portfolio_summary()`` ครั้งเดียว
+    แล้วส่ง DataFrame ตัวนั้นต่อให้ ``get_total_summary()`` เสมอ
+    (ผู้เรียกที่ต้องใช้ทั้งยอดรวมและรายสินทรัพย์ในคำขอเดียว ให้ใช้
+    :func:`get_summary_and_holdings` ไม่ใช่เรียกสองฟังก์ชันต่อกัน)
     """
-    holdings = get_holdings()["holdings"]
-    totals = tracker.get_total_summary()
+    return get_summary_and_holdings()["summary"]
+
+
+def get_summary_and_holdings() -> dict[str, Any]:
+    """ยอดรวม + รายสินทรัพย์ จาก **การดึงราคา/FX ครั้งเดียว** (AUDIT_ROUND2 G2).
+
+    คืน ``{"summary": {...}, "holdings": [...]}`` โดย ``summary`` มีรูปร่างเดียวกับ
+    :func:`get_portfolio_summary` และ ``holdings`` เหมือนของ :func:`get_holdings`
+    ผู้เรียกที่ต้องใช้ทั้งสองอย่าง (เช่น ``report_service``) ต้องเรียกฟังก์ชันนี้
+    ไม่งั้นตัวเลขยอดรวมกับรายตัวจะมาจากคนละ snapshot และขัดกันเองได้
+    """
+    snapshot = tracker.get_portfolio_summary()
+    holdings = _holdings_payload(snapshot)["holdings"]
+    totals = tracker.get_total_summary(snapshot)
+    return {"summary": _summary_payload(holdings, totals), "holdings": holdings}
+
+
+def _summary_payload(holdings: list[dict[str, Any]], totals: dict[str, Any]) -> dict[str, Any]:
+    """ประกอบ payload ของ ``/api/portfolio`` จาก snapshot ชุดเดียว — ไม่ดึงข้อมูลเอง."""
     priced = [h for h in holdings if h["price_ok"]]
     invested_usd_all = _sum_or_none([h["invested_usd"] for h in holdings]) if holdings else 0.0
     invested_usd_priced = _sum_or_none([h["invested_usd"] for h in priced]) if priced else 0.0

@@ -10,6 +10,16 @@
 * **M-PDF-2** `get_monthly_advice` โยน → PDF พิมพ์ "model suggests holding cash"
   ทั้งที่โมเดลไม่เคยประเมินอะไรเลย
 
+AUDIT_ROUND2_2026-08-07 เพิ่มอีกสามข้อในไฟล์เดียวกัน:
+
+* **คำเตือนสมุดบัญชี 2 ใน 3 ชุดหายไป** — PDF อ่านแค่ ``skipped_rows``
+  ส่วน ``derived_fx_rows`` (อัตราถูกคำนวณย้อน) กับ ``inconsistent_rows``
+  (ยอดเงินขัดกับ จำนวนหุ้น × ราคา × อัตรา) ไม่เคยถูกพิมพ์ ⇒ เอกสารที่เก็บไว้อ่าน
+  ย้อนหลังเสนอยอดที่มีแถวน่าสงสัยปนอยู่ว่าเป็นตัวเลขสะอาด
+* **ตัวเลขบาทไม่มีป้ายที่มาของอัตรา** — ``fx_is_live=False`` (ค่าสำรองจาก config)
+  ให้ PDF ที่เหมือนกันทุกตัวอักษรกับอัตราสด
+* **อีโมจิกลายเป็นกล่องสี่เหลี่ยม (tofu)** — Garuda/Helvetica ไม่มีกลิฟอีโมจิ
+
 เทสต์ทั้งไฟล์ไม่แตะเน็ต ไม่แตะฐานข้อมูล ไม่เรียก LLM — ทุกทางออกถูก stub ที่ระดับโมดูล
 """
 
@@ -83,21 +93,77 @@ def _advice() -> dict:
     }
 
 
-def _render(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    total_summary: dict | None = None,
-    holdings: pd.DataFrame | None = None,
-    prices=None,
-    advice=None,
-    tickers: list[str] | None = None,
-    include_ai: bool = False,
-    month: str = "2026-08",
-) -> tuple[list[list[list[str]]], list[str], bytes]:
-    """สร้าง PDF พร้อมดักตาราง/ย่อหน้าที่ถูกวาดลงไปจริง.
+_MISSING = object()
 
-    ``prices``/``advice`` ที่เป็น callable จะถูกใช้เป็นฟังก์ชันแทน (ให้โยนได้)
+
+class _HoldingsStub:
+    """แทน ``tracker.get_portfolio_summary`` — คืน **วัตถุเดิมทุกครั้ง** และนับการเรียก.
+
+    คืนวัตถุเดิมเพื่อให้เทียบด้วย ``is`` ได้ว่า snapshot ที่ตาราง Holdings ใช้
+    เป็นตัวเดียวกับที่ถูกส่งต่อไปให้ ``get_total_summary()`` (AUDIT_ROUND2_2026-08-07)
     """
+
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self.frame = frame
+        self.calls = 0
+
+    def __call__(self) -> pd.DataFrame:
+        self.calls += 1
+        return self.frame
+
+
+class _TotalSummaryStub:
+    """แทน ``tracker.get_total_summary`` — **บังคับ** ให้ผู้เรียกส่ง snapshot เข้ามา.
+
+    สตับตัวเดิมเป็น ``lambda:`` ที่ไม่รับอาร์กิวเมนต์เลย จึงตรึง**บั๊ก**ไว้แทนที่จะ
+    ตรึงกฎ: ถ้าใครแก้ ``pdf_export`` ให้ส่ง snapshot ต่อ (ซึ่งเป็นสิ่งที่ถูก) เทสต์จะ
+    ระเบิดเป็น ``TypeError`` และถ้าใครแก้กลับไปดึงราคาเองรอบสอง เทสต์กลับผ่านหมด
+    (AUDIT_ROUND2_2026-08-07) — ตอนนี้กลับด้าน: ไม่ส่ง snapshot = ล้มพร้อมเหตุผลไทย
+    """
+
+    def __init__(self, payload: dict, expected: pd.DataFrame | None = None) -> None:
+        self.payload = payload
+        self.expected = expected
+        self.calls = 0
+        self.received: list[object] = []
+
+    def __call__(self, holdings=_MISSING) -> dict:
+        self.calls += 1
+        if holdings is _MISSING:
+            raise AssertionError(
+                "get_total_summary() ถูกเรียกโดยไม่ส่ง snapshot ที่คำนวณไว้แล้ว — "
+                "ของจริงจะไปดึงราคา+FX เองอีกรอบ ทำให้ตาราง Holdings กับยอดรวมบน "
+                "หน้าเดียวกันมาจากคนละ snapshot (AUDIT_ROUND2_2026-08-07)"
+            )
+        self.received.append(holdings)
+        if self.expected is not None:
+            assert holdings is self.expected, (
+                "ยอดรวมถูกคิดจาก DataFrame คนละตัวกับที่พิมพ์ในตาราง Holdings"
+            )
+        return self.payload
+
+
+def _default_total_summary() -> dict:
+    """ยอดรวมดีฟอลต์ของ ``_render``: ดึงราคาไม่ได้เลยสักกอง.
+
+    ฐาน priced = 0 แต่เงินที่จ่ายไปจริง = 200,000
+    (ตรงกับที่ ``tracker.get_total_summary`` คืนจริงหลังแก้ H9)
+    """
+    nan = float("nan")
+    return {
+        "invested_thb_all": 200000.0,
+        "invested_thb_priced": 0.0,
+        "total_invested_thb": 200000.0,
+        "current_value_thb": nan,
+        "total_pnl_thb": nan,
+        "total_return_pct": nan,
+        "missing_prices": ["GLDM"],
+        "skipped_rows": [],
+    }
+
+
+def _record_drawn(monkeypatch: pytest.MonkeyPatch) -> tuple[list[list[list[str]]], list[str]]:
+    """ดักตาราง/ย่อหน้าที่ถูกวาดลง PDF จริง — คืน ``(tables, paras)`` ที่ถูกเติมระหว่าง build."""
     tables: list[list[list[str]]] = []
     paras: list[str] = []
     real_build = pe._build_table
@@ -111,32 +177,41 @@ def _render(
         paras.append(str(text))
         return real_para(text, *args, **kwargs)
 
-    nan = float("nan")
     monkeypatch.setattr(pe, "_build_table", rec_build)
     monkeypatch.setattr(pe, "Paragraph", rec_para)
-    monkeypatch.setattr(
-        pe,
-        "get_portfolio_summary",
-        lambda: _holdings_df() if holdings is None else holdings,
+    return tables, paras
+
+
+def _render(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    total_summary: dict | None = None,
+    holdings: pd.DataFrame | None = None,
+    prices=None,
+    advice=None,
+    tickers: list[str] | None = None,
+    include_ai: bool = False,
+    month: str = "2026-08",
+    recorder: dict | None = None,
+) -> tuple[list[list[list[str]]], list[str], bytes]:
+    """สร้าง PDF พร้อมดักตาราง/ย่อหน้าที่ถูกวาดลงไปจริง.
+
+    ``prices``/``advice`` ที่เป็น callable จะถูกใช้เป็นฟังก์ชันแทน (ให้โยนได้)
+    ``recorder`` (dict ที่ผู้เรียกส่งมา) จะถูกเติมสตับที่นับการเรียก เพื่อให้เทสต์
+    ตรวจได้ว่ารายงานหนึ่งฉบับดึง snapshot พอร์ตกี่ครั้ง (AUDIT_ROUND2_2026-08-07)
+    """
+    tables, paras = _record_drawn(monkeypatch)
+
+    holdings_stub = _HoldingsStub(_holdings_df() if holdings is None else holdings)
+    totals_stub = _TotalSummaryStub(
+        total_summary if total_summary is not None else _default_total_summary(),
+        expected=holdings_stub.frame,
     )
-    monkeypatch.setattr(
-        pe,
-        "get_total_summary",
-        lambda: total_summary
-        if total_summary is not None
-        else {
-            # ดึงราคาไม่ได้เลยสักกอง → ฐาน priced = 0 แต่เงินที่จ่ายไปจริง = 200,000
-            # (ตรงกับที่ tracker.get_total_summary คืนจริงหลังแก้ H9)
-            "invested_thb_all": 200000.0,
-            "invested_thb_priced": 0.0,
-            "total_invested_thb": 200000.0,
-            "current_value_thb": nan,
-            "total_pnl_thb": nan,
-            "total_return_pct": nan,
-            "missing_prices": ["GLDM"],
-            "skipped_rows": [],
-        },
-    )
+    if recorder is not None:
+        recorder["holdings"] = holdings_stub
+        recorder["totals"] = totals_stub
+    monkeypatch.setattr(pe, "get_portfolio_summary", holdings_stub)
+    monkeypatch.setattr(pe, "get_total_summary", totals_stub)
     monkeypatch.setattr(pe, "get_tickers", lambda: tickers or ["VOO", "XLV"])
 
     price_source = prices if prices is not None else _prices_df()
@@ -680,3 +755,407 @@ def test_ข้อความไทยจากความล้มเหล�
     _, paras, pdf = _render(monkeypatch, prices=boom)
     assert "ZapfDingbats" not in _embedded_fonts(pdf)
     assert not [p for p in paras if any(ord(c) in THAI_RANGE for c in p)]
+
+
+# --------------------------------------------------------------------------- #
+# AUDIT_ROUND2_2026-08-07 — คำเตือนสมุดบัญชีต้องมาครบทั้งสามชุด
+# --------------------------------------------------------------------------- #
+def _ledger_totals(**overrides) -> dict:
+    """ยอดรวมที่มีคำเตือนสมุดบัญชีครบทุกคีย์ตามที่ ``tracker.get_total_summary()`` คืน."""
+    totals = dict(
+        _totals_two_bases(),
+        missing_prices=[],
+        invested_thb_all=120000.0,
+        total_invested_thb=120000.0,
+        skipped_rows=[],
+        skipped_reason="",
+        derived_fx_rows=[],
+        derived_fx_reason="",
+        inconsistent_rows=[],
+        inconsistent_reason="",
+        fx_rate_thb=34.0,
+        fx_is_live=True,
+    )
+    totals.update(overrides)
+    return totals
+
+
+_DERIVED_ROW = {
+    "tx_id": "d1",
+    "date": "2025-01-05",
+    "ticker": "SCHD",
+    "tx_type": "buy",
+    "recorded_fx": None,
+    "used_fx": 33.9,
+    "fee_assumed_zero": True,
+    "reason": "ไม่ได้บันทึกอัตราแลกเปลี่ยน — ใช้อัตราที่คำนวณย้อนจากยอดเงินบาท 33.9000",
+}
+_INCONSISTENT_ROW = {
+    "tx_id": "i1",
+    "date": "2024-11-11",
+    "ticker": "VOO",
+    "tx_type": "buy",
+    "amount_thb": 34000.0,
+    "implied_amount_thb": 32000.0,
+    "diff_pct": 5.7,
+    "reason": "ยอดเงินที่บันทึกไว้ 34,000.00 บาท ไม่ตรงกับ จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน",
+}
+
+
+def test_แถวที่อัตราถูกคำนวณย้อนต้องขึ้นคำเตือนบนกระดาษ(monkeypatch: pytest.MonkeyPatch):
+    """``derived_fx_rows`` = แถวที่ **ยังถูกนับอยู่** ในยอดรวม แต่อัตราไม่ใช่ค่าที่บันทึกไว้.
+
+    เดิม PDF อ่านแค่ ``skipped_rows`` ชุดนี้จึงหายเงียบ ผู้ใช้ที่อ่านรายงานย้อนหลัง
+    ไม่มีทางรู้ว่ายอดบาทที่เห็นคำนวณจากอัตราที่ระบบหาเอง
+    """
+    totals = _ledger_totals(
+        derived_fx_rows=[_DERIVED_ROW],
+        derived_fx_reason="อัตราแลกเปลี่ยน 1 แถวถูกคำนวณย้อนจากยอดเงินบาท",
+    )
+    _, paras, pdf = _render(monkeypatch, total_summary=totals)
+
+    warned = [p for p in paras if "back-computed" in p.lower()]
+    assert warned, f"แถวที่อัตราถูกคำนวณย้อนหายจากรายงานทั้งฉบับ — ย่อหน้า: {paras}"
+    assert "SCHD" in warned[0] and "2025-01-05" in warned[0], (
+        f"ไม่ได้บอกว่าต้องไปแก้แถวไหนในสมุด: {warned[0]}"
+    )
+    assert "included in the totals" in warned[0], (
+        f"ต้องบอกว่าแถวนี้ยังถูกนับอยู่ (คนละความหมายกับ skipped): {warned[0]}"
+    )
+    assert "SCHD" in _squashed(pdf), "คำเตือนไม่ได้ถูกวาดลงกระดาษจริง"
+
+
+def test_แถวที่ยอดเงินขัดกันเองต้องขึ้นคำเตือนบนกระดาษ(monkeypatch: pytest.MonkeyPatch):
+    """``inconsistent_rows`` = ยอดบาทขัดกับ จำนวนหุ้น × ราคา × อัตรา ในแถวเดียวกัน."""
+    totals = _ledger_totals(
+        inconsistent_rows=[_INCONSISTENT_ROW],
+        inconsistent_reason="ยอดเงินบาทของ 1 แถวไม่ตรงกับ จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน",
+    )
+    _, paras, pdf = _render(monkeypatch, total_summary=totals)
+
+    warned = [p for p in paras if "contradicts" in p.lower()]
+    assert warned, f"แถวที่ยอดเงินขัดกันเองหายจากรายงานทั้งฉบับ — ย่อหน้า: {paras}"
+    assert "VOO" in warned[0] and "2024-11-11" in warned[0], (
+        f"ไม่ได้บอกว่าต้องไปแก้แถวไหนในสมุด: {warned[0]}"
+    )
+    assert "still counted" in warned[0], (
+        f"ต้องบอกว่าแถวนี้ยังถูกนับอยู่ในยอดรวม: {warned[0]}"
+    )
+    assert "2024-11-11" in _squashed(pdf), "คำเตือนไม่ได้ถูกวาดลงกระดาษจริง"
+
+
+def test_คำเตือนสมุดบัญชีสามชุดต้องไม่ยุบรวมกัน(monkeypatch: pytest.MonkeyPatch):
+    """สามชุดคือเตือนคนละความหมาย (tracker.py เขียน invariant นี้ไว้เอง)."""
+    totals = _ledger_totals(
+        skipped_rows=[{"ticker": "QQQM", "date": "2026-02-02"}],
+        skipped_reason="ข้ามธุรกรรม 1 แถวเพราะข้อมูลไม่ครบ",
+        derived_fx_rows=[_DERIVED_ROW],
+        derived_fx_reason="อัตราแลกเปลี่ยน 1 แถวถูกคำนวณย้อนจากยอดเงินบาท",
+        inconsistent_rows=[_INCONSISTENT_ROW],
+        inconsistent_reason="ยอดเงินบาทของ 1 แถวไม่ตรงกับ จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน",
+    )
+    _, paras, _ = _render(monkeypatch, total_summary=totals)
+
+    kinds = {
+        "skipped": [p for p in paras if "skipped for incomplete data" in p],
+        "derived": [p for p in paras if "back-computed" in p.lower()],
+        "inconsistent": [p for p in paras if "contradicts" in p.lower()],
+    }
+    missing = [name for name, found in kinds.items() if not found]
+    assert not missing, f"คำเตือนชุด {missing} หายจากรายงาน — ย่อหน้า: {paras}"
+    texts = [found[0] for found in kinds.values()]
+    assert len(set(texts)) == 3, f"สามชุดถูกยุบเป็นข้อความเดียวกัน: {texts}"
+
+
+def test_สมุดสะอาดต้องไม่มีคำเตือนสมุดบัญชีเลย(monkeypatch: pytest.MonkeyPatch):
+    """กันแก้เกิน — ไม่มีแถวน่าสงสัยแล้วต้องไม่มีคำเตือนมาปนให้สับสน."""
+    _, paras, _ = _render(monkeypatch, total_summary=_ledger_totals())
+    noisy = [
+        p
+        for p in paras
+        if "back-computed" in p.lower() or "contradicts" in p.lower() or "skipped" in p.lower()
+    ]
+    assert not noisy, f"สมุดสะอาดแต่มีคำเตือนขึ้นมา: {noisy}"
+
+
+# --------------------------------------------------------------------------- #
+# AUDIT_ROUND2_2026-08-07 — ป้ายที่มาของอัตราแลกเปลี่ยน (B9)
+# --------------------------------------------------------------------------- #
+def test_อัตราสำรองต้องขึ้นคำเตือนบนกระดาษ(monkeypatch: pytest.MonkeyPatch):
+    """``fx_is_live=False`` = ตัวเลขบาททั้งหน้าคิดจากค่าสำรองใน config."""
+    totals = _ledger_totals(fx_is_live=False, fx_rate_thb=34.5)
+    _, paras, pdf = _render(monkeypatch, total_summary=totals)
+
+    warned = [p for p in paras if "fallback FX rate" in p]
+    assert warned, f"PDF ไม่ได้บอกว่าตัวเลขบาทคิดจากอัตราสำรอง — ย่อหน้า: {paras}"
+    assert "34.5000" in warned[0], f"ไม่ได้บอกว่าอัตราที่ใช้คือเท่าไร: {warned[0]}"
+    assert "WARNING" in warned[0], f"ค่าสำรองต้องเป็นคำเตือน ไม่ใช่หมายเหตุเฉย ๆ: {warned[0]}"
+    assert "fallbackFXrate" in _squashed(pdf), "คำเตือนไม่ได้ถูกวาดลงกระดาษจริง"
+
+
+def test_อัตราสดกับอัตราสำรองต้องได้เอกสารคนละฉบับ(monkeypatch: pytest.MonkeyPatch):
+    """หลักฐานตรงของ AUDIT: เดิม PDF สองรอบเหมือนกันทุกตัวอักษร.
+
+    ต้องใช้ ``monkeypatch.context()`` คนละอันต่อรอบ ไม่งั้นตัวดัก ``Paragraph`` ของรอบแรก
+    ถูกตัวดักของรอบสองครอบทับ แล้วย่อหน้าของรอบสองไหลเข้าลิสต์ของรอบแรกด้วย
+    """
+    with monkeypatch.context() as first:
+        _, live_paras, _ = _render(first, total_summary=_ledger_totals(fx_is_live=True))
+    with monkeypatch.context() as second:
+        _, fallback_paras, _ = _render(second, total_summary=_ledger_totals(fx_is_live=False))
+
+    assert live_paras != fallback_paras, (
+        "อัตราสดกับอัตราสำรองให้ย่อหน้าชุดเดียวกันเป๊ะ — ผู้ใช้แยกไม่ออกว่าเลขบาทมาจากไหน"
+    )
+    assert not [p for p in live_paras if "fallback FX rate" in p], (
+        f"อัตราสดถูกพิมพ์ว่าเป็นค่าสำรอง: {live_paras}"
+    )
+    assert [p for p in live_paras if "live FX rate" in p], (
+        f"อัตราสดก็ต้องมีป้ายที่มากำกับ: {live_paras}"
+    )
+
+
+def test_ไม่ทราบที่มาของอัตราไม่เท่ากับค่าสำรอง(monkeypatch: pytest.MonkeyPatch):
+    """``None`` = ไม่ทราบที่มา — คนละข้อความกับ ``False`` ที่รู้ว่าเป็นค่าสำรอง."""
+    totals = _ledger_totals()
+    totals.pop("fx_is_live")
+    _, paras, _ = _render(monkeypatch, total_summary=totals)
+
+    unknown = [p for p in paras if "no recorded source" in p]
+    assert unknown, f"ที่มาที่ไม่ทราบถูกปล่อยผ่านโดยไม่มีป้ายเลย — ย่อหน้า: {paras}"
+    assert not [p for p in paras if "fallback FX rate" in p or "live FX rate" in p], (
+        f"'ไม่ทราบที่มา' ถูกยุบรวมกับ 'ค่าสำรอง'/'ค่าสด': {paras}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# AUDIT_ROUND2_2026-08-07 — อีโมจิต้องไม่กลายเป็นกล่องสี่เหลี่ยม (tofu)
+# --------------------------------------------------------------------------- #
+def _has_emoji(text: str) -> bool:
+    return any(pe._is_undrawable(ch) for ch in text)
+
+
+def test_อีโมจิต้องไม่ถูกส่งลงกระดาษ(monkeypatch: pytest.MonkeyPatch):
+    """Garuda/Helvetica ไม่มีกลิฟอีโมจิ — reportlab วาดกล่องสี่เหลี่ยมว่างแทนโดยไม่ error."""
+    advice = dict(_advice(), advice_text="\U0001f512 AI commentary is off to control cost")
+    _, paras, pdf = _render(monkeypatch, advice=advice)
+
+    left = [p for p in paras if _has_emoji(p)]
+    assert not left, f"ยังส่งอีโมจิเข้า PDF ทั้งที่ฟอนต์วาดไม่ได้: {left}"
+    assert any("AI commentary is off" in p for p in paras), (
+        f"ถอดอีโมจิแล้วเนื้อความหายไปด้วย — ย่อหน้า: {paras}"
+    )
+    assert "AIcommentaryisoff" in _squashed(pdf)
+
+
+def test_ข้อความ_AI_ปิดอยู่ของจริงไม่พาอีโมจิลงกระดาษ(
+    monkeypatch: pytest.MonkeyPatch, synthetic_thai_font: Path
+):
+    """ผูกกับต้นทางจริง ``analysis.llm.AI_DISABLED_MESSAGE`` (ขึ้นต้นด้วย 🔒).
+
+    ต้องมีฟอนต์ไทยด้วย ไม่งั้น ``_pdf_text`` แทนทั้งประโยคด้วยหมายเหตุอังกฤษ
+    แล้วเทสต์จะผ่านด้วยเหตุผลที่ไม่เกี่ยวกับอีโมจิเลย
+    """
+    from analysis.llm import AI_DISABLED_MESSAGE
+
+    assert _has_emoji(AI_DISABLED_MESSAGE), (
+        "ต้นทางไม่มีอีโมจิแล้ว — เทสต์นี้ไม่ได้ทดสอบอะไรอีกต่อไป ให้ทบทวนใหม่"
+    )
+    monkeypatch.setattr(pe, "_thai_font_files", lambda: [str(synthetic_thai_font)])
+    pe._reset_thai_font_cache()
+
+    advice = dict(_advice(), advice_text=AI_DISABLED_MESSAGE)
+    _, paras, _ = _render(monkeypatch, advice=advice)
+
+    left = [p for p in paras if _has_emoji(p)]
+    assert not left, f"🔒 จาก AI_DISABLED_MESSAGE ยังหลุดลงกระดาษ: {left}"
+    assert any("บทวิเคราะห์ AI ปิดอยู่" in p for p in paras), (
+        f"เนื้อความไทยหายไปพร้อมอีโมจิ — ย่อหน้า: {paras}"
+    )
+
+
+def test_ถอดอีโมจิต้องไม่กินเครื่องหมายวรรคตอนของข้อความจริง():
+    """กันแก้เกิน — – — … • เป็นอักขระข้อความจริงที่ Garuda วาดได้ ห้ามถูกกวาดทิ้ง."""
+    keep = "กำไร 1,000 บาท – เพิ่มขึ้น 5% … ดูรายละเอียด • ข้อ 1 — สรุป"
+    assert pe._drawable(keep) == keep
+    assert pe._drawable("\U0001f512 ปิดอยู่") == "ปิดอยู่"
+    assert pe._drawable("a\U0001f512b") == "a b", "ถอดแล้วสองคำต้องไม่ติดกันเป็นคำเดียว"
+
+
+# --------------------------------------------------------------------------- #
+# ราคา + FX ชุดเดียวต่อรายงานหนึ่งฉบับ (AUDIT_ROUND2_2026-08-07)
+# --------------------------------------------------------------------------- #
+# หน้า 1 ของ PDF พิมพ์ **ตาราง Holdings รายกอง** กับ **บล็อกยอดรวม + คำเตือน
+# missing_prices** ไว้บนกระดาษแผ่นเดียวกัน เดิม ``generate_monthly_report()`` เรียก
+# ``get_portfolio_summary()`` (ยิงราคา+FX รอบที่ 1) แล้วเรียก ``get_total_summary()``
+# แบบไม่ส่งอาร์กิวเมนต์ ซึ่งไปเรียก ``get_portfolio_summary()`` เองอีกรอบ (รอบที่ 2)
+# ⇒ ถ้า yfinance ติด rate limit คั่นกลาง เอกสารฉบับเดียวที่ถูกเก็บไว้อ่านย้อนหลัง
+# จะมีสองคำตอบที่ขัดกันเอง เช่นยอดรวม 153,000.00 บาท วางอยู่เหนือแถว VOO ที่พิมพ์ว่า
+# N/A หรือกลับกัน  เทสต์ชุดนี้ตรึงว่า "หนึ่งรายงาน = หนึ่ง snapshot" จริง ๆ
+HEADER = "tx_id,date,ticker,shares,price_usd,fx_rate_thb,amount_thb,fee_thb,note,tx_type\n"
+# 10 VOO @ 400 USD อัตรา 34.00 → จ่ายจริง 136,000 บาท (ยอดสอดคล้อง ไม่มีแถวถูกตัด)
+ONE_BUY = "t1,2026-01-05,VOO,10,400,34.0,136000,0,,buy\n"
+
+
+class _CountingPrices:
+    """ผู้ให้ราคาที่นับจำนวนครั้งที่ถูกเรียก และเปลี่ยนคำตอบได้ตามรอบ.
+
+    ``responses`` คือคำตอบของการเรียกครั้งที่ 1, 2, ... (ครั้งถัด ๆ ไปใช้ตัวสุดท้าย)
+    ใช้จำลอง rate limit ที่มาคั่นระหว่างการดึงราคาสองรอบในเอกสารฉบับเดียว
+    """
+
+    def __init__(self, *responses: dict[str, float]) -> None:
+        self.responses = list(responses)
+        self.calls = 0
+
+    def __call__(self, tickers: list[str]) -> dict[str, float]:
+        self.calls += 1
+        return dict(self.responses[min(self.calls, len(self.responses)) - 1])
+
+
+class _CountingFx:
+    """อัตราแลกเปลี่ยนคงที่ พร้อมที่มา — นับจำนวนครั้งที่ถูกเรียกต่อรายงานหนึ่งฉบับ."""
+
+    def __init__(self, rate: float = 34.0, is_live: bool = True) -> None:
+        self.quote = (rate, is_live)
+        self.calls = 0
+
+    def __call__(self) -> tuple[float, bool]:
+        self.calls += 1
+        return self.quote
+
+
+@pytest.fixture()
+def ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """สมุดบัญชีสังเคราะห์ใน tmp — ห้ามแตะสมุดจริงของผู้ใช้ (ไฟล์นี้ถูก gitignore)."""
+    from portfolio import tracker
+
+    data_dir = tmp_path / "ledger"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = data_dir / "transactions.csv"
+    monkeypatch.setattr(tracker, "DATA_DIR", data_dir)
+    monkeypatch.setattr(tracker, "TRANSACTIONS_FILE", csv_path)
+    csv_path.write_text(HEADER + ONE_BUY, encoding="utf-8")
+    return csv_path
+
+
+def _render_with_real_tracker(
+    monkeypatch: pytest.MonkeyPatch,
+    prices: _CountingPrices,
+    fx: _CountingFx | None = None,
+) -> tuple[list[list[list[str]]], list[str], _CountingFx]:
+    """สร้าง PDF โดย **ไม่** สตับ tracker — วัดจำนวนครั้งที่รายงานยิงราคา/FX จริง.
+
+    สตับเฉพาะทางออกอื่นที่ไม่เกี่ยวกับ snapshot พอร์ต (ราคาย้อนหลังของหน้า 2 กับ
+    ``get_monthly_advice`` ของหน้า 3) เพราะทั้งคู่ยิงเน็ต/เสียเงิน และเป็นคนละเส้นทาง
+    กับสิ่งที่เทสต์ชุดนี้วัด
+    """
+    from portfolio import tracker
+
+    fx = fx or _CountingFx()
+    monkeypatch.setattr(tracker, "_get_latest_prices", prices)
+    monkeypatch.setattr(tracker, "_get_fx_quote", fx)
+
+    tables, paras = _record_drawn(monkeypatch)
+    monkeypatch.setattr(pe, "get_tickers", lambda: ["VOO"])
+    monkeypatch.setattr(pe, "fetch_adjusted_close_data", lambda tickers, years=10: _prices_df())
+    monkeypatch.setattr(pe, "get_monthly_advice", lambda **kwargs: _advice())
+
+    pe.generate_monthly_report(month="2026-08", budget_thb=5000, include_ai=False)
+    return tables, paras, fx
+
+
+def _missing_price_warnings(paras: list[str]) -> list[str]:
+    return [p for p in paras if "current price unavailable" in p]
+
+
+def test_ยอดรวมต้องคิดจาก_snapshot_เดียวกับตาราง_holdings(monkeypatch: pytest.MonkeyPatch):
+    """``get_total_summary()`` ต้องได้รับ DataFrame ตัวเดียวกับที่พิมพ์ในตาราง Holdings."""
+    recorder: dict = {}
+    _render(monkeypatch, recorder=recorder)
+
+    assert recorder["holdings"].calls == 1, (
+        f"รายงานหนึ่งฉบับดึง snapshot พอร์ต {recorder['holdings'].calls} ครั้ง"
+    )
+    assert recorder["totals"].calls == 1
+    assert len(recorder["totals"].received) == 1
+    assert recorder["totals"].received[0] is recorder["holdings"].frame, (
+        "ยอดรวมไม่ได้คิดจาก snapshot ตัวเดียวกับที่พิมพ์ในตาราง Holdings"
+    )
+
+
+def test_รายงานหนึ่งฉบับยิงราคาและอัตราแลกเปลี่ยนครั้งเดียว(
+    ledger: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """นับของจริงผ่าน ``tracker._get_latest_prices`` — มากกว่า 1 = มีสอง snapshot บนหน้าเดียว."""
+    prices = _CountingPrices({"VOO": 450.0})
+
+    _, _, fx = _render_with_real_tracker(monkeypatch, prices)
+
+    assert prices.calls == 1, (
+        f"รายงานยิงราคา {prices.calls} ครั้งต่อเอกสารหนึ่งฉบับ — ตาราง Holdings กับ "
+        "ยอดรวมบนหน้าเดียวกันจึงมาจากคนละ snapshot ได้"
+    )
+    assert fx.calls == 1, (
+        f"รายงานยิงอัตราแลกเปลี่ยน {fx.calls} ครั้ง — ตัวเลขบาทกับป้ายอัตราที่พิมพ์ "
+        "อาจเป็นคนละอัตรา"
+    )
+
+
+def test_ราคาหายหลังรอบแรกต้องไม่ทำให้หน้าหนึ่งขัดกันเอง(
+    ledger: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """รอบแรกได้ราคา รอบสองโดน rate limit — ห้ามได้ยอดรวมสมบูรณ์คู่กับคำเตือน "ไม่มีราคา"."""
+    prices = _CountingPrices({"VOO": 450.0}, {})
+
+    tables, paras, _ = _render_with_real_tracker(monkeypatch, prices)
+
+    summary = _summary_rows(tables)
+    price_cell = _row(tables, "VOO")[3]           # Current Price (USD)
+    value_cell = summary["Current Value (priced holdings)"]
+    warnings = _missing_price_warnings(paras)
+
+    priced_in_table = price_cell != pe.NA
+    priced_in_totals = value_cell != pe.NA
+    assert priced_in_table == priced_in_totals, (
+        "ตาราง Holdings กับยอดรวมบนหน้าเดียวกันเล่าคนละเรื่อง: "
+        f"Current Price (USD)={price_cell} แต่ Current Value={value_cell}"
+    )
+    assert bool(warnings) is not priced_in_totals, (
+        f"พิมพ์คำเตือนว่าดึงราคาไม่ได้ ({warnings}) คู่กับยอดรวม {value_cell} "
+        "ที่คิดจากราคาตัวนั้นเอง"
+    )
+    # snapshot เดียว = ของรอบแรก (ราคาที่ดึงได้จริง)
+    assert _money(price_cell) == pytest.approx(450.0)
+    assert _money(value_cell) == pytest.approx(153000.0)
+    assert warnings == []
+
+
+def test_ราคาหายตั้งแต่รอบแรกต้องไม่มียอดรวมโผล่จากรอบหลัง(
+    ledger: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ตรงข้ามกัน: รอบแรกไม่ได้ราคา — ห้ามมีตัวเลขมูลค่าจากการดึงรอบหลังมาวางบนแถว N/A."""
+    prices = _CountingPrices({}, {"VOO": 450.0})
+
+    tables, paras, _ = _render_with_real_tracker(monkeypatch, prices)
+
+    summary = _summary_rows(tables)
+    assert _row(tables, "VOO")[3] == pe.NA, "ไม่รู้ราคา ห้ามพิมพ์ราคาในตาราง"
+    assert summary["Current Value (priced holdings)"] == pe.NA, (
+        "ไม่รู้ราคา ห้ามมียอดรวมโผล่มาจากการดึงรอบหลัง"
+    )
+    assert summary["Profit / Loss (priced only)"] == pe.NA
+    # เงินที่จ่ายไปแล้วยังรู้เสมอ — คนละเรื่องกับ "ดึงราคาไม่ได้"
+    assert _money(summary["Invested - all holdings"]) == pytest.approx(136000.0)
+    warnings = _missing_price_warnings(paras)
+    assert warnings and "VOO" in warnings[0], (
+        f"ดึงราคาไม่ได้ต้องมีคำเตือนบนกระดาษ ไม่ใช่แค่ช่อง N/A เงียบ ๆ — ย่อหน้า: {paras}"
+    )
+
+
+def test_ledger_fixture_ไม่แตะสมุดจริง(ledger: Path):
+    """กันพลาด: fixture ต้องชี้ไปที่สมุดชั่วคราวเสมอ."""
+    from portfolio import tracker
+
+    assert str(tracker.TRANSACTIONS_FILE) == str(ledger)
+    assert "portfolio/data/transactions.csv" not in str(tracker.TRANSACTIONS_FILE)

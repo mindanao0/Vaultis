@@ -12,6 +12,22 @@
    *พิมพ์ไทยได้จริง*: Dockerfile ลง ``fonts-tlwg-garuda`` ไว้ที่
    ``/usr/share/fonts/truetype/tlwg/`` ซึ่ง :data:`_SYSTEM_FONT_GLOBS` มองหาเป็นอันดับแรก
    การแทนด้วยข้อความอังกฤษเป็น**ตาข่ายท้ายสุด**สำหรับเครื่องที่ไม่มีฟอนต์ ไม่ใช่คำตอบ
+   ข้อเดียวกันครอบ **อีโมจิ** ด้วย: Garuda มีแต่กลิฟไทย/ละติน 🔒 ที่นำหน้า
+   ``analysis.llm.AI_DISABLED_MESSAGE`` จึงกลายเป็นกล่องสี่เหลี่ยม (tofu) บนกระดาษ
+   :func:`_drawable` ถอดมันออกก่อนวาดทุกครั้ง (AUDIT_ROUND2_2026-08-07)
+4. **คำเตือนจากสมุดบัญชีต้องมาครบทั้งสามชุด** — ``portfolio/tracker.py`` แยก
+   ``skipped_rows`` (ถูกตัดออกจากยอด) / ``derived_fx_rows`` (อัตราถูกคำนวณย้อน) /
+   ``inconsistent_rows`` (ยอดเงินขัดกับตัวเลขอื่นในแถวเดียวกัน) ไว้คนละความหมาย
+   PDF เคยพิมพ์แค่ชุดแรก อีกสองชุดหายเงียบ ⇒ เอกสารที่เก็บไว้อ่านย้อนหลังเสนอ
+   ยอดเงินที่มีแถวน่าสงสัยปนอยู่ว่าเป็นตัวเลขสะอาด (AUDIT_ROUND2_2026-08-07)
+5. **ตัวเลขบาททุกช่องต้องมีป้ายที่มาของอัตราแลกเปลี่ยน** — ``fx_is_live=False``
+   แปลว่าคิดจากค่าสำรองใน ``config.json`` ไม่ใช่ราคาสด ต้องเตือนแบบเดียวกับ
+   ``missing_prices`` (B9) เดิม PDF ออกมาเหมือนกันทุกตัวอักษรทั้งสองกรณี
+6. **ราคา+FX ชุดเดียวต่อรายงานหนึ่งฉบับ** — ตาราง Holdings กับบล็อกยอดรวม/
+   ``missing_prices`` อยู่บนกระดาษแผ่นเดียวกัน ถ้ามาจากคนละ snapshot เอกสารจะมี
+   สองคำตอบที่ขัดกันเองเมื่อ yfinance ติด rate limit คั่นกลาง ⇒ เรียก
+   ``get_portfolio_summary()`` ครั้งเดียวแล้ว **ส่ง DataFrame ตัวนั้นต่อ** ให้
+   ``get_total_summary(holdings)`` เสมอ (AUDIT_ROUND2_2026-08-07)
 """
 
 from __future__ import annotations
@@ -179,6 +195,47 @@ def _thai_font() -> str | None:
     return _thai_fonts()[0]
 
 
+# --------------------------------------------------------------------------- #
+# อักขระที่ฟอนต์ของรายงานวาดไม่ได้ (AUDIT_ROUND2_2026-08-07)
+# --------------------------------------------------------------------------- #
+# ฟอนต์ที่รายงานนี้ใช้ได้จริงมีสองตัวเท่านั้น: Garuda (ไทย+ละติน) กับ Helvetica
+# ทั้งคู่ **ไม่มีกลิฟอีโมจิเลย** — reportlab ไม่ error แต่วาดกล่องสี่เหลี่ยมว่าง (tofu)
+# ออกมาแทน ซึ่งบนเอกสารที่ผู้ใช้เก็บไว้/ส่งต่อ อ่านได้ว่า "ฟอนต์ไทยพัง" ทั้งที่ไทยปกติดี
+# (ต้นทางคือ 🔒 ที่นำหน้า ``analysis.llm.AI_DISABLED_MESSAGE`` — ห้ามไปลบที่ต้นทาง
+# เพราะหน้าเว็บแสดงได้ปกติ ต้องถอดตรงจุดที่วาดลงกระดาษเท่านั้น)
+#
+# ถอดเฉพาะย่านที่เป็น "สัญลักษณ์ประดับ" ล้วน ๆ ห้ามกวาดกว้างกว่านี้: – — … • ‘ ’ “ ”
+# (U+2010–U+205F) เป็นอักขระข้อความจริงที่ Garuda วาดได้และมีความหมายในประโยค
+_UNDRAWABLE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x2600, 0x27BF),    # Misc Symbols + Dingbats — ⚠ ✅ ➡
+    (0x2B00, 0x2BFF),    # Misc Symbols and Arrows — ⬆ ⭐
+    (0xFE00, 0xFE0F),    # Variation Selectors — ตัวคุมการแสดงผลของ emoji (VS15/VS16)
+    (0x1F000, 0x1FAFF),  # Emoji / pictographs ทั้งย่าน — 🔒 📊 📈
+)
+
+
+def _is_undrawable(ch: str) -> bool:
+    code = ord(ch)
+    return any(lo <= code <= hi for lo, hi in _UNDRAWABLE_RANGES)
+
+
+def _drawable(text: str) -> str:
+    """ข้อความที่ไม่มีอักขระซึ่งรู้อยู่แล้วว่าจะออกมาเป็นกล่องสี่เหลี่ยม (กฎข้อ 3).
+
+    ตัดทิ้งได้โดยไม่ผิดกฎ "ห้ามตัดข้อมูลทิ้งเงียบ" เพราะอีโมจิเป็น**เครื่องประดับ**
+    ไม่ใช่ข้อมูล — ข้อความที่อยู่ถัดไปคือเนื้อความจริงและยังอยู่ครบทุกตัวอักษร
+    (ต่างจากอักษรไทยที่ไม่มีฟอนต์ ซึ่ง :func:`_pdf_text` **ต้อง** ทิ้งหมายเหตุบอกไว้
+    เพราะเนื้อความหายไปจริง)
+
+    แทนด้วยช่องว่างก่อนแล้วยุบช่องว่างซ้ำ เพื่อไม่ให้คำสองคำติดกันเป็นคำเดียว
+    (ยุบเฉพาะเว้นวรรค/แท็บ — ขึ้นบรรทัดใหม่เป็นการจัดหน้าของข้อความ AI ต้องคงไว้)
+    """
+    if not any(_is_undrawable(ch) for ch in text):
+        return text
+    replaced = "".join(" " if _is_undrawable(ch) else ch for ch in text)
+    return re.sub(r"[ \t]{2,}", " ", replaced).strip()
+
+
 def _markup(value: object) -> str:
     """ข้อความที่ปลอดภัยสำหรับ :class:`Paragraph` — reportlab แจงย่อหน้าเป็น mini-XML.
 
@@ -189,8 +246,12 @@ def _markup(value: object) -> str:
     โยน ``ValueError: paraparser: syntax error`` แล้วผู้ใช้ไม่ได้รายงานทั้งฉบับ
 
     ไฟล์นี้ไม่ได้ใช้มาร์กอัปในย่อหน้าไหนเลย — escape ทั้งหมดได้อย่างปลอดภัย
+
+    ทุกย่อหน้าผ่านที่นี่ที่เดียว จึงเป็นจุดเดียวที่รับประกันได้ว่าไม่มีอีโมจิหลุดลง
+    กระดาษ (:func:`_drawable`) — ช่องในตารางไม่ผ่านฟังก์ชันนี้ จึงต้องกรองซ้ำใน
+    :func:`_pdf_text` การกรองสองรอบไม่มีผลข้างเคียงเพราะรอบสองไม่เจออะไรให้ถอดแล้ว
     """
-    return _xml_escape(str(value))
+    return _xml_escape(_drawable(str(value)))
 
 
 def _has_thai(text: str) -> bool:
@@ -198,8 +259,12 @@ def _has_thai(text: str) -> bool:
 
 
 def _pdf_text(value: object, *, short: bool = False) -> str:
-    """ข้อความที่วาดลง PDF ได้จริง — ไม่มีฟอนต์ไทย = ห้ามวาดอักษรไทย (H6)."""
-    text = "" if value is None else str(value)
+    """ข้อความที่วาดลง PDF ได้จริง — ไม่มีฟอนต์ไทย = ห้ามวาดอักษรไทย (H6).
+
+    อีโมจิถูกถอดออกเสมอ ไม่ว่าจะมีฟอนต์ไทยหรือไม่ (กฎข้อ 3) — ฟอนต์ทั้งสองตัวที่
+    รายงานนี้ใช้ไม่มีกลิฟอีโมจิ ดู :func:`_drawable`
+    """
+    text = _drawable("" if value is None else str(value))
     if not _has_thai(text) or _thai_font() is not None:
         return text
     return _NO_THAI_FONT_NOTE_SHORT if short else _NO_THAI_FONT_NOTE
@@ -226,6 +291,26 @@ def _fmt(value: object, spec: str = ",.2f", *, suffix: str = "", na: str = NA) -
     if number is None:
         return na
     return f"{format(number, spec)}{suffix}"
+
+
+_MAX_LEDGER_ROWS_IN_NOTE = 5
+
+
+def _ledger_row_labels(rows: list[dict]) -> str:
+    """ป้ายชี้แถวสมุดบัญชี ``TICKER YYYY-MM-DD`` — ผู้ใช้ต้องรู้ว่าต้องไปแก้แถวไหน.
+
+    คำเตือนที่บอกแค่ "มี 3 แถวน่าสงสัย" ใช้ทำอะไรไม่ได้เลยกับเอกสารที่อ่านย้อนหลัง
+    ค่าที่หายไปพิมพ์เป็น ``?`` (ไม่ทราบ) ห้ามเดาแทน · ตัดที่ 5 แถวแล้วบอกจำนวนที่เหลือ
+    เพื่อไม่ให้หน้าเดียวถูกกลืนด้วยคำเตือน — จำนวนเต็มยังอยู่ในประโยคที่เรียกใช้เสมอ
+    """
+    labels = ", ".join(
+        f"{row.get('ticker') or '?'} {row.get('date') or '?'}"
+        for row in rows[:_MAX_LEDGER_ROWS_IN_NOTE]
+    )
+    remaining = len(rows) - _MAX_LEDGER_ROWS_IN_NOTE
+    if remaining > 0:
+        labels += f", +{remaining} more"
+    return labels
 
 
 def _allocation_status(advice: dict) -> tuple[list[str], list[str], bool]:
@@ -329,8 +414,19 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
     title_text = _markup(f"Vaultis Monthly Report - {_pdf_text(month, short=True)}")
 
     # Common data
+    #
+    # **ราคา + FX ชุดเดียวต่อรายงานหนึ่งฉบับ** (AUDIT_ROUND2_2026-08-07)
+    # เดิมบรรทัดนี้เรียก ``get_total_summary()`` แบบไม่ส่งอะไรเข้าไป มันจึงไป
+    # ``get_portfolio_summary()`` เองอีกรอบ = ยิงราคา+อัตราแลกเปลี่ยน **สอง** ชุด
+    # ต่อเอกสารหนึ่งฉบับ  หน้า 1 พิมพ์ตาราง Holdings (ชุดที่ 1) ไว้ข้าง ๆ บล็อกยอดรวม
+    # และคำเตือน ``missing_prices`` (ชุดที่ 2) — ถ้า yfinance ติด rate limit คั่นกลาง
+    # (repo นี้มีประวัติเรื่องนี้จนต้องใส่แคช) กระดาษแผ่นเดียวจะมีสองคำตอบที่ขัดกันเอง:
+    # ยอดรวม USD/THB ที่ดูสมบูรณ์ คู่กับ "current price unavailable for VOO" ของกอง
+    # เดียวกัน  รายงานฉบับนี้ถูกเก็บไว้อ่านย้อนหลังโดยไม่มีหน้าจอกำกับ ⇒ ต้องเล่าเรื่อง
+    # เดียวทั้งหน้า  ``tracker.get_total_summary()`` รับ snapshot ที่คำนวณแล้วได้
+    # (พารามิเตอร์ ``holdings``) — ห้ามเรียกแบบไม่ส่งอาร์กิวเมนต์อีก
     holdings_df = get_portfolio_summary()
-    total_summary = get_total_summary()
+    total_summary = get_total_summary(holdings_df)
     tickers = list(get_tickers())
 
     # ดึงราคาไม่สำเร็จ ≠ ไม่มีข้อมูล — ต้องเก็บสาเหตุไว้พิมพ์ ห้ามกลืน (M-PDF-1)
@@ -369,8 +465,12 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
     )
 
     missing_prices = list(total_summary.get("missing_prices") or [])
-    # แถวสมุดบัญชีที่ข้อมูลไม่ครบถูกตัดออกจากตัวเลข — ต้องบอกในรายงาน ห้ามซ่อน
-    skipped_rows = list(total_summary.get("skipped_rows") or [])
+    # สมุดบัญชีมีคำเตือน **สามชุดที่ห้ามยุบรวมกัน** (tracker.py เขียน invariant นี้ไว้เอง)
+    # และรายงานฉบับนี้ถูกเก็บไว้อ่านย้อนหลังโดยไม่มีหน้าจอกำกับ ⇒ ต้องพิมพ์ให้ครบทั้งสาม
+    # (AUDIT_ROUND2_2026-08-07 — เดิมพิมพ์แค่ชุดแรก อีกสองชุดหายเงียบ)
+    skipped_rows = list(total_summary.get("skipped_rows") or [])      # ถูกตัดออกจากยอด
+    derived_fx_rows = list(total_summary.get("derived_fx_rows") or [])  # อัตราถูกคำนวณย้อน
+    inconsistent_rows = list(total_summary.get("inconsistent_rows") or [])  # ยอดเงินขัดกันเอง
 
     # Page 1: Portfolio summary
     elements.append(Paragraph(title_text, styles["Title"]))
@@ -435,17 +535,64 @@ def generate_monthly_report(month: str, budget_thb: float, include_ai: bool = Fa
                 f"value and P&L above exclude these holdings ({NA} in the table below)."
             )
         )
-    if skipped_rows:
-        skipped_labels = ", ".join(
-            f"{row.get('ticker') or '?'} {row.get('date') or '?'}" for row in skipped_rows[:5]
+    # ที่มาของอัตราแลกเปลี่ยนที่แปลงทุกช่องในตารางนี้เป็นบาท (B9/C1.5) — ค่าสำรองจาก
+    # config ทำให้ตัวเลขบาททั้งหน้าคลาดเคลื่อนได้เป็นเปอร์เซ็นต์ และเอกสารนี้ถูกอ่าน
+    # ย้อนหลังโดยไม่มีคำเตือนบนหน้าจอมากำกับ ⇒ ป้ายที่มาต้องอยู่บนกระดาษเสมอ
+    # "ไม่ทราบที่มา" (None) ≠ "ค่าสำรอง" (False) ≠ "ค่าสด" (True) — สามข้อความ
+    fx_is_live = total_summary.get("fx_is_live")
+    fx_rate_txt = _fmt(total_summary.get("fx_rate_thb"), ",.4f")
+    elements.append(Spacer(1, 0.2 * cm))
+    if fx_is_live is None:
+        elements.append(
+            body(
+                "NOTE: the FX rate behind every THB figure on this page has no recorded "
+                f"source (rate on record: {fx_rate_txt}) — this report cannot tell whether it "
+                "was a live quote or the config fallback."
+            )
         )
-        if len(skipped_rows) > 5:
-            skipped_labels += f", +{len(skipped_rows) - 5} more"
+    elif not bool(fx_is_live):
+        elements.append(
+            body(
+                f"WARNING: THB figures on this page use the fallback FX rate from config "
+                f"({fx_rate_txt} THB/USD), not a live quote — they can be off by a percent or "
+                "more. USD figures are unaffected."
+            )
+        )
+    else:
+        elements.append(
+            body(f"NOTE: THB figures on this page use a live FX rate of {fx_rate_txt} THB/USD.")
+        )
+
+    if skipped_rows:
         elements.append(Spacer(1, 0.2 * cm))
         elements.append(
             body(
                 f"WARNING: {len(skipped_rows)} ledger row(s) skipped for incomplete data "
-                f"({_pdf_text(skipped_labels, short=True)}) — totals above exclude them."
+                f"({_pdf_text(_ledger_row_labels(skipped_rows), short=True)}) — totals above "
+                "exclude them."
+            )
+        )
+    if derived_fx_rows:
+        # คนละความหมายกับ skipped: แถวเหล่านี้ **ยังถูกนับ** อยู่ในทุกช่องข้างบน
+        elements.append(Spacer(1, 0.2 * cm))
+        elements.append(
+            body(
+                f"WARNING: the FX rate of {len(derived_fx_rows)} ledger row(s) "
+                f"({_pdf_text(_ledger_row_labels(derived_fx_rows), short=True)}) was "
+                "back-computed from the THB amount because the recorded rate was missing or "
+                "unusable — those rows ARE included in the totals above. Details: "
+                f"{_pdf_text(total_summary.get('derived_fx_reason') or '', short=True)}"
+            )
+        )
+    if inconsistent_rows:
+        elements.append(Spacer(1, 0.2 * cm))
+        elements.append(
+            body(
+                f"WARNING: {len(inconsistent_rows)} ledger row(s) "
+                f"({_pdf_text(_ledger_row_labels(inconsistent_rows), short=True)}) record a THB "
+                "amount that contradicts shares x price x FX rate + fee — they ARE still counted "
+                "in the totals above. Check those rows in the ledger. Details: "
+                f"{_pdf_text(total_summary.get('inconsistent_reason') or '', short=True)}"
             )
         )
     elements.append(Spacer(1, 0.4 * cm))

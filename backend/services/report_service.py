@@ -42,9 +42,23 @@ def get_portfolio_summary(db: Session) -> dict[str, Any]:
     ต้องส่งต่อทั้ง ``missing_prices`` (ราคาที่ดึงไม่ได้) และ ``skipped_rows``
     (ธุรกรรมที่ข้อมูลไม่ครบจนถูกตัดออกจากยอดรวม) — ยอดที่น้อยกว่าจริง
     ต้องมีคำเตือนกำกับเสมอ ห้ามตัดเงียบ ๆ (FIX_PLAN ข้อ 1.2 + C2)
+
+    **คำเตือนสมุดบัญชีมีสามชุด ห้ามส่งต่อแค่ชุดเดียว** (AUDIT_ROUND2_2026-08-07):
+    ``skipped_rows`` = ถูกตัดออกจากยอด · ``derived_fx_rows`` = อัตราแลกเปลี่ยนถูก
+    คำนวณย้อนมาแทนค่าที่บันทึกไว้ · ``inconsistent_rows`` = ยอดเงินบาทขัดกับ
+    จำนวนหุ้น × ราคา × อัตรา ในแถวเดียวกัน — สองชุดหลังคือแถวที่ **ยังถูกนับอยู่**
+    ในตัวเลขที่รายงานนี้เสนอ ถ้าไม่ส่งต่อ รายงานรายเดือน (ช่องทางเดียวของงานอัตโนมัติ
+    วันที่ 1 → Telegram) จะเสนอยอดที่มีแถวน่าสงสัยปนอยู่ว่าเป็นตัวเลขสะอาด
+    ``tracker.py`` เขียน invariant ไว้เองว่า "ทั้งสามชุดคือเตือนคนละความหมาย
+    ห้ามยุบรวมกัน" — หน้า Portfolio ของ dashboard พิมพ์ครบทั้งสามอยู่แล้ว
+
+    ยอดรวมกับ ``top_holdings`` ต้องมาจาก **snapshot ราคาเดียวกัน** (AUDIT_ROUND2 G2)
+    — เดิมเรียก ``get_portfolio_summary()`` แล้วตามด้วย ``get_holdings()`` ซึ่งดึงราคา
+    คนละรอบ รายงานฉบับเดียว (และพรอมป์ที่ส่งให้ LLM อธิบาย) จึงมีตัวเลขสองความจริงได้
     """
-    summary = portfolio_service.get_portfolio_summary()
-    holdings = [h for h in portfolio_service.get_holdings()["holdings"] if h.get("price_ok")]
+    bundle = portfolio_service.get_summary_and_holdings()
+    summary = bundle["summary"]
+    holdings = [h for h in bundle["holdings"] if h.get("price_ok")]
     top = sorted(holdings, key=lambda h: h["current_value_usd"] or 0, reverse=True)[:3]
     return {
         "holdings_count": summary["holdings_count"],
@@ -54,6 +68,10 @@ def get_portfolio_summary(db: Session) -> dict[str, Any]:
         "missing_prices": summary.get("missing_prices", []),
         "skipped_rows": list(summary.get("skipped_rows") or []),
         "skipped_reason": str(summary.get("skipped_reason") or ""),
+        "derived_fx_rows": list(summary.get("derived_fx_rows") or []),
+        "derived_fx_reason": str(summary.get("derived_fx_reason") or ""),
+        "inconsistent_rows": list(summary.get("inconsistent_rows") or []),
+        "inconsistent_reason": str(summary.get("inconsistent_reason") or ""),
         "top_holdings": [
             {"ticker": h["ticker"], "return_pct": h["return_pct"]}
             for h in top
@@ -262,6 +280,23 @@ def _networth_txt(nw: dict[str, Any], *, prefix: str, unit: str) -> str:
     return f"{head} ({change:+,.0f} / {pct_txt})"
 
 
+def _ledger_warning_lines(pf: dict[str, Any]) -> list[str]:
+    """คำเตือนสมุดบัญชีทั้งสามชุด เรียงตามความหมาย — ห้ามยุบรวมเป็นชุดเดียว.
+
+    นิยามอยู่ที่ ``portfolio/tracker.py`` ที่เดียว (``describe_*_rows()`` ประกอบ
+    ข้อความไทยมาให้แล้ว) ที่นี่แค่หยิบมาพิมพ์ตามลำดับ ห้ามเขียนข้อความเองซ้ำ:
+
+    * ``skipped_reason`` — แถวถูกตัดออก ⇒ ตัวเลข **น้อยกว่า** ความจริง
+    * ``derived_fx_reason`` — อัตราถูกคำนวณย้อน ⇒ แถวยังถูกนับ แต่อัตราไม่ใช่ค่าที่บันทึก
+    * ``inconsistent_reason`` — ยอดเงินขัดกับตัวเลขอื่นในแถวเดียวกัน ⇒ ยังถูกนับเช่นกัน
+
+    (AUDIT_ROUND2_2026-08-07: เดิมพิมพ์แค่ชุดแรก รายงานรายเดือนจึงเสนอยอดที่มี
+    แถวน่าสงสัยปนอยู่ว่าเป็นตัวเลขสะอาด)
+    """
+    keys = ("skipped_reason", "derived_fx_reason", "inconsistent_reason")
+    return [f"⚠️ {pf[key]}" for key in keys if pf.get(key)]
+
+
 def _screener_txt(sc: dict[str, Any]) -> str:
     """บรรทัดสัญญาณ screener — "อ่านไม่ได้" ต้องไม่ถูกเขียนเป็น "0 รายการ"."""
     if not sc.get("available", True):
@@ -300,9 +335,8 @@ def _plain_narrative(
         )
     if pf.get("missing_prices"):
         lines.append(f"⚠️ ดึงราคาไม่ได้: {', '.join(map(str, pf['missing_prices']))}")
-    # ธุรกรรมที่ถูกตัดออกจากยอดรวมต้องปรากฏในรายงานที่ส่งถึงผู้ใช้ด้วย
-    if pf.get("skipped_reason"):
-        lines.append(f"⚠️ {pf['skipped_reason']}")
+    # ธุรกรรมที่ถูกตัด/ถูกซ่อมอัตรา/ขัดกันเอง ต้องปรากฏในรายงานที่ส่งถึงผู้ใช้ครบทั้งสามชุด
+    lines.extend(_ledger_warning_lines(pf))
     if nw.get("available"):
         lines.append(_networth_txt(nw, prefix="Net Worth:", unit="บาท"))
     lines.append(_screener_txt(sc))
@@ -347,9 +381,10 @@ def _build_prompt(all_data: dict[str, Any], month: str) -> str:
     missing_txt = (
         f"\n- ⚠️ ดึงราคาไม่ได้ (ไม่ถูกนับในมูลค่า): {', '.join(map(str, missing))}" if missing else ""
     )
-    # AI อธิบายอย่างเดียว แต่ต้องได้รู้ว่าตัวเลขข้างบนไม่ครบเพราะอะไร
-    skipped_reason = pf.get("skipped_reason") or ""
-    missing_txt += f"\n- ⚠️ {skipped_reason}" if skipped_reason else ""
+    # AI อธิบายอย่างเดียว แต่ต้องได้รู้ว่าตัวเลขข้างบนไม่ครบ/น่าสงสัยเพราะอะไร
+    # ครบทั้งสามชุดเหมือนเส้นทางที่ไม่ใช้ AI ไม่งั้นบทสรุปที่ผู้ใช้จ่ายเงินซื้อจะบอกว่า
+    # ตัวเลขสะอาด ทั้งที่มีแถวที่ยอดเงินขัดกันเองรวมอยู่ (AUDIT_ROUND2_2026-08-07)
+    missing_txt += "".join(f"\n- {line}" for line in _ledger_warning_lines(pf))
     if _prices_unknown(pf):
         # ห้ามป้อนเลข 0 ให้ AI เมื่อยังไม่รู้มูลค่าจริง (หลักการเดียวกับ M-R3)
         missing_txt += (

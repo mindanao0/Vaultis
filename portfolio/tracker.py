@@ -16,7 +16,12 @@
 
 ข้อจำกัดที่ยังเหลือ: การหักค่าธรรมเนียมก่อนหารใช้ **ค่าที่บันทึกไว้จริง** ในคอลัมน์
 ``fee_thb`` เท่านั้น แถวที่ไม่ได้บันทึกค่าธรรมเนียมจะหารตรง ๆ ตามยอดที่มี
-(ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง — จะเป็นการกุตัวเลขซ้อนตัวเลข)
+(ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง — จะเป็นการกุตัวเลขซ้อนตัวเลข) **แต่ต้องติดหมายเหตุ
+ไปกับแถวนั้นเสมอ** ว่าอัตราคิดบนสมมติฐาน "ค่าธรรมเนียม = 0" จึงสูงกว่าที่จ่ายจริงได้ราว
+``fees.DIME_FEE_RATE`` (AUDIT_ROUND2_2026-08-07 — เดิมหน้าจอบอกแค่ว่า "คำนวณย้อน"
+ไม่เคยบอกว่าคำนวณบนสมมติฐานอะไร)  ส่วนแถวที่บันทึกค่าธรรมเนียมเป็น **ค่าติดลบ** คือ
+ข้อมูลผิด **ไม่ใช่** ช่องว่าง ห้ามกลืนเป็น 0 (สองกรณีนี้เคยถูกยุบเป็นค่าเดียวกันด้วย
+``fee.where(fee >= 0).fillna(0.0)`` แถวที่กรอกติดลบจึงเงียบสนิททั้งที่ผิดชัด ๆ)
 
 รายงานที่แนบไปกับทุก DataFrame/สรุป (``.attrs`` และคีย์ใน dict) — AUDIT_2026-08-06 C1:
 
@@ -46,6 +51,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -53,7 +59,7 @@ import pandas as pd
 import yfinance as yf
 
 from data.fetcher import normalize_close_series
-from portfolio.fees import dime_fee_thb
+from portfolio.fees import DIME_FEE_RATE, dime_fee_thb
 from utils import fx
 
 logger = logging.getLogger(__name__)
@@ -76,8 +82,24 @@ CSV_COLUMNS = [
 TX_BUY = "buy"
 TX_DIVIDEND = "dividend"
 TRACKER_DIR = Path(__file__).resolve().parent
-DATA_DIR = TRACKER_DIR / "data"
-TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
+DEFAULT_TRANSACTIONS_FILE = TRACKER_DIR / "data" / "transactions.csv"
+
+
+def _ledger_path_from_env() -> Path:
+    """path ของสมุดบัญชี — ตั้งทับได้ด้วย ``VAULTIS_LEDGER_PATH``.
+
+    เหตุผลและข้อห้ามเดียวกับ ``alerts.price_alert._alerts_path_from_env``:
+    คำสั่งรันเทสต์ mount repo ทับ ``/app`` ค่าดีฟอลต์จึงเป็นสมุดบัญชีจริงของผู้ใช้บน host
+    และค่านี้ต้องถูกอ่าน **ตอน import** เท่านั้น เพราะเทสต์ควบคุมด้วยการ monkeypatch
+    ``tracker.TRANSACTIONS_FILE`` / ``tracker.DATA_DIR``
+    """
+    raw = os.environ.get("VAULTIS_LEDGER_PATH", "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_TRANSACTIONS_FILE
+
+
+TRANSACTIONS_FILE = _ledger_path_from_env()
+# ต้องเดินตาม TRANSACTIONS_FILE เสมอ — `_ensure_storage()` mkdir จากตัวนี้
+DATA_DIR = TRANSACTIONS_FILE.parent
 
 # คอลัมน์ที่ต้องมีค่าจริงถึงจะเอาแถวนั้นไปคิดเงินได้ (ชื่อไทยไว้แสดงในรายงาน)
 # ค่าที่ขาดต้องเป็น NaN แล้วถูกตัดออก + รายงาน ห้ามเดาค่าแทน
@@ -102,6 +124,16 @@ _MAX_SKIPPED_IN_MESSAGE = 5
 # 1% กว้างพอให้ค่าธรรมเนียมที่ไม่ได้บันทึก (0.15% ตาม portfolio/fees.py) และการปัดเศษ
 # ผ่านได้ แต่แคบพอจะจับการกรอกอัตราของ "วันนี้" ทับอัตราของวันที่ซื้อจริง
 FX_CONSISTENCY_TOLERANCE = 0.01
+
+# หมายเหตุที่ต้องติดไปกับอัตราที่คำนวณย้อนของแถวที่ **ไม่ได้บันทึก** ค่าธรรมเนียม
+# (AUDIT_ROUND2_2026-08-07): ``amount_thb`` คือเงินที่จ่ายจริงซึ่งรวมค่าธรรมเนียมไว้แล้ว
+# การหารทั้งก้อนจึงได้อัตราสูงกว่าที่จ่ายจริงราว ``DIME_FEE_RATE`` — ตัวเลขนั้นไหลต่อไป
+# ทุกช่องฐานบาท (ต้นทุน / มูลค่า / P&L / XIRR) ผู้ใช้จึงต้องเห็นสมมติฐาน ไม่ใช่เห็นแค่
+# คำว่า "คำนวณย้อน"  อัตราส่วนต้องมาจาก ``portfolio/fees.py`` ที่เดียว ห้ามพิมพ์ 0.15% เอง
+_FEE_ASSUMED_ZERO_NOTE = (
+    " (แถวนี้ไม่ได้บันทึกค่าธรรมเนียม จึงคิดโดยสมมติว่าเป็น 0 "
+    f"— อัตราที่ได้อาจสูงกว่าที่จ่ายจริงราว {DIME_FEE_RATE * 100:.2f}%)"
+)
 
 
 def _ensure_storage() -> None:
@@ -196,22 +228,59 @@ def _empty_transactions() -> pd.DataFrame:
     return empty
 
 
+def _fee_column(df: pd.DataFrame) -> pd.Series | None:
+    """คอลัมน์ ``fee_thb`` แบบตัวเลขดิบ — ``None`` เมื่อสมุดไม่มีคอลัมน์นี้เลย.
+
+    ค่าที่อ่านเป็นตัวเลขไม่ได้กลายเป็น ``NaN`` (= ไม่ได้บันทึก) ตามกฎเดียวกับคอลัมน์อื่น
+    """
+    if "fee_thb" not in df.columns:
+        return None
+    return pd.to_numeric(df["fee_thb"], errors="coerce")
+
+
+def _fee_is_negative(df: pd.DataFrame) -> pd.Series:
+    """แถวที่ **บันทึก** ค่าธรรมเนียมไว้เป็นค่าติดลบ = ข้อมูลผิดชัด ๆ (ไม่ใช่ช่องว่าง)."""
+    fee = _fee_column(df)
+    if fee is None:
+        return pd.Series(False, index=df.index)
+    return fee.lt(0)
+
+
+def _fee_not_recorded(df: pd.DataFrame) -> pd.Series:
+    """แถวที่ **ไม่ได้บันทึก** ค่าธรรมเนียม (ช่องว่าง / อ่านเป็นตัวเลขไม่ได้)."""
+    fee = _fee_column(df)
+    if fee is None:
+        return pd.Series(True, index=df.index)
+    return fee.isna()
+
+
 def _recorded_fee_thb(df: pd.DataFrame) -> pd.Series | float:
-    """ค่าธรรมเนียมที่ **บันทึกไว้จริง** ของแต่ละแถว (แถวที่ไม่มี = 0).
+    """ค่าธรรมเนียมที่ **บันทึกไว้จริง** — แยก "ไม่ได้บันทึก" ออกจาก "บันทึกผิด".
 
     ใช้เฉพาะตอนคำนวณอัตราแลกเปลี่ยนย้อนกลับ: ``amount_thb`` คือเงินที่จ่ายจริง
     ซึ่งรวมค่าธรรมเนียมไว้แล้ว จึงต้องหักออกก่อนหาร ไม่งั้นอัตราที่ได้สูงเกินจริง
-    ~0.15% (= ``fees.DIME_FEE_RATE``)
+    ราว ``fees.DIME_FEE_RATE``
 
-    แถวที่ไม่ได้บันทึกค่าธรรมเนียม (หรือบันทึกเป็นค่าติดลบ = ข้อมูลผิด) คืน 0
-    — **ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง** เพราะยังไม่รู้อัตราแลกเปลี่ยนของแถวนั้น
-    การเดาจะกลายเป็นการกุตัวเลขซ้อนตัวเลข (การเติมค่าประมาณให้คอลัมน์ ``fee_thb``
-    เป็นหน้าที่ของ ``_calculate_dime_fee_info`` ซึ่งทำหลังจากได้อัตราจริงแล้ว)
+    * **ช่องว่าง = ไม่ได้บันทึก** → คิดเป็น 0 แล้วหารตรง ๆ ตามยอดที่มี
+      **ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง** เพราะยังไม่รู้อัตราแลกเปลี่ยนของแถวนั้น
+      การเดาจะกลายเป็นการกุตัวเลขซ้อนตัวเลข — แต่แถวนั้นต้องติดหมายเหตุ
+      :data:`_FEE_ASSUMED_ZERO_NOTE` ไปทาง ``derived_fx_rows`` เสมอ
+    * **ค่าติดลบ = ข้อมูลผิด** → คืน ``NaN`` **ห้ามกลืนเป็น 0**
+      (AUDIT_ROUND2_2026-08-07: ``fee.where(fee >= 0).fillna(0.0)`` ยุบสองกรณีนี้เป็น
+      ค่าเดียวกัน แถวที่กรอกค่าธรรมเนียมติดลบจึงให้อัตราย้อน "สวย ๆ" เท่ากับแถวที่
+      ไม่ได้กรอกเลย และไม่เข้าทั้ง ``skipped_rows`` และ ``inconsistent_rows``)
+      ผลของ ``NaN`` คือแถวนั้นคำนวณอัตราย้อนไม่ได้ ⇒ ถ้าไม่มีอัตราที่ใช้ได้ในสมุด
+      ก็ถูกตัด + รายงานทาง ``skipped_rows``  ถ้ามีอัตราที่ใช้ได้ ตัวเลขยังอยู่
+      แต่ถูกรายงานทาง ``inconsistent_rows`` — ทางเดียวกับที่ ``unusable_fx``
+      ทำกับอัตรานอกช่วง 20–50
+
+    (การเติมค่าประมาณให้คอลัมน์ ``fee_thb`` เป็นหน้าที่ของ ``_calculate_dime_fee_info``
+    ซึ่งทำหลังจากได้อัตราจริงแล้ว)
     """
-    if "fee_thb" not in df.columns:
+    fee = _fee_column(df)
+    if fee is None:
         return 0.0
-    fee = pd.to_numeric(df["fee_thb"], errors="coerce")
-    return fee.where(fee >= 0).fillna(0.0)
+    return fee.fillna(0.0).mask(fee.lt(0))
 
 
 def _derive_fx_from_amount(df: pd.DataFrame) -> pd.Series:
@@ -221,7 +290,8 @@ def _derive_fx_from_amount(df: pd.DataFrame) -> pd.Series:
     (ค่าธรรมเนียมที่บันทึกไว้ต้องหักออกก่อน เพราะ ``amount_thb`` = เงินที่จ่ายจริง
     ซึ่งรวมค่าธรรมเนียมตามสูตรเดียวของระบบใน ``portfolio/fees.py`` ไว้แล้ว)
 
-    คืน NaN เมื่อคำนวณไม่ได้ (ตัวหาร ≤ 0 หรือว่าง เช่นแถวปันผลที่ shares=0)
+    คืน NaN เมื่อคำนวณไม่ได้ (ตัวหาร ≤ 0 หรือว่าง เช่นแถวปันผลที่ shares=0
+    หรือค่าธรรมเนียมที่บันทึกไว้ติดลบ ดู :func:`_recorded_fee_thb`)
     หรือได้ค่านอกช่วงสมเหตุสมผลของ ``utils/fx.py`` — ค่าที่ไม่น่าเชื่อถือ
     ถือว่า "ไม่มีข้อมูล" ห้ามเอาไปคิดเงินต่อ
     """
@@ -242,12 +312,17 @@ def _collect_skipped_rows(
 
     ``unusable_fx`` = อัตราแลกเปลี่ยน**ที่บันทึกไว้จริงแต่ใช้ไม่ได้** (NaN = ไม่ได้บันทึก)
     ใส่ลงในเหตุผลด้วย เพื่อให้ผู้ใช้รู้ว่าต้องไปแก้เลขอะไรในสมุด
+
+    ค่าธรรมเนียมที่บันทึกไว้ติดลบทำให้คำนวณอัตราย้อนไม่ได้เช่นกัน — ต้องบอกตรง ๆ ว่า
+    ตัวไหนพัง ไม่งั้นผู้ใช้ไปนั่งแก้อัตราแลกเปลี่ยนที่ไม่ได้ผิด (AUDIT_ROUND2_2026-08-07)
     """
     missing_mask = df[list(REQUIRED_FIELDS_TH)].isna()
     incomplete = missing_mask.any(axis=1)
     if not bool(incomplete.any()):
         return []
 
+    negative_fee = _fee_is_negative(df)
+    raw_fee = _fee_column(df)
     skipped: list[dict[str, object]] = []
     for idx in df.index[incomplete]:
         fields = [col for col in REQUIRED_FIELDS_TH if bool(missing_mask.at[idx, col])]
@@ -262,6 +337,8 @@ def _collect_skipped_rows(
                 )
             else:
                 reason += f" (คำนวณอัตราย้อนจากยอดบาทไม่ได้ หรือได้ค่านอกช่วง {band})"
+            if raw_fee is not None and bool(negative_fee.at[idx]):
+                reason += _negative_fee_note(float(raw_fee.at[idx]))
         skipped.append(
             {
                 **_row_identity(df, idx),
@@ -308,6 +385,11 @@ def _collect_derived_fx_rows(
     ``usable_fx`` = อัตราที่บันทึกไว้ **หลังผ่านด่านช่วง 20–50** (NaN = ใช้ไม่ได้/ไม่มี)
     ``recorded_fx`` = ค่าดิบที่อยู่ในสมุดจริง ๆ (NaN = ช่องว่าง)
     ต้องเรียก **หลัง** เติมค่า derive ลง ``df['fx_rate_thb']`` แล้ว
+
+    แถวที่ **ไม่ได้บันทึกค่าธรรมเนียม** ต้องบอก**สมมติฐาน**ที่ใช้คำนวณด้วย
+    (``fee = 0`` ⇒ อัตราสูงกว่าจริงได้ราว ``fees.DIME_FEE_RATE``) — เดิมบอกแค่ว่า
+    "คำนวณย้อน" ผู้ใช้จึงอ่านอัตรานั้นเป็นค่าที่จ่ายจริงเป๊ะ ๆ (AUDIT_ROUND2_2026-08-07)
+    ``fee_assumed_zero`` เป็นธงให้ผู้เรียกกรองได้โดยไม่ต้องแกะข้อความ
     """
     if df.empty:
         return []
@@ -316,6 +398,7 @@ def _collect_derived_fx_rows(
         return []
 
     band = f"{fx.MIN_RATE:.0f}–{fx.MAX_RATE:.0f}"
+    fee_missing = _fee_not_recorded(df)
     rows: list[dict[str, object]] = []
     for idx in df.index[derived_mask]:
         recorded = recorded_fx.at[idx]
@@ -329,11 +412,15 @@ def _collect_derived_fx_rows(
         else:
             reason = f"ไม่ได้บันทึกอัตราแลกเปลี่ยน — ใช้อัตราที่คำนวณย้อนจากยอดเงินบาท {used:.4f}"
             recorded_value = None
+        fee_assumed_zero = bool(fee_missing.at[idx])
+        if fee_assumed_zero:
+            reason += _FEE_ASSUMED_ZERO_NOTE
         rows.append(
             {
                 **_row_identity(df, idx),
                 "recorded_fx": recorded_value,
                 "used_fx": used,
+                "fee_assumed_zero": fee_assumed_zero,
                 "reason": reason,
             }
         )
@@ -369,6 +456,11 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
 
     ยอดเงิน 0 ที่ implied ก็เป็น 0 ด้วย (หุ้นแถมราคา 0) ไม่ถือว่าขัดกัน — ไม่มีตัวเลข
     ไหนขัดกับตัวเลขไหน การเตือนตรงนั้นคือเสียงรบกวน ไม่ใช่ข้อมูล
+
+    **ค่าธรรมเนียมติดลบก็คือตัวเลขที่ขัดกับตัวเองในแถวเดียวกัน (AUDIT_ROUND2_2026-08-07).**
+    :func:`_recorded_fee_thb` คืน ``NaN`` ให้แถวเหล่านั้น (เดิมกลืนเป็น 0 เงียบ ๆ)
+    ด่านนี้จึงต้องธงมันขึ้นมาแบบตั้งใจ ไม่ใช่รอให้หลุดมาทาง ``gap`` ที่เป็น ``NaN``
+    และ **เหตุผลต้องชี้ที่ค่าธรรมเนียม** ไม่ใช่พูดลอย ๆ ว่า "คำนวณเป็นตัวเลขจริงไม่ได้"
     """
     if df.empty:
         return []
@@ -381,6 +473,8 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
     fee = _recorded_fee_thb(df)
     if not isinstance(fee, pd.Series):
         fee = pd.Series(float(fee), index=df.index)
+    negative_fee = _fee_is_negative(df)
+    raw_fee = _fee_column(df)
     implied = df["shares"] * df["price_usd"] * df["fx_rate_thb"] + fee
     gap = (amount - implied).abs()
     # ตัวหารต้องเป็นจำนวนเงินบวกที่มีค่าจริงเท่านั้น (inf ผ่าน ``> 0`` ได้ แต่ inf/inf = NaN)
@@ -400,6 +494,8 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
             | ~_is_real_number(gap)
             # ยอดเงินที่จ่ายติดลบไม่มีทางถูก แม้ implied จะติดลบตามไปด้วย
             | amount.lt(0)
+            # ค่าธรรมเนียมติดลบไม่มีทางถูกเช่นกัน — ธงตรง ๆ ไม่ใช่รอให้หลุดมาทาง NaN
+            | negative_fee
         )
     )
     if not bool(flagged.any()):
@@ -410,6 +506,7 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
         paid = float(amount.at[idx])
         expected = float(implied.at[idx])
         recorded_rate = float(df.at[idx, "fx_rate_thb"])
+        recorded_fee = float(raw_fee.at[idx]) if raw_fee is not None else float("nan")
         # % ที่หารด้วยตัวหารที่ใช้ไม่ได้ = ตัวเลขที่ระบบแต่งเอง — ต้องเป็น None (ไม่ทราบ)
         diff_pct = float(ratio.at[idx]) * 100.0 if bool(comparable.at[idx]) else None
         trade_value_usd = float(df.at[idx, "shares"]) * float(df.at[idx, "price_usd"])
@@ -418,12 +515,13 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
             fee=float(fee.at[idx]),
             trade_value_usd=trade_value_usd,
             recorded_rate=recorded_rate,
+            recorded_fee=recorded_fee,
         )
         if diff_pct is None:
             head = (
                 f"ยอดเงินที่บันทึกไว้ {_fmt_thb(paid)} บาท เทียบสัดส่วนกับ "
                 f"จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน + ค่าธรรมเนียม = {_fmt_thb(expected)} บาท ไม่ได้ "
-                f"({_uncomparable_cause(paid)}) "
+                f"({_uncomparable_cause(paid, recorded_fee)}) "
             )
         else:
             head = (
@@ -439,6 +537,9 @@ def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
                 # ส่วนที่อธิบายว่าเกิดอะไรขึ้นอยู่ใน ``reason`` ซึ่งพูดว่า "คำนวณไม่ได้" ตรง ๆ
                 "amount_thb": _real_or_none(paid),
                 "implied_amount_thb": _real_or_none(expected),
+                # ค่าธรรมเนียมดิบที่อยู่ในสมุด (``None`` = ไม่ได้บันทึก) — ต้องออกไปด้วย
+                # เพราะแถวที่ติดลบคือแถวที่ผู้ใช้ต้องไปแก้ตัวเลขนี้โดยเฉพาะ
+                "recorded_fee_thb": _real_or_none(recorded_fee),
                 "recorded_fx": _real_or_none(recorded_rate),
                 "implied_fx": implied_rate,
                 "diff_pct": diff_pct,
@@ -467,15 +568,22 @@ def _real_or_none(value: float) -> float | None:
     return float(value) if _is_real_scalar(value) else None
 
 
-def _uncomparable_cause(paid: float) -> str:
+def _uncomparable_cause(paid: float, recorded_fee: float = float("nan")) -> str:
     """เหตุผลว่า **ทำไม** ถึงเทียบสัดส่วนไม่ได้ — ต้องชี้ฝั่งที่พังจริง.
 
     เหตุผลที่ชี้ผิดฝั่งคือการกุคำอธิบาย: แถวที่ยอดเงินปกติดีแต่ ``implied``
     คำนวณไม่ออก (จำนวนหุ้น/ราคาเป็น ``inf``) เคยขึ้นข้อความว่า "ยอดเงินต้องเป็น
     จำนวนบวก" ซึ่งส่งผู้ใช้ไปนั่งแก้เลขที่ถูกอยู่แล้ว
+
+    ``recorded_fee`` ติดลบเป็นสาเหตุลำดับที่สาม: :func:`_recorded_fee_thb` คืน
+    ``NaN`` ให้แถวนั้น ``implied`` จึงคำนวณไม่ออกทั้งที่ยอดเงินและจำนวนหุ้นถูกต้องดี
+    ถ้าไม่ชี้ที่ค่าธรรมเนียม ผู้ใช้จะได้ข้อความเหมารวมว่า "คำนวณเป็นตัวเลขจริงไม่ได้"
+    แล้วไล่หาว่าเลขไหนผิดเอาเอง (AUDIT_ROUND2_2026-08-07)
     """
     if not (_is_real_scalar(paid) and paid > 0):
         return "ยอดเงินต้องเป็นจำนวนบวก"
+    if _is_real_scalar(recorded_fee) and recorded_fee < 0:
+        return f"ค่าธรรมเนียมที่บันทึกไว้ติดลบ {_fmt_thb(recorded_fee)} บาท"
     return "จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน + ค่าธรรมเนียม คำนวณเป็นตัวเลขจริงไม่ได้"
 
 
@@ -486,12 +594,26 @@ def _fmt_thb(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def _negative_fee_note(fee: float) -> str:
+    """หมายเหตุต่อท้ายเหตุผล เมื่อค่าธรรมเนียมที่บันทึกไว้ **ติดลบ**.
+
+    ค่าธรรมเนียมติดลบแปลว่า "ซื้อแล้วได้เงินคืน" ซึ่งไม่มีอยู่จริง จึงเป็นตัวเลขที่
+    ผู้ใช้ต้องไปแก้ในสมุด ไม่ใช่ค่าที่ระบบจะกลืนเป็น 0 แล้วคำนวณต่อ
+    (AUDIT_ROUND2_2026-08-07: ``fee.where(fee >= 0).fillna(0.0)`` ทำให้แถวแบบนี้
+    ให้อัตราย้อน "สวย ๆ" เท่ากับแถวที่ไม่ได้กรอกค่าธรรมเนียมเลย)
+
+    ต้องพิมพ์ **ค่าจริง** ที่กรอกไว้เสมอ — "ค่าธรรมเนียมผิด" ลอย ๆ ผู้ใช้แก้ตามไม่ได้
+    """
+    return f" (ค่าธรรมเนียมที่บันทึกไว้ติดลบ {_fmt_thb(fee)} บาท จึงหักออกจากยอดเงินไม่ได้)"
+
+
 def _implied_rate_note(
     *,
     paid: float,
     fee: float,
     trade_value_usd: float,
     recorded_rate: float,
+    recorded_fee: float = float("nan"),
 ) -> tuple[float | None, str]:
     """อัตราแลกเปลี่ยนที่คำนวณย้อนจากยอดเงินของแถวนั้น + ข้อความอธิบายเมื่อคำนวณไม่ได้.
 
@@ -505,6 +627,13 @@ def _implied_rate_note(
     if not (_is_real_scalar(trade_value_usd) and trade_value_usd > 0):
         return None, (
             f"— คำนวณอัตราย้อนจากยอดเงินบาทไม่ได้ (จำนวนหุ้น × ราคา = {_fmt_thb(trade_value_usd)}) "
+        )
+    # ค่าธรรมเนียมติดลบต้องถูกชี้ชื่อก่อนถึงกิ่ง "ยอดเงินหลังหักค่าธรรมเนียม = คำนวณไม่ได้"
+    # ข้างล่าง — กิ่งนั้นพูดถูกแต่ชี้ปลายทาง ผู้ใช้ต้องรู้ว่าต้นเหตุคือช่อง ``fee_thb``
+    if _is_real_scalar(recorded_fee) and recorded_fee < 0:
+        return None, (
+            "— คำนวณอัตราย้อนจากยอดเงินบาทไม่ได้"
+            f"{_negative_fee_note(recorded_fee)} "
         )
     net_paid = paid - fee
     rate = net_paid / trade_value_usd
@@ -1043,8 +1172,16 @@ def get_portfolio_summary() -> pd.DataFrame:
     ].pipe(_with_reports, reports).pipe(_with_fx_source, fx_quote)
 
 
-def get_total_summary() -> dict[str, object]:
+def get_total_summary(holdings: pd.DataFrame | None = None) -> dict[str, object]:
     """สรุปภาพรวมพอร์ตทั้งหมดในหน่วย THB.
+
+    ``holdings`` = ผลของ :func:`get_portfolio_summary` ที่ผู้เรียก **คำนวณไว้แล้ว**
+    (AUDIT_ROUND2 G2) — ผู้เรียกที่ต้องแสดงทั้งรายสินทรัพย์และยอดรวมในคำขอเดียว
+    ต้องส่ง DataFrame ชุดเดียวกันเข้ามา ห้ามปล่อยให้ฟังก์ชันนี้ไปดึงราคาเองรอบสอง:
+    ราคา/อัตราแลกเปลี่ยนของสอง snapshot ต่างกันได้จริง (yfinance ติด rate limit
+    คั่นกลาง) แล้ว payload เดียวจะขัดกันเอง — มูลค่า USD ที่ดูสมบูรณ์ คู่กับ
+    ``missing_prices`` ที่บอกว่าไม่มีราคาของกองนั้น ปล่อยว่างไว้ = ดึงเอง 1 รอบ
+    (เข้ากันได้กับผู้เรียกเดิม)
 
     **เงินลงทุนมีสองฐาน และต้องอ่านคู่กับป้ายของมันเสมอ** (AUDIT_2026-08-06 H9)
 
@@ -1071,7 +1208,14 @@ def get_total_summary() -> dict[str, object]:
     (ตัวเลขบาททั้งก้อนคลาดเคลื่อน ต้องเตือนผู้ใช้แบบเดียวกับ ``missing_prices``)
     · ``None`` = ไม่ทราบที่มา/ไม่มีการแปลงค่าเงิน (สมุดว่าง)
     """
-    holdings = get_portfolio_summary()
+    if holdings is None:
+        holdings = get_portfolio_summary()
+    elif not isinstance(holdings, pd.DataFrame):
+        # ของผิดชนิดต้องดังทันที — ห้ามเงียบแล้วไปดึงราคาเองจนได้เลขคนละชุดกับผู้เรียก
+        raise TypeError(
+            "get_total_summary() รับได้เฉพาะผลของ get_portfolio_summary() "
+            f"(DataFrame) แต่ได้ {type(holdings).__name__}"
+        )
     report = _report_keys(_reports_of(holdings))
     fx_source = _fx_source_of(holdings)
     if holdings.empty:
