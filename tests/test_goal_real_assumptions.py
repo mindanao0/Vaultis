@@ -411,23 +411,29 @@ class TestTwoRateContract:
         monkeypatch.setattr(
             goal_service, "real_portfolio_assumptions_with_status", _two_rate_assumptions
         )
-        seen: dict = {}
+        calls: list[tuple] = []
 
         def _spy(*args, **kwargs):
-            seen["args"] = args
-            seen["kwargs"] = kwargs
+            calls.append((args, kwargs))
             return 0.4242
 
         monkeypatch.setattr(goal_service, "calculate_probability", _spy)
         progress = goal_service._build_progress(self._goal())
 
+        # ตั้งแต่มีหลายฉาก (FIX_PLAN เฟส 4①) ฟังก์ชันนี้ถูกเรียกหลายครั้ง — ต้องตรวจ
+        # **ครั้งที่ผลิตตัวเลขพาดหัว** (ครั้งแรก) ไม่ใช่ครั้งสุดท้ายซึ่งเป็นฉาก preset
+        args, kwargs = calls[0]
         # เรียกด้วย keyword ล้วน — ถ้าวันหนึ่งเปลี่ยนเป็น positional เทสต์นี้ต้องดัง
         # ไม่ใช่ผ่านไปเงียบ ๆ เพราะ ``kwargs`` ว่าง
-        assert seen["args"] == ()
-        assert seen["kwargs"]["annual_return"] == pytest.approx(_MU_ARITHMETIC)
-        assert seen["kwargs"]["annual_return"] != pytest.approx(_MU_GEOMETRIC)
-        assert seen["kwargs"]["volatility"] == pytest.approx(_SIGMA)
+        assert args == ()
+        assert kwargs["annual_return"] == pytest.approx(_MU_ARITHMETIC)
+        assert kwargs["annual_return"] != pytest.approx(_MU_GEOMETRIC)
+        assert kwargs["volatility"] == pytest.approx(_SIGMA)
         assert progress["probability_of_success"] == pytest.approx(0.4242)
+        # ฉาก "วัดจากอดีต" ต้องใช้ drift ตัวเดียวกับพาดหัว ไม่ใช่ CAGR
+        measured = progress["scenarios"][0]
+        assert "อดีต" in measured["label"]
+        assert measured["annual_return_pct"] == pytest.approx(_MU_GEOMETRIC * 100, abs=0.05)
 
     def test_preset_path_uses_one_rate_for_both(self, monkeypatch):
         """preset ไม่มีคู่เลขคณิต/เรขาคณิตให้แยก — ต้องใช้ค่าเดียวกันทั้งสองทาง"""
@@ -446,16 +452,19 @@ class TestTwoRateContract:
                 "data_ok": False,
             },
         )
-        seen: dict = {}
+        calls: list[dict] = []
         monkeypatch.setattr(
             goal_service,
             "calculate_probability",
-            lambda *a, **k: seen.update(k) or 0.5,
+            lambda *a, **k: calls.append(k) or 0.5,
         )
         progress = goal_service._build_progress(self._goal())
         assert progress["assumed_annual_return_pct"] == pytest.approx(9.0)
         assert progress["montecarlo_drift_annual_pct"] == pytest.approx(9.0)
-        assert seen["annual_return"] == pytest.approx(0.09)
+        # ครั้งแรก = ตัวเลขพาดหัว (ครั้งถัด ๆ ไปคือฉาก preset ที่อัตราคนละตัวโดยตั้งใจ)
+        assert calls[0]["annual_return"] == pytest.approx(0.09)
+        # ไม่มีพอร์ตจริง = ไม่มีฉาก "วัดจากอดีต" ให้โชว์ เหลือแต่ preset
+        assert all("อดีต" not in row["label"] for row in progress["scenarios"])
         assert progress["assumptions_window"] is None  # preset ไม่มีหน้าต่างข้อมูลให้อ้าง
 
     def test_real_window_reaches_the_user(self, monkeypatch):

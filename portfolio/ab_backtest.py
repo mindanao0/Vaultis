@@ -35,13 +35,16 @@ import pandas as pd
 # import ชื่อ private ข้าม module โดยตั้งใจ — เพื่อ single-source ของ threshold
 # (Roadmap invariant: ห้าม re-implement คะแนน/ตัวคูณที่อื่น)
 from analysis.financial_model import _score_tilt, score_from_prices
+from analysis.proxy_history import PROXY_MAP as _PROXY_MAP
 from analysis.risk import paired_diff_stats
 from portfolio.targets import get_target_weights
 
 WeightsFn = Callable[[pd.Timestamp, pd.DataFrame], Mapping[str, float]]
 
 # ETF จริงที่เพิ่งเกิด → ใช้ proxy ที่ track ดัชนี/สินทรัพย์เดียวกันแต่ประวัติยาวกว่า
-PROXY_MAP: dict[str, str] = {"QQQM": "QQQ", "GLDM": "GLD"}
+# ตารางกองพี่อยู่ที่ ``analysis/proxy_history.py`` ที่เดียว — หน้า Goals ใช้ตัวเดียวกัน
+# เพื่อยืดประวัติสมมติฐาน (FIX_PLAN เฟส 4①) เลขซ้ำสองที่ไม่พัง มันแค่เพี้ยนกัน
+PROXY_MAP = _PROXY_MAP
 
 WINDOWS: dict[str, dict[str, Any]] = {
     "proxy": {

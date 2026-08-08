@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..models import InvestmentGoal
 from ..schemas import GoalCreate
 
+from analysis.proxy_history import describe_proxies, proxy_tickers_for, splice_with_proxy
 from analysis.risk import portfolio_return_stats
 from portfolio.targets import RISK_PROFILES
 from utils.cache import is_cacheable
@@ -44,11 +45,13 @@ def _real_source_label(window: dict[str, Any]) -> str:
     อย่างอื่นคือการกุข้อมูลชนิดเดียวกับ "ดึงไม่สำเร็จ ≠ ไม่มีข้อมูล"
     (AUDIT_ROUND2_2026-08-07 · FIX_PLAN เฟส 4①)
     """
-    return (
+    label = (
         f"พอร์ตจริงจาก ledger — ข้อมูลที่ใช้จริง {window['start']} ถึง {window['end']} "
         f"({window['days']:,} วันทำการ ≈ {window['years']:.1f} ปี "
         f"จาก {window['days_available']:,} วันที่ดึงมาได้ในคำขอ {_HISTORY_YEARS_REQUESTED} ปี)"
     )
+    note = str(window.get("proxy_note") or "")
+    return f"{label} · {note}" if note else label
 
 
 def _assumptions(
@@ -59,6 +62,7 @@ def _assumptions(
     mu_arithmetic: float | None = None,
     sigma: float | None = None,
     window: dict[str, Any] | None = None,
+    monthly_returns: list[float] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     """รูปคืนค่ามาตรฐานของสมมติฐานพอร์ตจริง.
@@ -78,6 +82,9 @@ def _assumptions(
         "mu_arithmetic": mu_arithmetic,
         "sigma": sigma,
         "window": window,
+        # ผลตอบแทนรายเดือนที่เกิดขึ้นจริง — ตัวป้อนของ block bootstrap (list[float] จึงแคช/
+        # ส่ง JSON ได้) ว่าง = ไม่มีข้อมูลจริงให้สุ่ม ผู้เรียกต้องถอยไปใช้ normal
+        "monthly_returns": list(monthly_returns or []),
         "source": source,
         "error": error,
         "data_ok": status == ASSUMPTIONS_OK,
@@ -116,14 +123,22 @@ def _compute_real_portfolio_assumptions() -> dict[str, Any]:
             source="ยังไม่มีพอร์ตจริงใน ledger (ยังไม่มีกองที่ราคาพร้อม)",
         )
 
+    # ยืดประวัติด้วยกองพี่ที่ตามดัชนีเดียวกัน (FIX_PLAN เฟส 4①) — QQQM ลิสต์ 2020,
+    # GLDM 2018 ⇒ ``dropna`` ตัดประวัติร่วมเหลือ ~5.8 ปี **ที่ไม่มีวิกฤตใหญ่สักรอบ**
+    # σ/maxDD ที่ป้อน Monte Carlo จึงมองโลกสวยกว่าความจริงอย่างเป็นระบบ
+    # วัดจริง 2026-08-08: 5.8 ปี → 14.8 ปี · maxDD −35.0% → −42.6%
+    held = list(weights)
     try:
-        prices = fetch_adjusted_close_data(list(weights), years=_HISTORY_YEARS_REQUESTED)
+        prices = fetch_adjusted_close_data(
+            held + proxy_tickers_for(held), years=_HISTORY_YEARS_REQUESTED
+        )
     except PriceDataUnavailableError as exc:
         return _assumptions(
             ASSUMPTIONS_ERROR,
             source="ดึงราคาย้อนหลังของพอร์ตจริงไม่สำเร็จ",
             error=f"ดึงราคาย้อนหลังไม่สำเร็จ: {exc}",
         )
+    prices, proxy_report = splice_with_proxy(prices, held)
 
     try:
         stats = portfolio_return_stats(prices, weights)
@@ -141,6 +156,10 @@ def _compute_real_portfolio_assumptions() -> dict[str, Any]:
         "days_available": int(stats["window_days_available"]),
         "years": float(stats["window_years"]),
         "tickers": list(stats["tickers"]),
+        # ที่มาของประวัติที่ยืดมาต้องเดินทางไปถึงผู้ใช้ — ตัวเลขที่ยืดโดยไม่บอกที่มา
+        # คือการกุข้อมูลชนิดเดียวกับป้ายช่วงเวลาที่ไม่ตรงหน้าต่างจริง
+        "proxy": proxy_report.get("proxied") or {},
+        "proxy_note": describe_proxies(proxy_report),
     }
     return _assumptions(
         ASSUMPTIONS_OK,
@@ -148,6 +167,7 @@ def _compute_real_portfolio_assumptions() -> dict[str, Any]:
         mu_geometric=float(stats["mu_geometric"]),
         mu_arithmetic=float(stats["mu_arithmetic"]),
         sigma=float(stats["sigma"]),
+        monthly_returns=[float(v) for v in (stats.get("monthly_returns") or [])],
         window=window,
     )
 
@@ -269,6 +289,30 @@ def required_annual_return(target: float, current: float, monthly: float, months
     return (1.0 + monthly_rate) ** 12 - 1.0
 
 
+#: บล็อกละกี่เดือน — ยาวพอจะเก็บ "ครัชกินเวลาหลายเดือน" ไว้ สั้นพอให้ยังสุ่มได้หลากหลาย
+_BOOTSTRAP_BLOCK_MONTHS = 12
+#: สั้นกว่านี้การสุ่มซ้ำจะวนอยู่กับไม่กี่บล็อก ⇒ ผลลัพธ์สะท้อนตัวอย่างมากกว่าตลาด
+_BOOTSTRAP_MIN_MONTHS = 36
+
+
+def _block_bootstrap(
+    rng: np.random.Generator, samples: list[float], n_simulations: int, months: int
+) -> np.ndarray:
+    """สุ่มผลตอบแทนรายเดือนทีละบล็อกจากอดีตจริง (moving-block bootstrap).
+
+    สุ่ม **จุดเริ่มของบล็อก** แล้วต่อกันจนครบ ``months`` — ลำดับภายในบล็อกคือลำดับจริง
+    ที่เกิดขึ้น ความสัมพันธ์ระหว่างเดือนที่ติดกัน (เช่น ครัชที่ลากยาว) จึงยังอยู่
+    ต่างจาก normal iid ที่สลับเดือนแย่ ๆ ให้กระจายตัวจนความเสี่ยงดูเบากว่าจริง
+    """
+    data = np.asarray(samples, dtype=float)
+    block = min(_BOOTSTRAP_BLOCK_MONTHS, len(data))
+    n_blocks = int(np.ceil(months / block))
+    starts = rng.integers(0, len(data) - block + 1, size=(n_simulations, n_blocks))
+    offsets = np.arange(block)
+    picked = data[(starts[:, :, None] + offsets[None, None, :]) % len(data)]
+    return picked.reshape(n_simulations, n_blocks * block)[:, :months]
+
+
 def calculate_probability(
     current: float,
     monthly_contribution: float,
@@ -277,6 +321,7 @@ def calculate_probability(
     target: float,
     volatility: float = 0.15,
     n_simulations: int = 1000,
+    historical_monthly: list[float] | None = None,
 ) -> float:
     """Monte Carlo simulation คืนค่าความน่าจะเป็นที่จะถึงเป้าหมาย (0–1).
 
@@ -285,15 +330,24 @@ def calculate_probability(
     ส่วนต่าง σ²/2 ออกให้เองอยู่แล้ว — ป้อน CAGR เข้ามาตรงนี้จะเป็นการหักซ้ำสองรอบ
     (คู่ตรงข้ามของบั๊ก PMT ใน AUDIT_ROUND2_2026-08-07 · FIX_PLAN เฟส 4① — สองสูตรนี้
     ต้องการอัตราคนละตัว ห้ามส่งตัวเดียวกันเข้าทั้งคู่เพราะ "ก็ μ เหมือนกัน")
+
+    ``historical_monthly`` มีและยาวพอ → ใช้ **block bootstrap** จากผลตอบแทนที่เกิดขึ้นจริง
+    แทนการสุ่มจาก normal (FIX_PLAN เฟส 4①) · normal iid ไม่มีทั้งหางอ้วนและการเกาะกลุ่ม
+    ของเดือนแย่ ๆ ที่ตลาดจริงมี — วัดจริงตอนตรวจ: เป้า 12 ล้าน 58.3% → **39.4%**
+    (ต่าง 18.9 จุด) การสุ่มทีละบล็อกยาว ``_BOOTSTRAP_BLOCK_MONTHS`` เก็บลำดับของ
+    เดือนที่ติดกันไว้ ⇒ ครัชที่กินเวลาหลายเดือนยังเกิดเป็นชุดเหมือนของจริง
+    ไม่มีข้อมูลจริง/สั้นเกินไป → ถอยไปใช้ normal ตามเดิม (ไม่ใช่ล้ม)
     """
     if months <= 0:
         return 1.0 if current >= target else 0.0
 
-    monthly_return = annual_return / 12
-    monthly_vol = volatility / np.sqrt(12)
-
     rng = np.random.default_rng(42)
-    returns = rng.normal(monthly_return, monthly_vol, size=(n_simulations, months))
+    if historical_monthly and len(historical_monthly) >= _BOOTSTRAP_MIN_MONTHS:
+        returns = _block_bootstrap(rng, historical_monthly, n_simulations, months)
+    else:
+        monthly_return = annual_return / 12
+        monthly_vol = volatility / np.sqrt(12)
+        returns = rng.normal(monthly_return, monthly_vol, size=(n_simulations, months))
 
     portfolio = np.full(n_simulations, float(current))
     for t in range(months):
@@ -339,6 +393,73 @@ def _rate_from(assumptions: dict[str, Any], key: str) -> float:
     if value is None:
         value = assumptions["mu"]
     return float(value)
+
+
+#: เงินเฟ้อไทยที่ใช้แปลงเป้าหมายเป็น "อำนาจซื้อวันนี้" — กรอบเป้าหมายของ ธปท. คือ 1–3%
+#: ใช้ค่ากลาง 2% เป็น **สมมติฐานที่ประกาศไว้** ไม่ใช่ตัวเลขที่วัดได้ (จึงส่งออกไปกับผลลัพธ์
+#: เป็น ``assumed_inflation_pct`` ให้ผู้ใช้เห็นว่ากำลังสมมติอะไรอยู่)
+ASSUMED_INFLATION = 0.02
+
+#: ฉากสมมติฐานผลตอบแทนที่โชว์คู่กันเสมอ — ชื่อ + อัตราทบต้นต่อปี
+_PRESET_SCENARIOS: tuple[tuple[str, float], ...] = (
+    ("ระมัดระวัง (7%)", 0.07),
+    ("กลาง ๆ (9%)", 0.09),
+    ("ก้าวร้าว (12%)", 0.12),
+)
+
+
+def _build_scenarios(
+    goal: InvestmentGoal,
+    *,
+    months: int,
+    measured_compound: float | None,
+    measured_drift: float | None,
+    volatility: float,
+    historical_monthly: list[float],
+) -> list[dict[str, Any]]:
+    """หลายฉากของสมมติฐานผลตอบแทน — ฉาก "วัดจากอดีต" เป็นเพียงหนึ่งในนั้น.
+
+    ทำไมต้องมีหลายฉาก (FIX_PLAN เฟส 4①): μ ที่วัดจากอดีตถูกป้อนเข้า Monte Carlo ตรง ๆ
+    แล้วผลลัพธ์ตัวเดียวถูกอ่านเป็นคำพยากรณ์ — วัดตอนตรวจ (เติม 10,000/เดือน 20 ปี เป้า 8 ล้าน)
+    μ 15.08% → P 85.0% · 12% → 57.5% · 9% → 25.9% · 7% → 11.5% ⇒ **ต่าง 73 จุด**
+    จากสมมติฐานตัวเดียว ตัวเลขเดียวจึงเป็นความมั่นใจที่ข้อมูลไม่รองรับ
+
+    ``measured_*`` เป็น ``None`` เมื่อยังอ่านพอร์ตจริงไม่ได้ — ฉาก preset ยังแสดงได้ตามปกติ
+    """
+    rows: list[dict[str, Any]] = []
+    if measured_compound is not None and measured_drift is not None:
+        rows.append(("วัดจากอดีตของพอร์ตจริง", measured_compound, measured_drift))
+    for label, rate in _PRESET_SCENARIOS:
+        # preset เป็นสมมติฐานที่ตั้งเอง ไม่ได้วัดจากอดีต จึงไม่มีคู่เลขคณิต/เรขาคณิตให้แยก
+        rows.append((label, rate, rate))
+
+    scenarios: list[dict[str, Any]] = []
+    for label, compound, drift in rows:
+        scenarios.append(
+            {
+                "label": label,
+                "annual_return_pct": round(compound * 100, 1),
+                "required_monthly_pmt": round(
+                    calculate_pmt(
+                        goal.target_amount_thb, goal.current_amount_thb, compound, months
+                    ),
+                    2,
+                ),
+                "probability_of_success": round(
+                    calculate_probability(
+                        current=goal.current_amount_thb,
+                        monthly_contribution=goal.monthly_contribution_thb,
+                        months=months,
+                        annual_return=drift,
+                        target=goal.target_amount_thb,
+                        volatility=volatility,
+                        historical_monthly=historical_monthly,
+                    ),
+                    4,
+                ),
+            }
+        )
+    return scenarios
 
 
 def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
@@ -396,6 +517,7 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
     # ที่เดียวในฟังก์ชันนี้ที่ต้องใช้ค่าเฉลี่ยเลข**คณิต**: ``calculate_probability`` สุ่ม
     # ผลตอบแทนรายเดือนรอบค่านี้แล้วคูณทบเอง ตัวจำลองจึงหักส่วนต่าง σ²/2 ให้อยู่แล้ว
     # ส่ง CAGR เข้ามาตรงนี้ = หักซ้ำสองรอบ ⇒ ความน่าจะเป็นต่ำกว่าจริง
+    historical_monthly = list(assumptions.get("monthly_returns") or [])
     probability = calculate_probability(
         current=goal.current_amount_thb,
         monthly_contribution=goal.monthly_contribution_thb,
@@ -403,6 +525,7 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
         annual_return=drift_return,
         target=goal.target_amount_thb,
         volatility=volatility,
+        historical_monthly=historical_monthly,
     )
 
     off_track, correction = check_off_track(goal, required_pmt)
@@ -415,6 +538,19 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
     # ``needed`` มาจาก ``required_annual_return`` = ``(1+r_เดือน)**12 − 1`` คืออัตรา**ทบต้น**
     # ค่าที่ใช้แทนเมื่อหาคำตอบไม่ได้จึงต้องเป็นอัตราทบต้นด้วย ไม่งั้นเป็นการเทียบคนละหน่วย
     allocation = suggest_allocation(goal.risk_profile, needed if needed is not None else compound_return)
+
+    # **μ ที่วัดได้จากอดีต ≠ μ ที่ควรใช้พยากรณ์** (FIX_PLAN เฟส 4①) — ตัวเลขเดียวบนจอ
+    # ถูกอ่านเป็นคำพยากรณ์เสมอ ทั้งที่ต่างกันแค่สมมติฐานเดียวก็เปลี่ยนคำตอบมหาศาล
+    # (ตอนตรวจ: μ 15.08% → P 85.0% · μ 9% → 25.9% · μ 7% → 11.5% = ต่าง 73 จุด)
+    # จึงโชว์หลายฉากคู่กัน แทนที่จะให้ตัวเลขที่วัดจากอดีตยืนเป็นคำตอบเดียว
+    scenarios = _build_scenarios(
+        goal,
+        months=months,
+        measured_compound=compound_return if assumptions_status == ASSUMPTIONS_OK else None,
+        measured_drift=drift_return if assumptions_status == ASSUMPTIONS_OK else None,
+        volatility=volatility,
+        historical_monthly=historical_monthly,
+    )
 
     assumptions_note = (
         f"ประมาณการใช้ผลตอบแทนทบต้น (CAGR) {compound_return*100:.1f}% ต่อปี "
@@ -457,6 +593,14 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
         # (routers/goals.py ไม่มี response_model มากรอง คีย์นี้จึงถึงผู้ใช้จริง)
         # ``None`` เมื่อใช้ preset — preset ไม่ได้วัดจากอดีต จึงไม่มีหน้าต่างข้อมูลให้อ้าง
         "assumptions_window": assumptions_window,
+        # หลายฉากของ μ — ตัวเลขที่วัดจากอดีตเป็นแค่ฉากหนึ่ง ไม่ใช่คำพยากรณ์
+        "scenarios": scenarios,
+        # อำนาจซื้อจริงของเป้าหมาย ณ วันครบกำหนด (สมมติเงินเฟ้อคงที่ — บอกสมมติฐานไว้ในคีย์)
+        "target_real_value_thb": round(
+            goal.target_amount_thb / ((1.0 + ASSUMED_INFLATION) ** (months / 12.0)), 2
+        ),
+        "assumed_inflation_pct": round(ASSUMED_INFLATION * 100, 1),
+        "probability_method": "bootstrap" if len(historical_monthly) >= _BOOTSTRAP_MIN_MONTHS else "normal",
         # ok = พอร์ตจริง · empty = ยังไม่มีพอร์ต · error = ดึงข้อมูลไม่สำเร็จ (ใช้ preset แทน)
         "assumptions_status": assumptions_status,
         "assumptions_error": assumptions_error,

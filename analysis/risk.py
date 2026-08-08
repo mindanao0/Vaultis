@@ -204,7 +204,14 @@ def portfolio_return_stats(price_df: pd.DataFrame, weights: dict[str, float]) ->
         raise ValueError("อัตราทบต้น (CAGR) ที่ได้ไม่สมเหตุสมผล")
 
     days_used = int(len(portfolio_daily))
+    # ผลตอบแทน**รายเดือน**ที่เกิดขึ้นจริง — ตัวป้อนของ block bootstrap ซึ่งไม่ต้องสมมติว่า
+    # ผลตอบแทนเป็น normal iid  เก็บเป็น ``list[float]`` เพื่อให้ผ่าน JSON/แคชของผู้เรียกได้
+    # (ยาว ~จำนวนเดือนในหน้าต่าง — หลักร้อย ไม่ใช่ภาระ)
+    monthly = portfolio_daily.groupby(portfolio_daily.index.to_period("M")).apply(
+        lambda block: float(np.expm1(np.log1p(block).sum()))
+    )
     return {
+        "monthly_returns": [float(v) for v in monthly if np.isfinite(v)],
         "mu_arithmetic": mu_arithmetic,
         "mu_geometric": mu_geometric,
         "sigma": sigma,
