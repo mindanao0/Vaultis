@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """Streamlit dashboard สำหรับวิเคราะห์และติดตามพอร์ต ETF ระยะยาว."""
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 # dashboard เคยตายทั้ง process ด้วย SIGSEGV ระหว่างสลับหน้า (AUDIT.md M20) — เกิด 2 ใน 5 รอบ
 # ตอนตรวจ 2026-07-28 แล้วหลังจากนั้นเรียกซ้ำ 96 ครั้งก็ไม่เกิดอีก จึงยังหาต้นตอไม่ได้
@@ -39,14 +40,18 @@ from analysis.llm import ANTHROPIC_MODEL
 from analysis.financial_model import (
     ALLOCATION_UNIT_THB,
     DIVIDEND_MAX,
+    EXCLUDED_NO_DATA,
+    EXCLUDED_ROUNDED_TO_ZERO,
+    EXCLUDED_ZERO_TARGET,
     MOMENTUM_MAX,
     TILT_MAX,
     TILT_MIN,
     TIMING_MAX,
     TREND_MAX,
+    AllocationPlan,
     _dividend_yield,
     build_etf_scores,
-    calculate_allocation,
+    calculate_allocation_with_status,
     run_full_analysis,
 )
 from analysis.news_fetcher import (
@@ -57,7 +62,7 @@ from analysis.news_fetcher import (
     get_news_with_status,
 )
 from analysis.ta_compat import ta
-from analysis.returns import calculate_period_returns, monthly_seasonality
+from analysis.returns import calculate_period_returns, monthly_seasonality, real_bars
 from analysis.macro import get_thai_inflation
 from analysis.risk import calculate_risk_metrics, drawdown_episodes, underwater_series
 from analysis.trend_channel import fit_trend_channel
@@ -67,6 +72,7 @@ from alerts.price_alert import (
     add_alert,
     add_or_update_alert,
     check_alerts,
+    check_result_contract_error,
     delete_alert,
     get_active_alerts_with_distance,
     get_current_prices,
@@ -79,6 +85,8 @@ from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
 from portfolio.targets import (
     RISK_PROFILES,
     InvalidTargetWeights,
+    NoTargetForSubset,
+    TargetWeightsError,
     get_risk_profile,
     get_target_weights,
     get_target_weights_with_status,
@@ -99,6 +107,7 @@ from utils.fx import (
     DEFAULT_FALLBACK_RATE as FX_DEFAULT_FALLBACK_RATE,
     MAX_RATE as FX_MAX_RATE,
     MIN_RATE as FX_MIN_RATE,
+    FxRateUnavailable,
     get_usdthb,
 )
 from portfolio.tracker import (
@@ -147,6 +156,14 @@ THEME = {
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 
+# รายการหน้าจอของแอป — **แหล่งเดียว** ทั้งของแถบข้าง ปุ่มนำทาง และตัวเลือก
+# "หน้าเริ่มต้น" ในหน้า Settings (AUDIT_ROUND2_2026-08-07)
+#
+# เดิมหน้า Settings มีลิสต์ ``page_options`` เขียนมือของตัวเองอีกชุด และ
+# ``_render_custom_sidebar()`` ฮาร์ดโค้ดปุ่มไว้อีก 13 ปุ่ม รวมเป็นสามชุดที่ต้องตรงกันเอง
+# พอเพิ่มหน้า Correlation กับ News ลิสต์ในหน้า Settings ก็ตกหล่นไปสองหน้า ⇒ ผู้ใช้ที่ตั้ง
+# ``display.default_page`` เป็นหน้าเหล่านั้นไว้ จะโดน selectbox เด้งกลับไป "Overview"
+# แล้วปุ่ม "บันทึก Settings" เขียนทับค่าเดิมลง config.json เงียบ ๆ แม้ตั้งใจมาแก้แค่งบ DCA
 NAV_GROUPS = [
     ("Main", ["Overview", "Scorecard", "Portfolio"]),
     ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
@@ -155,6 +172,11 @@ NAV_GROUPS = [
 ]
 
 NAV_ITEMS = [item for _, group_items in NAV_GROUPS for item in group_items]
+
+
+def _nav_button_key(page: str) -> str:
+    """คีย์ปุ่มนำทางของหน้า — คงรูปแบบเดิม ``nav_dca_simulator`` ไว้ทุกตัว."""
+    return "nav_" + page.lower().replace(" ", "_").replace("&", "and")
 
 
 def _inject_premium_theme() -> None:
@@ -212,20 +234,31 @@ def _inject_premium_theme() -> None:
         [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3, [data-testid="stSidebar"] p {{
             color: {THEME["text_primary"]};
         }}
-        .logo {{
+        /* ป้าย "VAULTIS" กับป้ายหมวดต้องชนะกฎรีเซ็ต p ของ sidebar ด้านบน
+           (AUDIT_ROUND2_2026-08-07): กฎนั้นคือ
+           [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p → specificity (0,2,1)
+           ส่วน .logo / .nav-group เดิมเป็น (0,1,0) แม้จะใส่ !important เท่ากันก็แพ้
+           ⇒ padding/margin ที่ตั้งไว้ถูกล้างเป็น 0 ทั้งคู่ พอ stVerticalBlock ตั้ง gap:0rem
+           ป้ายหมวดจึงไปทับตัวอักษรของปุ่มบรรทัดถัดไป ("VAULTIS" ทับ "MAIN",
+           "ANALYSIS" ทับ "Backtest") · แก้ด้วยการเพิ่ม specificity ให้ชนะจริง
+           ห้ามกลับไปใช้ selector คลาสเดี่ยว และห้ามใช้ negative margin/absolute
+           มาดันตำแหน่งแทน เพราะจะกลับไปซ้อนกับ container ของ st.button อีก */
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p.logo {{
             font-size: 16px !important;
             font-weight: 600 !important;
             color: #E6EDF3 !important;
-            padding: 8px 0 16px 0 !important;
-            margin: 0 !important;
+            line-height: 1.4 !important;
+            padding: 0 !important;
+            margin: 8px 0 16px 0 !important;
         }}
-        .nav-group {{
+        [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p.nav-group {{
             font-size: 10px !important;
             color: #7D8590 !important;
             letter-spacing: 0.08em !important;
             text-transform: uppercase !important;
-            padding: 12px 0 2px 0 !important;
-            margin: 0 !important;
+            line-height: 1.4 !important;
+            padding: 0 !important;
+            margin: 14px 0 6px 0 !important;
         }}
         [data-testid="stSidebar"] .sidebar-footer {{
             border-top: 1px solid {THEME["border"]};
@@ -334,58 +367,53 @@ def _inject_premium_theme() -> None:
 
 
 def _apply_plotly_dark_theme(fig: go.Figure) -> go.Figure:
+    """ทาสีธีมมืดให้กราฟ — **ห้ามสร้าง ``layout.title`` ให้กราฟที่ไม่ได้ตั้งชื่อ**.
+
+    เดิมบรรทัดนี้เป็น ``title_font=dict(...)`` เดี่ยว ๆ ซึ่งทำให้ plotly สร้าง
+    ``layout.title`` ที่มีแต่คีย์ ``font`` ไม่มี ``text`` แล้ว plotly.js เรนเดอร์
+    ``text === undefined`` ออกมาเป็นคำว่า "undefined" ตัวหนาเหนือกราฟ — นับได้ 10 กราฟ
+    ใน 6 หน้า รวมหน้า Overview และ Technical Signals ที่เป็นหน้าตัดสินใจลงเงินจริง
+    (AUDIT_ROUND2_2026-08-07) · ตัวเลขในกราฟไม่ผิด แต่หน้าจอที่ดูเหมือนพังคือหน้าจอ
+    ที่เชื่อไม่ได้ จึงตั้งฟอนต์ของหัวกราฟ **ก็ต่อเมื่อกราฟนั้นมีชื่อของตัวเองอยู่แล้ว**
+    """
     fig.update_layout(
         plot_bgcolor=THEME["main_bg"],
         paper_bgcolor=THEME["main_bg"],
         font=dict(color=THEME["text_primary"], family="Inter"),
-        title_font=dict(color=THEME["text_primary"], family="Inter"),
         legend=dict(bgcolor="rgba(0,0,0,0)"),
     )
+    title_text = getattr(getattr(fig.layout, "title", None), "text", None)
+    if title_text:
+        # ส่ง text เดิมกลับไปด้วยเสมอ — เซ็ต font เดี่ยว ๆ คือต้นเหตุของ "undefined"
+        fig.update_layout(
+            title=dict(text=title_text, font=dict(color=THEME["text_primary"], family="Inter"))
+        )
     fig.update_xaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
     fig.update_yaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
     return fig
 
 
 def _render_custom_sidebar(default_page: str) -> str:
+    """แถบนำทาง — สร้างปุ่มจาก :data:`NAV_GROUPS` ห้ามฮาร์ดโค้ดรายชื่อหน้าซ้ำอีกชุด.
+
+    เดิมปุ่มทั้ง 13 ปุ่มถูกเขียนมือ ทำให้รายชื่อหน้าจอในโปรเจกต์มีสามชุด (NAV_GROUPS,
+    ปุ่มในแถบข้าง, ``page_options`` ในหน้า Settings) แล้วชุดหลังก็ drift จนผู้ใช้ตั้ง
+    หน้า Correlation/News เป็นหน้าเริ่มต้นไม่ได้ (AUDIT_ROUND2_2026-08-07) — วนลูป
+    จากแหล่งเดียวแล้ว drift แบบนั้นเกิดซ้ำไม่ได้อีก
+    """
     if "page" not in st.session_state:
         st.session_state["page"] = default_page if default_page in NAV_ITEMS else "Overview"
 
     with st.sidebar:
         st.markdown('<p class="logo">VAULTIS</p>', unsafe_allow_html=True)
 
-        st.markdown('<p class="nav-group">MAIN</p>', unsafe_allow_html=True)
-        if st.button("Overview", key="nav_overview", use_container_width=True):
-            st.session_state["page"] = "Overview"
-        if st.button("Scorecard", key="nav_scorecard", use_container_width=True):
-            st.session_state["page"] = "Scorecard"
-        if st.button("Portfolio", key="nav_portfolio", use_container_width=True):
-            st.session_state["page"] = "Portfolio"
-
-        st.markdown('<p class="nav-group">ANALYSIS</p>', unsafe_allow_html=True)
-        if st.button("Backtest", key="nav_backtest", use_container_width=True):
-            st.session_state["page"] = "Backtest"
-        if st.button("DCA Simulator", key="nav_dca_simulator", use_container_width=True):
-            st.session_state["page"] = "DCA Simulator"
-        if st.button("Technical Signals", key="nav_technical_signals", use_container_width=True):
-            st.session_state["page"] = "Technical Signals"
-        if st.button("Correlation", key="nav_correlation", use_container_width=True):
-            st.session_state["page"] = "Correlation"
-        if st.button("DCF Analysis", key="nav_dcf_analysis", use_container_width=True):
-            st.session_state["page"] = "DCF Analysis"
-
-        st.markdown('<p class="nav-group">AI & ALERTS</p>', unsafe_allow_html=True)
-        if st.button("AI Advisor", key="nav_ai_advisor", use_container_width=True):
-            st.session_state["page"] = "AI Advisor"
-        if st.button("Macro", key="nav_macro", use_container_width=True):
-            st.session_state["page"] = "Macro"
-        if st.button("News", key="nav_news", use_container_width=True):
-            st.session_state["page"] = "News"
-        if st.button("Price Alerts", key="nav_price_alerts", use_container_width=True):
-            st.session_state["page"] = "Price Alerts"
-
-        st.markdown('<p class="nav-group">SYSTEM</p>', unsafe_allow_html=True)
-        if st.button("Settings", key="nav_settings", use_container_width=True):
-            st.session_state["page"] = "Settings"
+        for group_label, group_items in NAV_GROUPS:
+            st.markdown(
+                f'<p class="nav-group">{group_label.upper()}</p>', unsafe_allow_html=True
+            )
+            for item in group_items:
+                if st.button(item, key=_nav_button_key(item), use_container_width=True):
+                    st.session_state["page"] = item
 
         st.markdown(
             '<div class="sidebar-footer">Vaultis v1.0</div>',
@@ -422,17 +450,87 @@ def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
     )
 
 
+def _browser_can_resolve(host: str) -> bool:
+    """เบราว์เซอร์บนเครื่องผู้ใช้มีสิทธิ์ resolve ชื่อโฮสต์นี้ได้ไหม.
+
+    ``backend`` / ``postgres`` เป็นชื่อ service ของ Docker Compose — resolve ได้เฉพาะ
+    **ในเครือข่ายของ compose** เท่านั้น ชื่อที่ไม่มีจุดและไม่ใช่ localhost จึงถือว่า
+    เป็นชื่อภายใน · ชื่อที่มีจุด (โดเมนจริง/IP) หรือ localhost ถือว่าเบราว์เซอร์ใช้ได้
+    """
+    host = host.strip().lower()
+    if not host:
+        return False
+    if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}:
+        return True
+    return "." in host or ":" in host
+
+
+def _ws_prices_url_with_status() -> tuple[str, str | None]:
+    """URL ของ WebSocket ราคา + คำเตือนไทยเมื่อ URL ที่ได้เบราว์เซอร์เปิดไม่ได้.
+
+    **BACKEND_URL กับ WS URL อยู่คนละมุมมองเครือข่าย** (AUDIT_ROUND2_2026-08-07):
+    ``BACKEND_URL`` ถูกใช้จาก **ในคอนเทนเนอร์** dashboard ส่วน URL ตัวนี้ถูกยัดเข้า
+    ``new WebSocket(...)`` ที่รันใน **เบราว์เซอร์ของผู้ใช้** เดิมโค้ดแปลง BACKEND_URL
+    เป็น ws:// ตรง ๆ พอ docker-compose ตั้ง ``BACKEND_URL=http://backend:8000``
+    เบราว์เซอร์บนโฮสต์ก็ได้ ``ERR_NAME_NOT_RESOLVED`` ⇒ แถบราคาเรียลไทม์ขึ้น
+    "⚠️ ดึงไม่ได้ (WS error)" ครบทั้ง 5 ตัวตลอดเวลาในโหมดรันหลักของโปรเจกต์
+
+    ลำดับการตัดสิน:
+
+    1. ตั้ง ``VAULTIS_WS_URL`` ไว้ → ใช้ค่านั้น ไม่เดาต่อ (คำตอบสุดท้ายของผู้ใช้)
+    2. โฮสต์ใน ``BACKEND_URL`` เบราว์เซอร์ resolve ได้ → แปลงเป็น ws:// ตามเดิม
+    3. เป็นชื่อภายในเครือข่าย Docker → เดาเป็น ``<scheme>://127.0.0.1:<port>/ws/prices``
+       (พอร์ตที่ compose เปิดไว้บนโฮสต์) **พร้อมคำเตือนบนหน้าจอว่าเดามาแบบไหน**
+       — URL ที่เดาแล้วต่อไม่ติดยังจบที่ ``ws.onerror`` ซึ่งเขียนว่า "ดึงไม่ได้" อยู่แล้ว
+       ไม่มีทางกลายเป็นราคาปลอม แต่ผู้ใช้ต้องอ่านออกว่าต้องไปตั้งอะไรถึงจะใช้ได้จริง
+
+    สองจุดที่การเดาข้อ 3 เคยพูดไม่ครบ (AUDIT_ROUND2_2026-08-07 · รอบเก็บตก):
+
+    * **สคีมาถูกฮาร์ดโค้ดเป็น ``ws://``** ทั้งที่ ``BACKEND_URL`` เป็น ``https``:
+      หน้าที่เสิร์ฟผ่าน https เปิด WebSocket แบบ ``ws://`` ไม่ได้ (mixed content —
+      เบราว์เซอร์บล็อกก่อนถึงเครือข่ายด้วยซ้ำ) จึงต้องยก ``scheme`` เดียวกับที่
+      คำนวณไว้แล้วมาใช้ ไม่ใช่ตั้งใหม่เป็นค่าคงที่
+    * ``127.0.0.1`` คือ **เครื่องของคนที่เปิดเบราว์เซอร์** ไม่ใช่เครื่องที่รัน Docker
+      การเดานี้จึงถูกเฉพาะตอนที่สองอย่างนั้นเป็นเครื่องเดียวกัน — เปิดจากมือถือหรือ
+      เครื่องอื่นในบ้าน มันจะยิงกลับเข้าเครื่องตัวเองแล้วไม่มีทางต่อติด ข้อความบน
+      หน้าจอต้องพูดตรง ๆ ไม่ใช่ปล่อยให้ผู้ใช้เดาว่าทำไม ⚠️ ไม่หาย
+    """
+    explicit = os.getenv("VAULTIS_WS_URL", "").strip()
+    if explicit:
+        return explicit, None
+
+    parsed = urlparse(BACKEND_URL.strip())
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    netloc = parsed.netloc or parsed.path.strip("/")
+    derived = f"{scheme}://{netloc.rstrip('/')}/ws/prices"
+    if _browser_can_resolve(parsed.hostname or ""):
+        return derived, None
+
+    port = parsed.port or (443 if scheme == "wss" else 8000)
+    # ใช้ ``scheme`` ตัวเดียวกับที่แปลงไว้ข้างบน — https ⇒ wss เสมอ ไม่งั้นเบราว์เซอร์
+    # บล็อกทิ้งเพราะ mixed content แล้วผู้ใช้เห็นแค่ ⚠️ โดยไม่รู้ว่าสาเหตุคือสคีมา
+    guessed = f"{scheme}://127.0.0.1:{port}/ws/prices"
+    note = (
+        f"แถบราคาเรียลไทม์: `BACKEND_URL` = `{BACKEND_URL}` เป็นชื่อโฮสต์ภายในเครือข่าย Docker "
+        "ซึ่งเบราว์เซอร์ของคุณ resolve ไม่ได้ (คนละมุมมองเครือข่ายกับที่คอนเทนเนอร์ใช้) "
+        f"— ระบบจึงเดาไปที่ `{guessed}` ซึ่งเป็นพอร์ตที่ compose เปิดไว้บนเครื่องโฮสต์ "
+        "**การเดานี้ใช้ได้เฉพาะตอนที่คุณเปิดเบราว์เซอร์บนเครื่องเดียวกับที่รัน Docker เท่านั้น** "
+        "เพราะ 127.0.0.1 คือเครื่องของเบราว์เซอร์เอง ไม่ใช่เครื่องที่รันคอนเทนเนอร์ — "
+        "เปิดจากมือถือหรือเครื่องอื่นในเครือข่าย มันจะยิงกลับเข้าเครื่องตัวเองและต่อไม่ติดแน่นอน · "
+        "ถ้าแถบด้านบนยังขึ้น ⚠️ ให้ตั้ง `VAULTIS_WS_URL` เป็น URL ที่เบราว์เซอร์เข้าถึง backend ได้"
+    )
+    return guessed, note
+
+
 def _ws_prices_url() -> str:
     """WebSocket URL for live prices (override with VAULTIS_WS_URL)."""
-    default_ws_base = BACKEND_URL.replace("https://", "wss://").replace("http://", "ws://").rstrip("/")
-    default_ws_url = f"{default_ws_base}/ws/prices"
-    raw = os.getenv("VAULTIS_WS_URL", default_ws_url).strip()
-    return raw or default_ws_url
+    return _ws_prices_url_with_status()[0]
 
 
 def _render_realtime_price_ticker_bar() -> None:
     """Live ticker via backend WebSocket (iframe ? Streamlit strips <script> in st.markdown)."""
-    ws_url = json.dumps(_ws_prices_url(), ensure_ascii=False)
+    resolved_url, ws_note = _ws_prices_url_with_status()
+    ws_url = json.dumps(resolved_url, ensure_ascii=False)
     html = f"""
 <div id="ticker-bar" style="
     background: #161B22;
@@ -514,6 +612,43 @@ def _render_realtime_price_ticker_bar() -> None:
 </script>
 """
     components.html(html, height=70)
+    if ws_note:
+        # ต้องอยู่ข้างแถบเสมอ — ไม่งั้นผู้ใช้เห็นแค่ ⚠️ 5 ตัวโดยไม่มีทางรู้ว่าต้องแก้อะไร
+        # (ข้อความจริงของ console อยู่ในเบราว์เซอร์ ซึ่งผู้ใช้ทั่วไปไม่ได้เปิดดู)
+        st.caption(ws_note)
+
+
+def _stale_price_notes(prices: pd.DataFrame) -> list[str]:
+    """คำเตือนกำกับตัวเลขที่คิดจากราคา — "ดึงไม่ได้" ≠ "ไม่มีข้อมูล" ≠ "ราคาไม่ขยับ" (G7).
+
+    ตาราง Returns เป็นตัวเลขล้วน ไม่มีช่องให้ติดธง ``stale``/``data_ok`` เหมือน
+    snapshot จึงต้องพิมพ์บอกข้าง ๆ: ETF ที่ผู้ให้ข้อมูลหยุดส่งแท่งมาหลายสิบวัน
+    ยังได้ผลตอบแทนของ**แท่งจริง**ของตัวเอง (ตัวเลขไม่ได้ถูกกุ) แต่มันเป็นผลตอบแทน
+    "ถึงวันที่หยุดส่ง" ซึ่งวางปนกับ ETF ตัวอื่นที่เป็นของวันล่าสุดโดยไม่มีอะไรบอก
+    """
+    notes: list[str] = []
+    if prices is None or prices.empty:
+        return notes
+    try:
+        frame_last = pd.Timestamp(prices.index[-1])
+    except (TypeError, ValueError):  # index ที่ไม่ใช่เวลา — เทียบความสดไม่ได้
+        return notes
+    for ticker in prices.columns:
+        bars = real_bars(prices[ticker])
+        if bars.empty:
+            notes.append(f"⚠️ {ticker}: ดึงราคาไม่ได้เลย — ทุกช่องเป็น N/A ไม่ใช่ 0%")
+            continue
+        try:
+            last = pd.Timestamp(bars.index[-1])
+        except (TypeError, ValueError):
+            continue
+        if last < frame_last:
+            notes.append(
+                f"⚠️ {ticker}: แท่งราคาล่าสุดคือ {last.strftime('%d/%m/%Y')} "
+                f"ตามหลังวันล่าสุดของชุดข้อมูล ({frame_last.strftime('%d/%m/%Y')}) — "
+                "ตัวเลขของกองนี้คิดถึงวันนั้น ไม่ใช่วันล่าสุด"
+            )
+    return notes
 
 
 def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
@@ -597,6 +732,17 @@ def _render_overview_metrics(prices: pd.DataFrame, tickers: list[str]) -> None:
             """,
             unsafe_allow_html=True,
         )
+
+    # กองที่ไม่มีตัวเลข 1Y ถูกตัดออกจากการจัดอันดับ — ต้องบอก ไม่ใช่หายเงียบ ๆ (G7)
+    excluded = [str(t) for t in return_df.columns if t not in sortable.index]
+    if excluded:
+        st.caption(
+            "⚠️ ไม่ได้เข้าการจัดอันดับ Best/Worst (1Y): "
+            + ", ".join(excluded)
+            + " — ไม่มีตัวเลขผลตอบแทน 1 ปี (ดึงราคาไม่ได้ หรือแท่งราคาจริงไม่พอ) ไม่ใช่ 0%"
+        )
+    for note in _stale_price_notes(prices):
+        st.caption(note)
 
 
 def _render_pdf_export_panel(section_key: str, prepare_label: str, download_label: str) -> None:
@@ -770,19 +916,6 @@ def render_settings_page() -> None:
 
     config = load_config()
     current_tickers = get_tickers()
-    page_options = [
-        "Overview",
-        "Scorecard",
-        "Portfolio",
-        "Backtest",
-        "DCA Simulator",
-        "Technical Signals",
-        "DCF Analysis",
-        "AI Advisor",
-        "Macro",
-        "Price Alerts",
-        "Settings",
-    ]
 
     st.subheader("1) DCA Settings")
     dca_budget = st.number_input(
@@ -890,11 +1023,20 @@ def render_settings_page() -> None:
 
     st.divider()
     st.subheader("5) Display Settings")
+    # ตัวเลือกมาจาก NAV_ITEMS (แหล่งเดียวกับแถบข้าง) — ห้ามเขียนลิสต์หน้าจอซ้ำที่นี่อีก
+    # (AUDIT_ROUND2_2026-08-07) และถ้าค่าที่บันทึกไว้ไม่อยู่ในเมนูจริง ๆ ต้อง **บอก**
+    # ก่อนเขียนทับ ไม่ใช่เด้งไป Overview เงียบ ๆ แล้วกลืนค่าของผู้ใช้ตอนกดบันทึก
     current_default_page = str(config["display"]["default_page"])
+    if current_default_page not in NAV_ITEMS:
+        st.warning(
+            f"หน้าเริ่มต้นที่บันทึกไว้ (`{current_default_page}`) ไม่มีอยู่ในเมนูของแอปแล้ว "
+            "— ช่องด้านล่างจึงตั้งต้นที่ Overview **กดบันทึกเมื่อไรค่าเดิมจะถูกเขียนทับ** "
+            "ถ้าไม่ได้ตั้งใจ ให้เลือกหน้าที่ต้องการก่อนกดบันทึก"
+        )
     default_page = st.selectbox(
         "หน้าเริ่มต้นเมื่อเปิดแอป",
-        page_options,
-        index=page_options.index(current_default_page) if current_default_page in page_options else 0,
+        NAV_ITEMS,
+        index=NAV_ITEMS.index(current_default_page) if current_default_page in NAV_ITEMS else 0,
     )
     currency = st.radio(
         "สกุลเงินหลักที่แสดงผล",
@@ -954,7 +1096,27 @@ def _render_alert_check_result(result: dict) -> None:
     และ ``unchecked`` (alert ที่ดึงราคาไม่ได้ จึงยังไม่ได้ตรวจจริง) เดิมหน้าจอดูแค่
     ``triggered`` แล้วพิมพ์ "ยังไม่มี Alert ที่ถึงเงื่อนไข" ⇒ ความล้มเหลวกลายเป็น
     คำยืนยันว่าราคายังไม่ถึง (AUDIT_2026-08-06 D1.1)
+
+    รอบนี้ (AUDIT_ROUND2_2026-08-07) เพิ่มอีกสองชั้นที่เคยกลายเป็น "ตรวจแล้วไม่มีอะไร":
+
+    * **ผลผิดสัญญา** — เดิมอ่านทุกคีย์ด้วย ``.get()`` พร้อมค่าดีฟอลต์ ผลลัพธ์ที่ขาดคีย์
+      (ผู้เรียกเวอร์ชันเก่า/สตับ/บั๊กในอนาคต) จึงกลายเป็น ``triggered=[]`` +
+      ``unchecked=[]`` แล้วพิมพ์ "ยังไม่มี Alert ที่ถึงเงื่อนไข" — เป็นการยืนยันสิ่งที่
+      ไม่รู้ ตอนนี้ใช้ตัวตรวจสัญญาที่อยู่ข้างผู้ผลิต (``check_result_contract_error``)
+      แล้วรายงานว่า **ไม่ทราบผล**
+    * **ไม่มีไฟล์คลังเลย** (``store_status == "missing"``) — คนละเรื่องกับ "มีคลังแต่
+      ไม่มี alert ถึงเงื่อนไข" เช่นบนเครื่องที่ยังไม่เคยสร้าง alert หรือใน CI ที่ไฟล์
+      ถูก gitignore ไว้ ต้องบอกพาธที่มองหาด้วย ไม่ใช่ตอบว่าตรวจแล้วเรียบร้อย
     """
+    contract_error = check_result_contract_error(result)
+    if contract_error is not None:
+        st.error(
+            f"ไม่ทราบผลการตรวจ Alert — ผลลัพธ์ที่ได้ผิดสัญญา ({contract_error}) "
+            "**ยังไม่ได้ข้อสรุปว่ามี Alert ถึงเงื่อนไขหรือไม่** ไม่ใช่ว่าตรวจแล้วไม่มีอะไร "
+            "(ลองกดตรวจใหม่ ถ้ายังเป็นแบบเดิมแปลว่าเป็นบั๊ก ไม่ใช่สภาพตลาด)"
+        )
+        return
+
     if result.get("store_error"):
         st.error(
             f"อ่านคลัง Price Alert ไม่ได้ ({result.get('error') or 'ไม่ทราบสาเหตุ'}) — "
@@ -966,6 +1128,17 @@ def _render_alert_check_result(result: dict) -> None:
     triggered = list(result.get("triggered") or [])
     unchecked = list(result.get("unchecked") or [])
     checked = int(_to_number(result.get("checked")) or 0)
+    store_status = result.get("store_status")
+    store_state = store_status.get("status") if isinstance(store_status, dict) else None
+    if store_state == "missing" and not triggered and not unchecked:
+        # "ไม่มีไฟล์คลัง" ≠ "ไม่มี alert ถึงเงื่อนไข" — และเป็นเรื่องที่ผู้ใช้แก้ได้เอง
+        # (ถ้ามีผลจริงติดมาด้วยให้รายงานผลนั้นตามปกติ ห้ามกลืนของที่ตรวจได้จริงทิ้ง)
+        st.warning(
+            "เครื่องนี้ยังไม่มีไฟล์คลัง Price Alert เลย "
+            f"(มองหาที่ `{store_status.get('path') or 'ไม่ทราบพาธ'}`) — จึงยังไม่มีอะไรให้ตรวจ "
+            "ไม่ใช่ว่าตรวจแล้วไม่มี Alert ถึงเงื่อนไข · สร้าง Alert สักรายการแล้วไฟล์จะถูกสร้างให้เอง"
+        )
+        return
     if triggered:
         st.success(f"มี Alert ถึงเงื่อนไข {len(triggered)} รายการ (ส่ง Discord แล้ว)")
     elif not unchecked:
@@ -1825,9 +1998,24 @@ def _build_weight_sliders(
     return {k: v / total_weight for k, v in raw_weights.items()}
 
 
-def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """หน้า Backtest: เทียบผลพอร์ตย้อนหลังกับ benchmark."""
+def render_backtest_page(
+    prices: pd.DataFrame,
+    default_weights: dict[str, float] | None,
+    tickers: list[str],
+    weights_error: Exception | None = None,
+) -> None:
+    """หน้า Backtest: เทียบผลพอร์ตย้อนหลังกับ benchmark.
+
+    ``default_weights=None`` = อ่านสัดส่วนเป้าหมายจาก config.json ไม่ได้ (เหตุผลอยู่ใน
+    ``weights_error``) — หน้านี้ต้องบอกเหตุผลแล้วหยุด **แต่ห้ามลาม**ไปทำให้หน้าอื่นดับ
+    (AUDIT_ROUND2_2026-08-07 CRITICAL/T7: เดิม ``render_dashboard()`` เรียก
+    ``_tracked_target_weights()`` ก่อนวาด sidebar ค่าน้ำหนักผิดคีย์เดียวจึงล็อกผู้ใช้
+    ออกจากทั้ง 13 หน้า รวมหน้า Settings ที่เป็นทางเดียวที่จะไปแก้ค่านั้น)
+    """
     st.header("Backtest")
+    if default_weights is None:
+        _render_target_weights_problem(weights_error)
+        return
     benchmark_ticker = "VOO" if "VOO" in tickers else tickers[0]
     st.caption(f"เทียบพอร์ตตามน้ำหนักที่กำหนดกับ {benchmark_ticker}")
     st.info(
@@ -1851,6 +2039,17 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
         except RuntimeError as exc:
             st.error(str(exc))
             return
+
+        # กองที่ "หายไปจากพอร์ต" ต้องขึ้นก่อนตัวเลขเสมอ — สำนวนเดียวกับหน้า DCA Simulator
+        # ที่อยู่ถัดลงไปไม่กี่บรรทัด (``describe_coverage`` ตัวเดียวกัน) เดิมหน้านี้
+        # **ไม่เคยเรียกเลย** ทั้งที่ ``run_portfolio_backtest`` แนบรายชื่อมาให้ที่
+        # ``.attrs[COVERAGE_ATTR]`` แล้ว ⇒ ตั้งสไลเดอร์ SCHD ไว้ 0% หรือกองที่ถือน้ำหนัก
+        # อยู่ไม่มีคอลัมน์ราคา หน้าจอก็วาดเส้นของพอร์ตที่ normalize ใหม่บนกองที่เหลือ
+        # ให้ดูเป็นคำตอบของพอร์ตที่กรอกมา (AUDIT_ROUND2_2026-08-07 T6 · ชั้นไลบรารี
+        # แก้แล้วแต่ผู้บริโภคยังไม่ได้ต่อสาย)
+        coverage_warning = describe_coverage(backtest_df.attrs.get(COVERAGE_ATTR))
+        if coverage_warning:
+            st.warning(coverage_warning)
 
         start_date = backtest_df.index[0]
         st.caption(f"ช่วงที่ทดสอบจริง: {start_date:%d/%m/%Y} – {backtest_df.index[-1]:%d/%m/%Y}")
@@ -1880,9 +2079,21 @@ def render_backtest_page(prices: pd.DataFrame, default_weights: dict[str, float]
         st.info("กดปุ่ม Run Backtest เพื่อดูผล")
 
 
-def render_dca_simulator_page(prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]) -> None:
-    """หน้า DCA Simulator: จำลองการทยอยลงทุนรายเดือน."""
+def render_dca_simulator_page(
+    prices: pd.DataFrame,
+    default_weights: dict[str, float] | None,
+    tickers: list[str],
+    weights_error: Exception | None = None,
+) -> None:
+    """หน้า DCA Simulator: จำลองการทยอยลงทุนรายเดือน.
+
+    ``default_weights=None`` = อ่านสัดส่วนเป้าหมายไม่ได้ — เหตุผลเดียวกับ
+    :func:`render_backtest_page` (AUDIT_ROUND2_2026-08-07 CRITICAL/T7)
+    """
     st.header("DCA Simulator")
+    if default_weights is None:
+        _render_target_weights_problem(weights_error)
+        return
     st.caption("จำลองการซื้อทุกเดือนด้วยงบเท่ากัน (ไม่รวมค่าธรรมเนียม)")
 
     monthly_investment = st.number_input(
@@ -2462,7 +2673,21 @@ def _render_sentiment_context_box() -> None:
         )
         return
     if not summaries:
-        st.caption("บริบทข่าว/sentiment: ยังไม่มีข้อมูลในฐาน — รอ scheduled job รอบถัดไป")
+        # "รอ scheduled job รอบถัดไป" คือคำสัญญาที่ไม่มีวันเกิด (AUDIT_ROUND2_2026-08-07):
+        # งาน sentiment เรียก LLM จริงต่อบทความ จึง **ปิดโดยดีฟอลต์** ทั้งสองทาง —
+        # step รายสัปดาห์ใน GitHub Actions รันเฉพาะเมื่อตั้ง repository variable
+        # ``VAULTIS_SENTIMENT_ENABLED=1`` และไม่มี scheduler ในเครื่อง/Docker ตัวไหน
+        # เรียก ``run_sentiment_job()`` เลยสักตัว ⇒ ฐานจะว่างตลอดไปจนกว่าจะสั่งเอง
+        # ต้องบอกว่า "ปิดอยู่ + เปิดยังไง" ไม่ใช่ให้ผู้ใช้นั่งรอรอบที่ไม่มีวันมา
+        st.caption(
+            "บริบทข่าว/sentiment: ยังไม่มีข้อมูลในฐาน — **งานวิเคราะห์ sentiment ปิดอยู่** "
+            "(เรียก LLM จริงทุกบทความ = มีค่าใช้จ่าย) ไม่มีงานอัตโนมัติตัวไหนในเครื่องนี้รันมันเลย "
+            "จึงไม่ใช่การรอรอบถัดไป · เปิดใน GitHub Actions ด้วย repository variable "
+            "`VAULTIS_SENTIMENT_ENABLED=1` (ทุกวันจันทร์ = ยอมจ่าย) หรือรันเองครั้งเดียวด้วย "
+            "`VAULTIS_LLM_AUTO=1` + `DATABASE_URL` แล้วเรียก "
+            "`python -c \"from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()\"` · "
+            "ระหว่างนี้อ่านพาดหัวข่าวสด ๆ ได้ที่หน้า News (ฟรี ไม่ผ่าน AI ไม่ต้องใช้ฐานข้อมูล)"
+        )
         return
     with st.expander("บริบทข่าว/Sentiment ล่าสุด (ไม่เข้าเลขคะแนน)"):
         for item in summaries:
@@ -2916,12 +3141,55 @@ def _tracked_target_weights() -> dict[str, float]:
     return get_target_weights(tracked)
 
 
-def _render_invalid_target_weights(exc: Exception) -> None:
-    """ข้อความเดียวที่ใช้ร่วมกันเมื่อ ``portfolio.target_weights`` ผิดรูป."""
+def _render_invalid_target_weights(exc: Exception | None) -> None:
+    """ข้อความเดียวที่ใช้ร่วมกันเมื่อ ``portfolio.target_weights`` **ผิดรูปจริง ๆ**.
+
+    ใช้กับ :class:`InvalidTargetWeights` เท่านั้น — ข้อความนี้ชี้ให้ผู้ใช้ไปแก้ config.json
+    ซึ่งถูกต้องเมื่อคอนฟิกผิดจริง แต่**ผิดที่**เมื่อสาเหตุคือดึงราคาไม่สำเร็จ
+    (:class:`NoTargetForSubset` — ใช้ :func:`_render_no_target_for_subset` แทน
+    AUDIT_ROUND2_2026-08-07 G1)
+    """
+    reason = str(exc) if exc is not None else "ไม่ทราบสาเหตุ"
     st.error(
-        f"สัดส่วนพอร์ตเป้าหมายใน config.json ใช้ไม่ได้ ({exc}) — "
+        f"สัดส่วนพอร์ตเป้าหมายใน config.json ใช้ไม่ได้ ({reason}) — "
         "ยังเทียบพอร์ตกับเป้าหมายไม่ได้ (แก้ `portfolio.target_weights` แล้วกด Refresh Data)"
     )
+    st.info("แก้ได้ที่หน้า **Settings** (เมนูซ้าย) ซึ่งมีตารางเทียบเป้าหมาย preset กับที่ใช้จริง")
+
+
+def _render_no_target_for_subset(exc: NoTargetForSubset) -> None:
+    """ดึงราคาไม่สำเร็จ ≠ คอนฟิกผิด — ข้อความต้องชี้ไปที่ข้อมูล ไม่ใช่ config.json.
+
+    AUDIT_ROUND2_2026-08-07 G1: ``calculate_allocation()`` ส่งเฉพาะ ticker ที่ดึงราคา
+    สำเร็จเข้า ``get_target_weights(..., partial=True)`` วันไหนตัวที่ถือน้ำหนักดึงราคา
+    ไม่ได้ จะเหลือแต่ตัวที่ผู้ใช้ตั้ง ``0`` ไว้ตั้งใจ ⇒ ไม่มีน้ำหนักให้จัดสรร
+    **แต่ config.json ถูกต้องทุกบรรทัด** ถ้าหน้าจอบอกให้ไปแก้คอนฟิก ผู้ใช้จะลบเจตนา
+    "ตั้งใจไม่ถือตัวนี้" ทิ้งไปแก้ปัญหาที่ yfinance เป็นคนก่อ
+    """
+    requested = ", ".join(exc.requested) or "—"
+    missing = ", ".join(exc.missing) or "—"
+    st.error(
+        f"ยังจัดสรรงบเดือนนี้ไม่ได้ เพราะ **ดึงราคาไม่สำเร็จ** ไม่ใช่เพราะคอนฟิกผิด — "
+        f"ตัวที่มีข้อมูลรอบนี้ ({requested}) ถูกตั้งเป้าหมายไว้ 0% ทั้งหมด "
+        f"ส่วนตัวที่ถือน้ำหนักอยู่ ({missing}) ดึงราคาไม่ได้"
+    )
+    st.info(
+        "ไม่ต้องแก้ `portfolio.target_weights` — สัดส่วนที่ตั้งไว้ถูกต้องแล้ว "
+        "รอบที่ข้อมูลราคาครบจะจัดสรรได้เอง (กด Refresh Data อีกครั้งในอีกสักครู่)"
+    )
+
+
+def _render_target_weights_problem(exc: Exception | None) -> None:
+    """ทางเข้าเดียวของหน้าจอเมื่ออ่านสัดส่วนเป้าหมายไม่ได้ — เลือกข้อความตาม **ชนิด** ของสาเหตุ.
+
+    "คอนฟิกผิด" กับ "ดึงราคาไม่สำเร็จ" คนละเรื่องกันและต้องบอกคนละอย่าง
+    (AUDIT_ROUND2_2026-08-07 CRITICAL/G1) — รวมไว้ที่นี่ที่เดียวเพื่อไม่ให้แต่ละหน้า
+    เดาชนิดเอง แล้วชี้ผู้ใช้ไปแก้ไฟล์ที่ไม่ได้ผิด
+    """
+    if isinstance(exc, NoTargetForSubset):
+        _render_no_target_for_subset(exc)
+    else:
+        _render_invalid_target_weights(exc)
 
 
 def _unpriced_tickers(holdings_df: pd.DataFrame) -> list[str]:
@@ -2937,8 +3205,32 @@ def _unpriced_tickers(holdings_df: pd.DataFrame) -> list[str]:
     return [str(t) for t in unpriced["Ticker"]]
 
 
+def _priced_rows(holdings_df: pd.DataFrame) -> pd.DataFrame:
+    """เฉพาะกองที่ **ดึงราคาวันนี้ได้** — สมุดว่าง/ไม่มีคอลัมน์ = ไม่มีสักแถว (ไม่ใช่ error)."""
+    if holdings_df.empty or "Price OK" not in holdings_df.columns:
+        return holdings_df.iloc[0:0]
+    return holdings_df[holdings_df["Price OK"].astype(bool)]
+
+
+def _upper_set(values) -> set[str]:
+    """ชุด ticker ตัวพิมพ์ใหญ่ — ledger กับตารางพอร์ตต้องเทียบกันด้วยรูปเดียวกัน."""
+    return {str(v).strip().upper() for v in values}
+
+
 def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
-    """ชนะ VOO ไหม + %/ปี money-weighted (Roadmap ข้อ 14) — เทียบเงินก้อนเดียวกัน วันเดียวกัน."""
+    """ชนะ VOO ไหม + %/ปี money-weighted (Roadmap ข้อ 14) — เทียบเงินก้อนเดียวกัน วันเดียวกัน.
+
+    **สองขาต้องอยู่บนไม้ชุดเดียวกันเสมอ** (AUDIT_ROUND2_2026-08-07 T3) — เดิม
+    ``actual_value_usd`` นับเฉพาะกองที่ดึงราคาวันนี้ได้ แต่ ``invested_usd`` /
+    ``benchmark_value_usd`` มาจาก ``shadow_benchmark(buys, ...)`` ซึ่งนับ **ทุกไม้**
+    รวมไม้ของกองที่วันนี้ไม่มีราคา ⇒ ทั้ง %, มูลค่าเงา และ "ส่วนต่าง" เทียบคนละฐาน
+    (เคสจริง: จอพิมพ์ −22.44% และแพ้ VOO 1,167 ดอลลาร์ ทั้งที่ฐานเดียวกันคือ +15.76%
+    และแพ้ 125 ดอลลาร์ — เพี้ยน 9 เท่า) จึงกรองไม้ของกองที่ไม่มีราคาออกจาก**ทั้งสองขา**
+    แล้วบอกผู้ใช้ว่าตัดกองไหนออก
+
+    และ "ไม่รู้มูลค่า" ห้ามกลายเป็น ``0.00`` / ``−100%`` (AUDIT.md C1) — ดึงราคาไม่ได้
+    สักกอง = ไม่แสดงกล่องเทียบ ไม่ใช่แสดงว่าพอร์ตเหลือศูนย์
+    """
     st.divider()
     st.subheader("ชนะ VOO ไหม (เงินก้อนเดียวกัน วันเดียวกัน)")
 
@@ -2961,6 +3253,26 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
             st.caption("ยังไม่มีรายการซื้อใน ledger — ไม่มีอะไรให้เทียบ")
         return
 
+    # ขาพอร์ตจริงตีมูลค่าได้เฉพาะกองที่มีราคาวันนี้ ⇒ ขา VOO เงาต้องสร้างจากไม้ของกอง
+    # ชุดเดียวกันเท่านั้น ไม่งั้น "ส่วนต่าง" คือการลบเลขคนละฐาน (T3)
+    priced = _priced_rows(holdings_df)
+    if priced.empty:
+        st.warning(
+            "ดึงราคาปัจจุบันไม่ได้สักกอง — ยังไม่รู้มูลค่าพอร์ตวันนี้ จึงเทียบกับ VOO ไม่ได้ "
+            "(นี่คือ **ไม่รู้** ไม่ใช่ 'พอร์ตเหลือ 0 บาท' และไม่ใช่ขาดทุน 100%) "
+            "— ลองกด Refresh Data อีกครั้งในอีกสักครู่"
+        )
+        return
+    priced_tickers = _upper_set(priced["Ticker"])
+    comparable = buys[buys["ticker"].map(lambda t: str(t).strip().upper() in priced_tickers)]
+    dropped_from_both = sorted(_upper_set(buys["ticker"]) - priced_tickers)
+    if comparable.empty:
+        st.warning(
+            "ไม้ซื้อทุกรายการเป็นของกองที่ดึงราคาวันนี้ไม่ได้ "
+            f"({', '.join(dropped_from_both) or 'ไม่ทราบ'}) — ยังเทียบกับ VOO ไม่ได้"
+        )
+        return
+
     try:
         benchmark_prices = cached_prices(sorted(set(get_tickers()) | {"VOO"}), years=10)
     except PriceDataUnavailableError as exc:
@@ -2970,8 +3282,11 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
         st.error("ไม่มีข้อมูลราคา VOO — เทียบ benchmark ไม่ได้")
         return
 
+    # ขา VOO เงาต้องสร้างจาก ``comparable`` (ไม้ของกองที่มีราคาวันนี้) ไม่ใช่ ``buys``
+    # ทั้งหมด ไม่งั้นตัวตั้ง (พอร์ตจริงเฉพาะกองที่มีราคา) กับตัวหาร (เงินลงทุนทุกไม้)
+    # อยู่คนละฐาน แล้ว "ส่วนต่าง" คือการลบเลขคนละเรื่องกัน (T3)
     try:
-        shadow = shadow_benchmark(buys, benchmark_prices["VOO"].dropna())
+        shadow = shadow_benchmark(comparable, benchmark_prices["VOO"].dropna())
     except ValueError as exc:
         st.error(f"เทียบไม่ได้: {exc}")
         return
@@ -2979,14 +3294,35 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
         st.caption("ไม่มีไม้ซื้อที่เทียบราคา VOO ณ วันซื้อได้")
         return
 
-    priced = holdings_df[holdings_df["Price OK"]]
-    actual_value_usd = float(priced["Current Value (USD)"].sum()) if not priced.empty else 0.0
-    invested_usd = float(shadow["invested_usd"])
-    shadow_value = float(shadow["benchmark_value_usd"])
+    if dropped_from_both:
+        st.warning(
+            f"ตัด {', '.join(dropped_from_both)} ออกจาก**ทั้งสองขา** เพราะดึงราคาวันนี้ไม่ได้ — "
+            "สามช่องด้านล่างจึงเป็นการเทียบเงินก้อนเดียวกันของ**กองที่เหลือ** ไม่ใช่ทั้งพอร์ต "
+            "(ตัดข้างเดียวเมื่อไร ตัวเลขจะผิดทันทีเพราะเทียบคนละฐาน)"
+        )
+
+    # "Price OK" แต่มูลค่าอ่านไม่ออกสักแถว = ยังไม่รู้มูลค่ารวม ห้ามให้ `.sum()` ข้าม NaN
+    # แล้วได้ยอดที่ดูสมบูรณ์ (ซึ่งจะต่ำกว่าความจริงโดยไม่มีอะไรบอก)
+    priced_values_usd = pd.to_numeric(priced["Current Value (USD)"], errors="coerce")
+    actual_value_usd = None if priced_values_usd.isna().any() else _to_number(priced_values_usd.sum())
+    invested_usd = _to_number(shadow["invested_usd"])
+    shadow_value = _to_number(shadow["benchmark_value_usd"])
+    if (
+        actual_value_usd is None
+        or invested_usd is None
+        or shadow_value is None
+        or invested_usd <= 0
+    ):
+        # ไม่รู้ตัวใดตัวหนึ่ง = ไม่มีคำตัดสิน "ชนะ/แพ้" ห้ามพิมพ์ 0.00 หรือ −100% แทน (C1)
+        st.warning(
+            "ตัวเลขที่ใช้เทียบไม่ครบ (มูลค่าพอร์ตวันนี้ หรือเงินลงทุนของขา VOO เงาอ่านไม่ได้) — "
+            "ยังเทียบกับ VOO ไม่ได้ · นี่คือ **ไม่รู้** ไม่ใช่ 0 บาท และไม่ใช่ขาดทุน 100%"
+        )
+        return
 
     bench_col1, bench_col2, bench_col3 = st.columns(3)
-    actual_pct = (actual_value_usd / invested_usd - 1.0) * 100.0 if invested_usd else 0.0
-    shadow_pct = (shadow_value / invested_usd - 1.0) * 100.0 if invested_usd else 0.0
+    actual_pct = (actual_value_usd / invested_usd - 1.0) * 100.0
+    shadow_pct = (shadow_value / invested_usd - 1.0) * 100.0
     bench_col1.metric("พอร์ตจริง (USD)", f"{actual_value_usd:,.2f}", delta=f"{actual_pct:+.2f}%")
     bench_col2.metric("ถ้าซื้อ VOO ล้วน (USD)", f"{shadow_value:,.2f}", delta=f"{shadow_pct:+.2f}%")
     bench_col3.metric("ส่วนต่าง", f"{actual_value_usd - shadow_value:+,.2f} USD")
@@ -3059,7 +3395,15 @@ def _render_benchmark_section(holdings_df: pd.DataFrame) -> None:
         else:
             flows_usd.append((when, received_usd))
     today = pd.Timestamp.today().normalize()
-    actual_value_thb = float(priced["Current Value (THB)"].sum()) if not priced.empty else 0.0
+    priced_values_thb = pd.to_numeric(priced["Current Value (THB)"], errors="coerce")
+    actual_value_thb = None if priced_values_thb.isna().any() else _to_number(priced_values_thb.sum())
+    if actual_value_thb is None:
+        # มูลค่าปลายทางไม่รู้ = คิด XIRR ไม่ได้ ห้ามใส่ 0 ลงกระแสเงินสด (จะได้ −100%/ปี ปลอม)
+        st.caption(
+            "มูลค่าพอร์ตปลายทางเป็นเงินบาทอ่านไม่ได้ — ไม่คำนวณ %ต่อปี (XIRR) "
+            "ดีกว่าคิดจากมูลค่าที่เดาเอา"
+        )
+        return
     flows_thb.append((today, actual_value_thb))
     flows_usd.append((today, actual_value_usd))
 
@@ -3235,18 +3579,94 @@ def _money_or_unknown(value: float | None) -> str:
     return _UNKNOWN_MONEY_TEXT if value is None else f"{value:,.2f}"
 
 
+def _column_sum_or_none(rows: pd.DataFrame, column: str) -> float | None:
+    """ผลรวมของคอลัมน์ — มีช่องไหนอ่านไม่ออกแม้ช่องเดียว = ``None`` (ไม่รู้).
+
+    ห้ามใช้ ``Series.sum()`` เปล่า ๆ บนเส้นทางเงิน: ``skipna=True`` เป็นค่าปริยาย
+    ยอดที่ได้จึงเป็นผลรวมของ "เท่าที่มี" แต่หน้าตาเหมือนยอดเต็ม
+    """
+    if rows.empty or column not in rows.columns:
+        return None
+    values = pd.to_numeric(rows[column], errors="coerce")
+    if values.isna().any():
+        return None
+    return _to_number(values.sum())
+
+
+def _usd_totals(holdings_df: pd.DataFrame | None) -> dict[str, float | None]:
+    """ยอดรวม **ฝั่งดอลลาร์** จาก snapshot เดียวกับตารางรายกอง (AUDIT_ROUND2_2026-08-07 T3/F2).
+
+    นิยามเดียวกับ ``backend/services/portfolio_service._summary_payload()`` เป๊ะ ๆ
+    เพื่อให้ตัวเลขบนแดชบอร์ดกับที่ ``/api/portfolio`` ตอบเป็นเลขชุดเดียวกัน:
+
+    - ``invested_usd_all``    ดอลลาร์ที่จ่ายจริงทุกไม้ (Σ shares × price ณ วันซื้อ)
+    - ``invested_usd_priced`` เฉพาะกองที่ดึงราคาวันนี้ได้ = **ฐานเดียว** ที่ P&L/% คิดมาจาก
+    - ``current_value_usd`` / ``pnl_usd`` เฉพาะกองที่มีราคา · ``None`` = ไม่รู้
+
+    เดิมโหมด USD เอา**ยอดบาท**มาหารด้วยอัตราวันนี้ตัวเดียว ทั้งที่ ``invested_thb`` คิดด้วย
+    อัตราของ**วันที่ซื้อ** ผลที่ได้จึงไม่ใช่ทั้งดอลลาร์ที่จ่ายจริงและไม่ใช่อะไรที่มีความหมาย
+    (เคสจริง: จอโชว์เงินลงทุน 3,234.15 ขณะที่ API ตอบ 3,030.00 และสามช่องบนแถวเดียวกัน
+    บวกลบกันไม่ลง) — การกุตัวเลขจากอัตราผิดยุคเป็นเรื่องเดียวกับ ``fillna(0)`` บนเส้นทางราคา
+    """
+    unknown: dict[str, float | None] = {
+        "invested_usd_all": None,
+        "invested_usd_priced": None,
+        "current_value_usd": None,
+        "pnl_usd": None,
+        "return_pct": None,
+    }
+    if holdings_df is None:
+        return unknown
+    if holdings_df.empty:
+        # สมุดว่าง = 0 คือคำตอบจริง (คนละเรื่องกับ "ดึงราคาไม่ได้") — ตรงกับ portfolio_service
+        return {k: 0.0 for k in unknown}
+    if "Price OK" not in holdings_df.columns:
+        return unknown
+
+    priced = holdings_df[holdings_df["Price OK"].astype(bool)]
+    invested_all = _column_sum_or_none(holdings_df, "Invested (USD)")
+    invested_priced = 0.0 if priced.empty else _column_sum_or_none(priced, "Invested (USD)")
+    current_value = None if priced.empty else _column_sum_or_none(priced, "Current Value (USD)")
+    pnl = None if priced.empty else _column_sum_or_none(priced, "P&L (USD)")
+    return_pct = (
+        pnl / invested_priced * 100.0
+        if pnl is not None and invested_priced not in (None, 0.0)
+        else None
+    )
+    return {
+        "invested_usd_all": invested_all,
+        "invested_usd_priced": invested_priced,
+        "current_value_usd": current_value,
+        "pnl_usd": pnl,
+        "return_pct": return_pct,
+    }
+
+
 def _render_portfolio_totals(
-    total_summary: dict, primary_currency: str, today_fx_rate: float
+    total_summary: dict,
+    primary_currency: str,
+    today_fx_rate: float,
+    holdings_df: pd.DataFrame | None = None,
 ) -> None:
     """แถบตัวเลขรวมของหน้า Portfolio — ต้องติดป้ายทั้งฐานเงินลงทุนและที่มาของอัตราแลกเปลี่ยน.
 
-    สามอย่างที่ต้องพูดออกมา ไม่งั้นตัวเลขบนจอเดียวกันจะขัดกันเองโดยไม่มีอะไรบอก:
+    สี่อย่างที่ต้องพูดออกมา ไม่งั้นตัวเลขบนจอเดียวกันจะขัดกันเองโดยไม่มีอะไรบอก:
 
     1. **เงินลงทุนมีสองฐาน** ``invested_thb_all`` (จ่ายไปจริงทั้งหมด) กับ
        ``invested_thb_priced`` (เฉพาะกองที่มีราคา = ฐานเดียวที่ P&L/% คิดมาจาก)
        เดิมแสดงฐานแรกคู่กับกำไรที่คิดจากฐานที่สอง ผู้ใช้จึงประกอบเลขกลับเองไม่ได้ (H9)
     2. **NaN = "ไม่รู้มูลค่า"** ห้ามพิมพ์เป็น ``0.00`` (อ่านว่า "เท่าทุนพอดี") หรือ ``nan``
     3. **``fx_is_live=False``** = ตัวเลขบาททั้งก้อนคิดจากค่าสำรอง ต้องเตือน (B9/C1.5)
+    4. **โหมด USD ไม่ใช่ "เอาบาทมาหารอัตราวันนี้"** (AUDIT_ROUND2_2026-08-07 F2) —
+       ``invested_thb_*`` คิดด้วยอัตราของ *วันที่ซื้อ* การหารด้วยอัตราวันนี้จึงได้
+       ตัวเลขที่ไม่ใช่ดอลลาร์ที่จ่ายจริงและไม่ตรงกับที่ ``/api/portfolio`` ตอบ
+       (เคสจริง: เงินลงทุนเกินจริง +204 USD และกำไรหายไปครึ่งหนึ่ง แล้วสามช่องบน
+       แถวเดียวกันบวกลบไม่ลง) · โหมด USD จึงอ่านจาก ``holdings_df`` ซึ่งเป็น snapshot
+       เดียวกับตารางรายกองผ่าน :func:`_usd_totals` — นิยามเดียวกับ ``portfolio_service``
+       ส่วน ``ค่าธรรมเนียมรวม`` เป็นเงินบาทที่จ่ายจริงเสมอ (ป้าย THB ไม่เปลี่ยนตามโหมด)
+
+    ``holdings_df=None`` ในโหมด USD = ไม่มี snapshot ให้อ่าน ⇒ ทุกช่องเป็น "ไม่ทราบ"
+    ซึ่งซื่อสัตย์กว่าการแปลงค่าเงินข้ามยุคให้ดูเหมือนมีคำตอบ
     """
     fx_is_live = total_summary.get("fx_is_live")
     if fx_is_live is False:
@@ -3259,30 +3679,41 @@ def _render_portfolio_totals(
             "ไม่ใช่อัตราสด — ตัวเลขบาททุกช่องด้านล่างคลาดเคลื่อนตามไปด้วย"
         )
 
-    invested_all = _to_number(
-        total_summary.get("invested_thb_all", total_summary.get("total_invested_thb"))
-    )
-    invested_priced = _to_number(total_summary.get("invested_thb_priced"))
-    current_value = _to_number(total_summary.get("current_value_thb"))
-    pnl_value = _to_number(total_summary.get("total_pnl_thb"))
-    return_pct = _to_number(total_summary.get("total_return_pct"))
     fee_total = _to_number(total_summary.get("total_fee_thb"))
-
     to_usd = str(primary_currency).upper() == "USD"
-    divisor = _to_number(today_fx_rate) if to_usd else 1.0
     unit = "USD" if to_usd else "THB"
+    # หน่วยของทุกข้อความใต้กล่องต้องตรงกับหน่วยของ metric ไม่งั้นผู้ใช้กระทบยอดตามไม่ได้
+    money_unit = "ดอลลาร์" if to_usd else "บาท"
 
-    def _money(value: float | None) -> str:
-        if value is None or divisor is None or divisor <= 0:
-            return _UNKNOWN_MONEY_TEXT
-        return f"{value / divisor:,.2f}"
+    if to_usd:
+        usd = _usd_totals(holdings_df)
+        invested_all = usd["invested_usd_all"]
+        invested_priced = usd["invested_usd_priced"]
+        current_value = usd["current_value_usd"]
+        pnl_value = usd["pnl_usd"]
+        return_pct = usd["return_pct"]
+        if holdings_df is None:
+            st.warning(
+                "แสดงผลเป็น USD ไม่ได้เพราะไม่มีรายละเอียดรายกองในรอบนี้ — "
+                "ระบบไม่แปลงยอดบาทด้วยอัตราวันนี้แทน เพราะต้นทุนแต่ละไม้คิดด้วยอัตรา"
+                "ของวันที่ซื้อ (จะได้ตัวเลขที่ไม่ใช่ทั้งบาทและไม่ใช่ทั้งดอลลาร์)"
+            )
+    else:
+        invested_all = _to_number(
+            total_summary.get("invested_thb_all", total_summary.get("total_invested_thb"))
+        )
+        invested_priced = _to_number(total_summary.get("invested_thb_priced"))
+        current_value = _to_number(total_summary.get("current_value_thb"))
+        pnl_value = _to_number(total_summary.get("total_pnl_thb"))
+        return_pct = _to_number(total_summary.get("total_return_pct"))
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric(f"เงินลงทุนรวม ({unit})", _money(invested_all))
-    m2.metric(f"มูลค่าปัจจุบัน ({unit})", _money(current_value))
+    m1.metric(f"เงินลงทุนรวม ({unit})", _money_or_unknown(invested_all))
+    m2.metric(f"มูลค่าปัจจุบัน ({unit})", _money_or_unknown(current_value))
     m3.metric(
         f"กำไร/ขาดทุน ({unit})",
-        _money(pnl_value),
+        _money_or_unknown(pnl_value),
+        # % ต้องเป็นฐานเดียวกับตัวเลขในช่อง — ฐานบาทแปะข้างตัวเลขดอลลาร์คือคนละเรื่อง
         delta=(f"{return_pct:.2f}%" if return_pct is not None else None),
     )
     m4.metric("FX Rate วันนี้", f"{float(today_fx_rate):.2f} THB/USD")
@@ -3291,7 +3722,7 @@ def _render_portfolio_totals(
     if current_value is None or pnl_value is None:
         st.info(
             "ยังไม่รู้มูลค่า/กำไรของพอร์ต เพราะดึงราคาปัจจุบันไม่ได้เลยสักกอง — "
-            f"ช่องที่ขึ้นว่า “{_UNKNOWN_MONEY_TEXT}” คือ **ไม่รู้** ไม่ใช่ 0 บาท"
+            f"ช่องที่ขึ้นว่า “{_UNKNOWN_MONEY_TEXT}” คือ **ไม่รู้** ไม่ใช่ 0 {money_unit}"
         )
     if (
         invested_all is not None
@@ -3299,9 +3730,9 @@ def _render_portfolio_totals(
         and abs(invested_all - invested_priced) > 0.005
     ):
         st.caption(
-            f"เงินลงทุนรวมด้านบนคือยอดที่จ่ายไปจริงทั้งหมด {invested_all:,.2f} บาท "
-            f"แต่กำไร/ขาดทุนและ % คิดจากฐานเฉพาะกองที่มีราคา {invested_priced:,.2f} บาท "
-            f"(ต่างกัน {invested_all - invested_priced:,.2f} บาท = กองที่ดึงราคาไม่ได้) — "
+            f"เงินลงทุนรวมด้านบนคือยอดที่จ่ายไปจริงทั้งหมด {invested_all:,.2f} {money_unit} "
+            f"แต่กำไร/ขาดทุนและ % คิดจากฐานเฉพาะกองที่มีราคา {invested_priced:,.2f} {money_unit} "
+            f"(ต่างกัน {invested_all - invested_priced:,.2f} {money_unit} = กองที่ดึงราคาไม่ได้) — "
             "สองตัวเลขนี้อยู่คนละฐาน จึงลบกันตรง ๆ ไม่ได้"
         )
 
@@ -3318,13 +3749,30 @@ def render_portfolio_page() -> None:
     st.divider()
     config = load_config()
     primary_currency = str(config["display"]["currency"]).upper()
-    default_fx_rate = float(config["display"]["default_fx_rate"])
 
     st.subheader("Add Transaction")
-    with st.spinner("กำลังดึงอัตราแลกเปลี่ยน..."):
-        today_fx_rate = get_today_fx_rate_thb()
-    if not today_fx_rate or today_fx_rate <= 0:
-        today_fx_rate = default_fx_rate
+    # FX มีแหล่งเดียวคือ utils/fx.py (ผ่าน get_today_fx_rate_thb) — ห้ามอ่าน
+    # ``display.default_fx_rate`` ตรงจากหน้าจอ (กฎใน CLAUDE.md)
+    #
+    # เดิมบรรทัดนี้อ่านค่าสำรองจาก config เองแล้วใช้เมื่อ ``not rate or rate <= 0``
+    # ซึ่ง (ก) เป็นทางเข้าที่สองสู่ค่าสำรอง ที่ **ข้าม band check 20–50** ของ
+    # ``utils.fx._config_fallback()`` ไปเลย และ (ข) เป็น dead code อยู่แล้ว เพราะ
+    # ``get_today_fx_rate_thb()`` คืนค่าที่ผ่าน band เสมอ หรือไม่ก็โยน
+    # ``FxRateUnavailable`` — มันไม่มีทางคืน 0/None (AUDIT_ROUND2_2026-08-07)
+    #
+    # เมื่อ FX ใช้ไม่ได้จริง ๆ ต้องหยุดฟอร์มบันทึกธุรกรรม: กรอกอัตราเดาเองแล้วบันทึกลง
+    # สมุดจริง = ต้นทุนบาทผิดถาวร — "ดึงไม่ได้" ต้องไม่กลายเป็นตัวเลขในสมุด
+    try:
+        with st.spinner("กำลังดึงอัตราแลกเปลี่ยน..."):
+            today_fx_rate = get_today_fx_rate_thb()
+    except FxRateUnavailable as exc:
+        st.error(
+            f"ยังใช้หน้านี้ไม่ได้ — ไม่มีอัตราแลกเปลี่ยน THB/USD ที่เชื่อถือได้: {exc} "
+            f"(ทั้งอัตราสดและค่าสำรองใน config.json ต้องอยู่ในช่วง {FX_MIN_RATE:.0f}–{FX_MAX_RATE:.0f}) "
+            "— แก้ค่าสำรองได้ที่หน้า Settings แล้วกลับมาใหม่ · ระบบไม่เดาอัตราให้ "
+            "เพราะอัตราที่เดาจะถูกบันทึกเป็นต้นทุนจริงในสมุดพอร์ต"
+        )
+        return
     with st.form("portfolio_buy_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -3412,8 +3860,12 @@ def render_portfolio_page() -> None:
     st.divider()
     st.subheader("Portfolio Summary")
     with st.spinner(" ..."):
+        # ดึงราคา/FX **รอบเดียว** แล้วส่ง snapshot ตัวเดิมต่อ (AUDIT_ROUND2 G2) — เดิม
+        # ``get_total_summary()`` ไปดึงเองอีกรอบ ยอดรวมกับตารางรายกองจึงมาจากคนละ
+        # snapshot ได้จริง (yfinance ติด rate limit คั่นกลาง) แล้วเลขบนหน้าเดียวกันขัดกันเอง
+        # · โหมด USD ที่อ่านจาก ``holdings_df`` ยิ่งต้องเป็น snapshot เดียวกับยอดบาท
         holdings_df = get_portfolio_summary()
-        total_summary = get_total_summary()
+        total_summary = get_total_summary(holdings_df)
 
     # ราคาที่ดึงไม่ได้ = แจ้งชัด ไม่ใช่แสดงเป็นขาดทุน -100% (AUDIT.md C1)
     missing_prices = list(total_summary.get("missing_prices") or [])
@@ -3426,7 +3878,9 @@ def render_portfolio_page() -> None:
     # แถวธุรกรรมที่ถูกตัด / ถูกซ่อมอัตรา / ยอดเงินขัดกันเอง (FIX_PLAN ข้อ 1.2 + C1.2/C1.3)
     _render_ledger_reports(total_summary)
 
-    _render_portfolio_totals(total_summary, primary_currency, today_fx_rate)
+    # ส่ง snapshot รายกองไปด้วย — โหมด USD ต้องอ่านยอดดอลลาร์จาก snapshot ชุดเดียวกับ
+    # ตารางด้านล่าง ไม่ใช่เอายอดบาทมาหารอัตราวันนี้ (AUDIT_ROUND2_2026-08-07 F2)
+    _render_portfolio_totals(total_summary, primary_currency, today_fx_rate, holdings_df)
 
     if holdings_df.empty:
         st.info("No portfolio data found.")
@@ -3723,6 +4177,55 @@ def _score_reason_chips(row: dict) -> str:
     else:
         chips.append(_chip_html("ปันผลต่ำ/ไม่มี", THEME["text_secondary"]))
     return "".join(chips)
+
+
+# เหตุผลที่ ETF ไม่ได้เงิน → วิธีแสดงบนจอ (ป้ายไทย + ระดับความเร่งด่วน)
+# นิยามของเหตุผลอยู่ที่ analysis/financial_model.py ที่เดียว หน้าจอห้ามคิดเหตุผลเอง
+_EXCLUSION_DISPLAY: dict[str, tuple[str, str]] = {
+    EXCLUDED_NO_DATA: ("warning", "ดึงข้อมูลไม่สำเร็จรอบนี้"),
+    EXCLUDED_ZERO_TARGET: ("info", "ตั้งใจไม่ถือ (เป้าหมาย 0%)"),
+    EXCLUDED_ROUNDED_TO_ZERO: ("warning", "ส่วนแบ่งไม่ถึงหนึ่งก้อน"),
+}
+
+
+def _render_allocation_exclusions(plan: AllocationPlan, already_named: set[str]) -> None:
+    """ระบุชื่อ ETF ที่ **ไม่ได้เงิน** รอบนี้ทุกตัว พร้อมเหตุผลแยกชนิด (AUDIT_ROUND2_2026-08-07 T7).
+
+    เดิมหน้านี้เรียก ``calculate_allocation()`` ที่คืนเฉพาะตัวที่ได้เงิน แล้วพิมพ์คำโปรย
+    ว่า "ไม่มีการเลือกตัวเดียวหรือตัดตัวไหนออก" ไว้เหนือตารางที่ตัดออกไปแล้วจริง ๆ ⇒
+    ETF ที่ผู้ใช้ตั้งเป้าไว้ 0% หรือที่งบไม่พอ หายจากจอโดยไม่เหลือร่องรอย และผู้ใช้
+    อ่านคำโปรยแล้วเข้าใจว่าครบทุกตัว
+
+    ``already_named`` = ticker ที่หน้าจอเพิ่งเตือนไปแล้วด้านบน (กล่อง "ไม่มีข้อมูล: ...")
+    — ไม่พิมพ์ซ้ำ แต่ถ้าวันหนึ่งสองชุดนี้ไม่ตรงกัน ตัวที่ตกหล่นจะยังถูกพิมพ์เสมอ
+    """
+    for note in plan.notes:
+        # หมายเหตุจาก portfolio/targets.py (เช่น "น้ำหนักใช้ครบ 100% แล้ว — XLV ได้ 0%")
+        st.caption(note)
+
+    if not plan.excluded:
+        if plan.allocation:
+            st.caption("รอบนี้ไม่มี ETF ตัวไหนถูกตัดออกจากแผน — ทุกตัวที่ระบบติดตามได้เงินครบ")
+        return
+
+    for reason, (level, label) in _EXCLUSION_DISPLAY.items():
+        items = [
+            item
+            for item in plan.excluded
+            if item.reason == reason
+            and not (reason == EXCLUDED_NO_DATA and item.ticker in already_named)
+        ]
+        if not items:
+            continue
+        names = ", ".join(item.ticker for item in items)
+        getattr(st, level)(f"ไม่ได้เงินรอบนี้ — {label}: {names}")
+        for item in items:
+            st.caption(f"• {item.detail}")
+
+    # เหตุผลชนิดใหม่ที่หน้าจอยังไม่รู้จัก ห้ามหายเงียบ — พิมพ์ดิบ ๆ ไปก่อน
+    unknown = [item for item in plan.excluded if item.reason not in _EXCLUSION_DISPLAY]
+    for item in unknown:
+        st.warning(f"ไม่ได้เงินรอบนี้ ({item.reason}): {item.detail}")
 
 
 def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
@@ -4079,19 +4582,49 @@ def render_scorecard_page() -> None:
         return
 
     scores_by_ticker = {str(r["ticker"]): r for r in scores if r.get("ticker")}
-    allocation = calculate_allocation(scores_by_ticker, float(budget_thb))
 
     # --- การ์ดคำตัดสินเดือนนี้ ---
     st.subheader("คำตัดสินเดือนนี้")
     st.caption(
-        f"ซื้อทุกตัวที่มีข้อมูลตามแผน DCA — คะแนนแค่เอียงน้ำหนักจากเป้า ({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) "
-        "ไม่มีการเลือกตัวเดียวหรือตัดตัวไหนออก"
+        f"ซื้อทุกตัวที่มีข้อมูล**และมีน้ำหนักเป้าหมาย** ตามแผน DCA — คะแนนแค่เอียงน้ำหนักจากเป้า "
+        f"({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) ไม่มีการเลือกตัวเดียวเพราะคะแนนสูง "
+        "ตัวที่ไม่ได้เงินรอบนี้จะถูกระบุชื่อพร้อมเหตุผลไว้ด้านล่างเสมอ"
     )
+    # คำเตือน "ไม่มีข้อมูล: ..." ต้องขึ้นจอ **ก่อน** จัดสรร (AUDIT_ROUND2_2026-08-07 G1)
+    # เดิมอยู่หลัง calculate_allocation() พอการจัดสรรโยน exception หน้าทั้งหน้าก็ตายไป
+    # พร้อมกับคำเตือนที่บอกสาเหตุจริง ผู้ใช้จึงเห็นแต่ข้อความที่ชี้ไปผิดที่
     if no_data_rows:
         missing = ", ".join(str(r.get("ticker")) for r in no_data_rows)
         st.warning(f"ไม่มีข้อมูล: {missing} — ไม่ถูกนำมาคิดคะแนน/จัดสรร งบส่วนนั้นกระจายให้ตัวที่เหลือ")
 
-    if allocation and _render_rebalance_mode(float(budget_thb), scores_by_ticker):
+    # แยกสาเหตุให้ตรงชนิด: คอนฟิกผิด (แก้ config.json ได้) ≠ ดึงราคาไม่สำเร็จ (รอรอบหน้า)
+    # และห้ามปล่อยให้หลุดไปที่ ``except Exception`` ของ render_dashboard ซึ่งจะกลืนทั้งหน้า
+    allocation_error: TargetWeightsError | None = None
+    allocation: dict[str, dict] = {}
+    plan: AllocationPlan | None = None
+    try:
+        # ``_with_status`` ไม่ใช่ ``calculate_allocation`` เปล่า ๆ — ต้องได้ ``excluded``
+        # มาด้วย ไม่งั้น ETF ที่ตั้งเป้าไว้ 0% หรือส่วนแบ่งไม่ถึงก้อนละ 100 บาท
+        # จะหายจากตารางเงียบ ๆ ใต้คำโปรยที่บอกว่า "ไม่ตัดตัวไหนออก" (T7)
+        plan = calculate_allocation_with_status(scores_by_ticker, float(budget_thb))
+        allocation = plan.allocation
+    except NoTargetForSubset as exc:
+        allocation_error = exc
+        _render_no_target_for_subset(exc)
+    except InvalidTargetWeights as exc:
+        allocation_error = exc
+        _render_invalid_target_weights(exc)
+
+    if plan is not None:
+        _render_allocation_exclusions(
+            plan, already_named={str(r.get("ticker")) for r in no_data_rows}
+        )
+
+    if allocation_error is not None:
+        # บอกเหตุผลจริงไปแล้วด้านบน — ห้ามตกไปที่ "ไม่มี ETF ที่ข้อมูลพร้อม หรืองบเป็นศูนย์"
+        # ซึ่งเป็นคนละสาเหตุ · ส่วนที่เหลือของหน้า (คะแนน/drift) ไม่ต้องใช้แผนจัดสรร จึงเดินต่อ
+        pass
+    elif allocation and _render_rebalance_mode(float(budget_thb), scores_by_ticker):
         pass  # โหมดดึงเข้าเป้า render แผนของตัวเองแล้ว — ข้ามแผน tilt ปกติของเดือนนี้
     elif allocation:
         _render_verdict_cards(allocation, float(budget_thb))
@@ -4235,46 +4768,29 @@ def render_dashboard() -> None:
             st.success("ล้างแคชแล้ว กำลังโหลดข้อมูลใหม่...")
             st.rerun()
 
-        try:
-            with st.spinner("กำลังโหลดข้อมูลราคา..."):
-                prices = cached_prices(tickers, years=10)
-        except PriceDataUnavailableError as exc:
-            # ข้อมูลราคาพัง = หยุดทันที ห้ามแสดงหน้าวิเคราะห์จากข้อมูลว่าง (AUDIT.md C1)
-            st.error(f"ดึงข้อมูลราคา ETF ไม่สำเร็จ: {exc}")
-            st.info("ลองกด Refresh Data อีกครั้งในอีกสักครู่ (yfinance อาจจำกัดการเรียกชั่วคราว)")
-            return
-
-        # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
-        # ผ่าน _tracked_target_weights() ตัวเดียวกับหน้า Scorecard เพื่อไม่ให้มีสองทางเข้า
-        default_weights = _tracked_target_weights()
+        # ลำดับสำคัญ: **วาด sidebar แล้วแยกหน้าก่อน แล้วค่อยแตะข้อมูลราคา**
+        # (AUDIT_ROUND2_2026-08-07 — รูปเดียวกับบั๊ก CRITICAL ของ target_weights)
+        #
+        # เดิม ``cached_prices()`` ถูกเรียกก่อน แล้ว ``PriceDataUnavailableError``
+        # ทำให้ฟังก์ชัน ``return`` ทิ้งตั้งแต่ยังไม่ได้วาดแถบข้าง ⇒ yfinance ติด rate limit
+        # ครั้งเดียวลากหน้า News / Price Alerts / Settings ดับไปด้วย ทั้งที่ทั้งสามหน้า
+        # ไม่ได้ใช้ราคาจากตรงนี้เลยสักหน้า (News ตั้งใจให้ทำงานได้แม้ทุกอย่างล่ม)
+        # เฉพาะหน้าที่ใช้ ``prices`` จริงเท่านั้นที่ควรดับตาม
         config = load_config()
-
         default_page = str(config["display"]["default_page"])
         _render_custom_sidebar(default_page)
         page = st.session_state.get("page", "Overview")
 
-        if page == "Overview":
-            pass
-        elif page == "Scorecard":
+        # --- หน้าที่ไม่ต้องใช้ราคาชุดนี้: ส่งต่อได้ทันที ---
+        if page == "Scorecard":
             render_scorecard_page()
             return
         elif page == "Portfolio":
             render_portfolio_page()
             return
-        elif page == "Backtest":
-            render_backtest_page(prices, default_weights, tickers)
-            return
-        elif page == "DCA Simulator":
-            render_dca_simulator_page(prices, default_weights, tickers)
-            return
-        elif page == "Technical Signals":
-            render_technical_signals_page(prices)
-            return
         elif page == "DCF Analysis":
             render_dcf_analysis_page()
             return
-        elif page == "Correlation":
-            pass
         elif page == "AI Advisor":
             render_ai_advisor_page()
             return
@@ -4291,6 +4807,49 @@ def render_dashboard() -> None:
             render_settings_page()
             return
 
+        # --- ตั้งแต่บรรทัดนี้ลงไปคือหน้าที่ใช้ราคาจริง (Overview/Correlation/Backtest/
+        #     DCA Simulator/Technical Signals) ราคาพังจึงยอมให้ดับได้เฉพาะหน้าเหล่านี้ ---
+        try:
+            with st.spinner("กำลังโหลดข้อมูลราคา..."):
+                prices = cached_prices(tickers, years=10)
+        except PriceDataUnavailableError as exc:
+            # ข้อมูลราคาพัง = หยุดทันที ห้ามแสดงหน้าวิเคราะห์จากข้อมูลว่าง (AUDIT.md C1)
+            st.error(f"ดึงข้อมูลราคา ETF ไม่สำเร็จ: {exc}")
+            st.info("ลองกด Refresh Data อีกครั้งในอีกสักครู่ (yfinance อาจจำกัดการเรียกชั่วคราว)")
+            st.caption(
+                "หน้าอื่นที่ไม่ได้ใช้ราคาย้อนหลัง (News, Price Alerts, Portfolio, Settings) "
+                "ยังเข้าได้ตามปกติจากแถบด้านซ้าย"
+            )
+            return
+
+        # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
+        # ผ่าน _tracked_target_weights() ตัวเดียวกับหน้า Scorecard เพื่อไม่ให้มีสองทางเข้า
+        #
+        # **ห้ามให้บรรทัดนี้ล้มก่อนวาด sidebar** (AUDIT_ROUND2_2026-08-07 CRITICAL/T7):
+        # ``get_target_weights()`` โยน InvalidTargetWeights เมื่อ config.json ผิด (ถูกต้อง
+        # ตามกฎ fail-loud) แต่เดิม exception ตกไปที่ ``except Exception`` ท้ายฟังก์ชัน
+        # ⇒ sidebar ไม่เคยถูกวาด ทุกหน้าดับพร้อมกัน รวม News/Price Alerts ที่ไม่ได้ใช้
+        # น้ำหนักเป้าหมายเลย และรวม **หน้า Settings ซึ่งเป็นทางเดียวในแอปที่จะไปแก้ค่านั้น**
+        # ค่านี้ถูกใช้แค่ 2 หน้า (Backtest / DCA Simulator) ทั้งคู่รับ None ได้และแสดง
+        # เหตุผลของตัวเอง — ที่เหลือต้องเดินต่อตามปกติ
+        default_weights: dict[str, float] | None
+        try:
+            default_weights = _tracked_target_weights()
+            weights_error: Exception | None = None
+        except TargetWeightsError as exc:
+            default_weights, weights_error = None, exc
+
+        if page == "Backtest":
+            render_backtest_page(prices, default_weights, tickers, weights_error)
+            return
+        elif page == "DCA Simulator":
+            render_dca_simulator_page(prices, default_weights, tickers, weights_error)
+            return
+        elif page == "Technical Signals":
+            render_technical_signals_page(prices)
+            return
+
+        # Overview / Correlation ใช้เนื้อหาชุดเดียวกันด้านล่าง
         _render_pdf_export_panel(
             section_key="overview",
             prepare_label="Export Monthly Report",
@@ -4315,6 +4874,9 @@ def render_dashboard() -> None:
                 returns_df = calculate_period_returns(prices)
             st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
             st.caption("*QQQM เริ่มซื้อขายปี 2020 — ช่วงก่อนหน้าจึงไม่มีข้อมูล")
+            # N/A ในตารางมีได้สองเหตุผล (ยังไม่เกิด / ดึงไม่ได้) — แยกให้ผู้ใช้เห็น (G7)
+            for note in _stale_price_notes(prices):
+                st.caption(note)
 
         with col2:
             st.subheader("Risk Metrics")
