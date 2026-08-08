@@ -20,21 +20,31 @@
 โค้ดคำนวณ) — แต่ต้องดักเฉพาะ ``RuntimeError`` ซึ่งเป็นชนิดที่ ``analysis/llm.py``
 ห่อความล้มเหลวทุกอย่างของ provider ไว้ ส่วน KeyError/TypeError คือบั๊กของเราเอง
 ต้องปล่อยให้ดังเป็น 500 ห้ามแต่งตัวเป็น "AI ล้มเหลว"
+
+แบบที่ **สี่** ที่เพิ่งเพิ่ม: **คำขอผิดรูป** (``start``/``end`` ไม่ใช่ YYYY-MM-DD หรือ
+สลับหัวท้าย) → 422 ก่อนแตะเน็ตเลยแม้แต่ครั้งเดียว ดู ``_validated_date_range``
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
 
 from analysis.backtest_engine import BacktestEngine
 from analysis.backtest_summary import generate_summary
 from analysis.llm import AI_DISABLED_MESSAGE
 from backend.models.backtest_models import BacktestRequest, BacktestResponse
+from backend.schemas import parse_iso_date
 from data.fetcher import PriceDataUnavailableError
 
 router = APIRouter(prefix="/api", tags=["backtest"])
 
 _engine = BacktestEngine()
+
+# ป้ายภาษาไทยของสองช่องนี้ ใช้ทั้งในข้อความ error และในเอกสาร
+_DATE_FIELDS = (("start", "วันเริ่มต้น (start)"), ("end", "วันสิ้นสุด (end)"))
 
 
 def _price_unavailable(symbol: str, exc: Exception) -> HTTPException:
@@ -42,11 +52,75 @@ def _price_unavailable(symbol: str, exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=f"ดึงราคา {symbol} ไม่สำเร็จ: {exc}")
 
 
-@router.post("/backtest", response_model=BacktestResponse)
+def _validated_date_range(payload: BacktestRequest) -> tuple[str, str]:
+    """ตรวจ ``start``/``end`` ก่อนแตะเน็ต — วันที่ผิดรูปคือความผิดของคำขอ ไม่ใช่ของแหล่งข้อมูล.
+
+    AUDIT_ROUND2_2026-08-07: ``BacktestRequest.start``/``.end`` ประกาศเป็น ``str`` เปล่า
+    ไม่มี validator ⇒ ``start="banana"`` เดินผ่าน Pydantic ไปตายที่ yfinance ซึ่งชั้นล่าง
+    นับเป็น "ผลว่าง" retry 3 รอบ แล้วโยน ``PriceDataUnavailableError`` → **503 "ดึงราคา
+    VOO ไม่สำเร็จ"** ตามนโยบายที่ไฟล์นี้เขียนไว้เองว่า 503 = "ปัญหาอยู่ที่ข้อมูลต้นทาง
+    ลองใหม่ทีหลังได้" ซึ่งเป็นคำอธิบายที่ผิดความจริงและทำให้ผู้ใช้ลองใหม่ซ้ำ ๆ โดยไม่มี
+    วันสำเร็จ · แต่ละครั้งเผาการยิงเน็ตจริง 3 รอบ (เชื้อของ rate-limit)
+
+    ใช้ ``RequestValidationError`` ไม่ใช่ ``HTTPException(422, detail="ข้อความ")`` เพราะ
+    openapi ประกาศ 422 ว่าเป็น ``HTTPValidationError`` ที่ ``detail`` เป็น **array ของ
+    object ที่มี loc/msg** — ไคลเอนต์ที่อ่าน ``detail[0].loc`` ต้องไม่พังเพราะเราตอบ
+    เป็นสตริง (รูปเดียวกับที่ Pydantic ตอบ จึงชี้ได้ว่าฟิลด์ไหนผิด)
+
+    คืนวันที่ที่ normalize เป็น ``YYYY-MM-DD`` แล้ว: ``date.fromisoformat`` ของ Python ≥3.11
+    รับ ``"20260105"`` ด้วย ซึ่ง yfinance อ่านไม่ออก — ต้องไม่ปล่อยรูปแบบนั้นลงไป
+    """
+    errors: list[dict] = []
+    parsed: dict[str, date] = {}
+
+    for field, label in _DATE_FIELDS:
+        raw = getattr(payload, field)
+        try:
+            parsed[field] = parse_iso_date(raw, label)
+        except ValueError as exc:
+            errors.append(
+                {"type": "value_error", "loc": ("body", field), "msg": str(exc), "input": raw}
+            )
+
+    if not errors and parsed["start"] > parsed["end"]:
+        errors.append(
+            {
+                "type": "value_error",
+                "loc": ("body", "end"),
+                "msg": (
+                    "วันสิ้นสุด (end) ต้องไม่มาก่อนวันเริ่มต้น (start) — ได้ "
+                    f"start={parsed['start'].isoformat()} end={parsed['end'].isoformat()}"
+                ),
+                "input": payload.end,
+            }
+        )
+
+    if errors:
+        raise RequestValidationError(errors)
+
+    return parsed["start"].isoformat(), parsed["end"].isoformat()
+
+
+@router.post(
+    "/backtest",
+    response_model=BacktestResponse,
+    summary="Backtest กลยุทธ์ RSI+MACD บนสัญลักษณ์เดียว",
+    description=(
+        "`start` และ `end` ต้องเป็นวันที่รูปแบบ **YYYY-MM-DD** และ `start` ต้องไม่มาหลัง `end` "
+        "— ผิดรูปจะได้ 422 พร้อมชี้ฟิลด์ (ไม่ใช่ 503 'ดึงราคาไม่สำเร็จ' อย่างที่เคยเป็น)\n\n"
+        "หมายเหตุเชิงสัญญา: ชนิดของสองช่องนี้ประกาศเป็น `string` ใน "
+        "`backend/models/backtest_models.py` จึงบอก `format: date` ใน openapi ไม่ได้ "
+        "คำอธิบายตรงนี้จึงเป็นที่เดียวที่คนอ่าน /docs จะเห็นข้อกำหนด "
+        "(AUDIT_ROUND2_2026-08-07)"
+    ),
+)
 def run_backtest(
     payload: BacktestRequest,
     include_ai: bool = Query(False, description="เรียก AI อธิบายผล (มีค่าใช้จ่าย)"),
 ):
+    # ด่านนี้ต้องอยู่ก่อนทุกอย่าง: คำขอที่ใช้ไม่ได้ห้ามกลายเป็นการยิงเน็ต
+    start, end = _validated_date_range(payload)
+
     strategy_params = {
         "rsi_period": payload.rsi_period,
         "rsi_oversold": payload.rsi_oversold,
@@ -61,7 +135,7 @@ def run_backtest(
 
     if payload.run_optimization:
         try:
-            optimization = _engine.optimize(payload.symbol, payload.start, payload.end)
+            optimization = _engine.optimize(payload.symbol, start, end)
             best_params = optimization["best_params"]
             strategy_params.update(best_params)
         except PriceDataUnavailableError as exc:
@@ -76,8 +150,8 @@ def run_backtest(
     try:
         result = _engine.run(
             payload.symbol,
-            payload.start,
-            payload.end,
+            start,
+            end,
             strategy_params=strategy_params,
         )
     except PriceDataUnavailableError as exc:

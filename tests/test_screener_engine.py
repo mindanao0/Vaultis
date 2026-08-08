@@ -208,33 +208,26 @@ class TestFetchFailure:
 
 
 class TestUnknownDefinitions:
-    """นิยามที่เอนจินไม่รู้จักต้องดังทันที ห้ามเงียบเป็น "ไม่ผ่านกฎ"."""
+    """นิยามที่เอนจินไม่รู้จักต้องดังทันที ห้ามเงียบเป็น "ไม่ผ่านกฎ".
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="AUDIT_2026-08-06 ข้อ 0-D: _evaluate_rule คืน False ให้ field ที่ไม่รู้จัก "
-        "⇒ พรีเซ็ต AND ที่พิมพ์ชื่อ field ผิดจะ 'ไม่มีสัญญาณ' ตลอดกาลอย่างเงียบ ๆ",
-    )
+    ทั้งสามเคสเคยติด ``@pytest.mark.xfail(strict=False)`` มาตั้งแต่ AUDIT_2026-08-06 ข้อ 0-D
+    — AUDIT_ROUND2_2026-08-07 ตรวจซ้ำแล้วพบว่ายังแดงจริง (บั๊กเปิดอยู่) และ ``strict=False``
+    แปลว่าวันที่แก้สำเร็จชุดเทสต์จะรายงานแค่ XPASS ไม่มีใครรู้ว่าถึงเวลาถอด marker
+    รอบนี้แก้ที่ต้นเหตุใน ``engine.py`` แล้ว (``_ALLOWED_OPERATORS`` + ``_normalize_logic``)
+    marker จึงถูกถอดออกทั้งชุด ต่อไปนี้ถ้าบั๊กกลับมา เทสต์จะแดงทันที
+    """
+
     def test_unknown_field_raises(self, engine):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="ไม่รู้จัก"):
             engine._evaluate_rule(ScreenerRule("ไม่มีฟิลด์นี้", "gt", 1.0, ""), uptrend_frame())
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="AUDIT_2026-08-06 ข้อ 0-D: operator ที่ไม่รู้จักตกลงมาที่ `return False` เช่นกัน",
-    )
     def test_unknown_operator_raises(self, engine):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="ตัวดำเนินการ"):
             engine._evaluate_rule(ScreenerRule("rsi", "ไม่มีตัวดำเนินการนี้", 35, ""), uptrend_frame())
 
-    @pytest.mark.xfail(
-        strict=False,
-        reason="AUDIT_2026-08-06 ข้อ 0-D: logic ที่ไม่ใช่ 'AND' ถูกตีความเป็น OR เงียบ ๆ "
-        "(สะกดผิดครั้งเดียว = พรีเซ็ตเปลี่ยนความหมายทั้งใบ)",
-    )
     def test_unknown_logic_raises(self, engine):
         engine.frames["VOO"] = uptrend_frame()
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="AND"):
             engine.run(["VOO"], _preset("XOR", [PASS_RULE, FAIL_RULE]))
 
 

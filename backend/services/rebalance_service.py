@@ -11,6 +11,20 @@ from utils import fx
 
 DRIFT_THRESHOLD = 0.05  # 5%
 
+# เส้นแบ่งระหว่าง "ต่างน้อยจนไม่คุ้มทำ" (hold) กับ "ต้องซื้อ/ขายจริง" ใน
+# :func:`_build_actions` — หน่วยเป็น **ดอลลาร์** (0.01 USD ≈ 0.35 บาท) ขนาดเท่ากับ
+# เศษจากการปัดทศนิยม ไม่ใช่ส่วนต่างที่มีความหมายกับพอร์ตจริง
+#
+# เดิมเป็นเลข ``0.01`` ลอยอยู่กลางฟังก์ชัน ไม่มีชื่อและไม่มีเทสต์ตรึง — ขยายเป็น
+# ``100.0`` แล้วชุดเทสต์เต็มยังเขียวครบ 1297 ตัว (AUDIT_ROUND2_2026-08-07 mutation M30)
+# ทั้งที่ส่วนต่างจริงหลักสิบดอลลาร์จะถูกรายงานเป็น ``hold`` ทั้งพอร์ต ผู้ใช้เห็นว่า
+# "ไม่ต้องทำอะไร" ซึ่งเป็นคำตอบที่ผิดแต่หน้าตาเหมือนคำตอบที่ถูก (ไม่ใช่ error)
+# — ตรงข้ามกับเจตนา fail-loud ของไฟล์นี้
+#
+# **ห้ามเปลี่ยนเป็นหน่วยบาทโดยไม่แปลงค่า** (35 เท่า) และห้ามเขียนเลขนี้ซ้ำที่อื่น
+# ตรึงไว้ด้วย ``tests/test_rebalance_thresholds.py``
+HOLD_BAND_USD = 0.01
+
 # ชื่อโปรไฟล์ที่รับได้ — ใช้ **ตรวจชื่อ** เท่านั้น ห้ามอ่านน้ำหนักจากที่นี่
 # (เดิม ``TARGET_WEIGHTS = RISK_PROFILES`` ทำให้แผน rebalance อ่าน preset ดิบ
 #  จึงมองไม่เห็น ``portfolio.target_weights`` ที่ผู้ใช้ตั้งเอง และไม่เห็น ticker
@@ -149,11 +163,25 @@ def _usable_fx_quote() -> tuple[float, bool | None]:
 
 
 def _usable_price(symbol: str, prices: dict[str, float]) -> float | None:
-    """ราคาที่ใช้ได้จริง หรือ ``None`` ถ้าดึงไม่สำเร็จ.
+    """ราคาที่ใช้ได้จริง หรือ ``None`` ถ้าใช้ไม่ได้ — **"มีค่า" ไม่ได้แปลว่า "ใช้ได้"**.
 
     contract ของ ``get_current_prices()``: ticker ที่ดึงไม่ได้จะ **หายไปจาก dict**
     ไม่ใช่มีค่าเป็น 0 — ห้ามใช้ ``prices.get(sym, 0.0)`` เพราะ "ดึงไม่สำเร็จ"
     จะกลายเป็น "มูลค่า 0" แล้วพลิกทิศคำสั่งซื้อขายด้วยเงินจริง
+
+    แต่ contract ฝั่งผู้ให้ราคาเปลี่ยนได้ (wrapper yfinance จำนวนมากคืน ``0`` แทน
+    "ดึงไม่ได้") ราคาที่ **มีค่าแต่ใช้ไม่ได้** จึงต้องเดินเส้นทางเดียวกับ "ราคาหาย"
+    ทุกกรณี ไม่ใช่แค่ ``nan``:
+
+    - ``0`` / ``-0.0`` — ตีมูลค่าที่ถืออยู่เป็น 0 (ตัวหารเล็กลง ตัวอื่นดู overweight)
+      แล้ว ``usd_amount / price`` เป็น ``ZeroDivisionError`` ดิบ ๆ = 500 ภาษาอังกฤษ
+    - **ติดลบ** — จำนวนหน่วยที่สั่ง (``เงิน ÷ ราคา``) ติดลบตาม และมูลค่าที่ถืออยู่
+      กลายเป็นค่าลบจนพลิกทั้งพอร์ตเป็นคำสั่งขาย
+    - ``nan`` / ``inf`` — เทียบกับอะไรก็ ``False`` จึงหลุดทุกด่านที่เขียนด้วย ``<``/``>``
+
+    **ห้ามถอดเงื่อนไข ``price <= 0`` ออก** (เคยถอดแล้วชุดเทสต์เต็มยังเขียว —
+    AUDIT_ROUND2_2026-08-07 mutation M28) ตอนนี้ตรึงไว้ด้วย
+    ``tests/test_rebalance_missing_price.py::TestUnusablePriceValues``
     """
     raw = prices.get(symbol)
     if raw is None:
@@ -164,6 +192,25 @@ def _usable_price(symbol: str, prices: dict[str, float]) -> float | None:
         return None
     if not math.isfinite(price) or price <= 0:
         return None
+    return price
+
+
+def _require_price(symbol: str, prices: dict[str, float]) -> float:
+    """ราคาที่ใช้ได้ของ ``symbol`` — ใช้ไม่ได้ก็ดังเป็นภาษาไทย พร้อมชื่อ ticker.
+
+    ทุกจุดที่เอาราคาไป **คูณเป็นมูลค่า** หรือ **หารเป็นจำนวนหน่วย** ต้องผ่านทางนี้
+    ผู้เรียกคัดกรองด้วย :func:`missing_plan_prices` มาก่อนแล้ว นี่คือชั้นสุดท้าย
+    ที่กันไม่ให้ ``float(None)`` กลายเป็น ``TypeError`` ภาษาอังกฤษซึ่งไม่บอกว่า
+    ticker ตัวไหนพัง (เดิมเขียน ``float(_usable_price(...))`` ตรง ๆ ทั้ง 4 จุด)
+
+    นิยามของคำว่า "ใช้ได้" มีที่เดียวคือ :func:`_usable_price` — ที่นี่ไม่ตั้งเกณฑ์ใหม่
+    """
+    price = _usable_price(symbol, prices)
+    if price is None:
+        raise ValueError(
+            f"ราคาของ {symbol} ใช้ไม่ได้ ({prices.get(symbol)!r}) — "
+            "คำนวณมูลค่าพอร์ต/จำนวนหน่วยที่สั่งไม่ได้"
+        )
     return price
 
 
@@ -243,7 +290,7 @@ def calculate_drift(
 
     values: dict[str, float] = {}
     for sym, qty in _held_shares(holdings).items():
-        values[sym] = qty * float(_usable_price(sym, prices))
+        values[sym] = qty * _require_price(sym, prices)
 
     total = sum(values.values())
     if total <= 0:
@@ -272,19 +319,20 @@ def _build_actions(
 
     values: dict[str, float] = {}
     for sym, qty in _held_shares(holdings).items():
-        values[sym] = qty * float(_usable_price(sym, prices))
+        values[sym] = qty * _require_price(sym, prices)
 
     total_usd = sum(values.values()) + budget_usd
     actions: list[dict[str, Any]] = []
 
     for sym, target_w in target.items():
-        price = float(_usable_price(str(sym).strip().upper(), prices))
+        price = _require_price(str(sym).strip().upper(), prices)
 
         target_value = target_w * total_usd
         current_value = values.get(sym, 0.0)
         delta_usd = target_value - current_value
 
-        if abs(delta_usd) < 0.01:
+        # เกณฑ์ "ไม่คุ้มทำ" มีที่เดียวคือ ``HOLD_BAND_USD`` — ห้ามเขียนเลขซ้ำตรงนี้
+        if abs(delta_usd) < HOLD_BAND_USD:
             action_type = "hold"
             shares_delta = 0.0
             usd_amount = 0.0
@@ -332,7 +380,7 @@ def _generate_ai_comment(
     # ถึงตรงนี้ราคาครบแล้วเสมอ (compute_rebalance คัดกรองก่อน) — ไม่มีการตีมูลค่าเป็น 0
     values: dict[str, float] = {}
     for sym, qty in _held_shares(holdings).items():
-        values[sym] = qty * float(_usable_price(sym, prices))
+        values[sym] = qty * _require_price(sym, prices)
 
     portfolio_is_empty = not values
     if portfolio_is_empty != (max_drift is None):

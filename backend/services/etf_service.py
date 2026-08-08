@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from alerts.price_alert import get_current_prices
 from analysis.correlation import calculate_correlation_matrix
-from analysis.returns import calculate_period_returns
+from analysis.returns import calculate_period_returns, real_bars
 from analysis.risk import calculate_risk_metrics
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
@@ -50,8 +49,9 @@ def _prices_df_for_returns() -> pd.DataFrame:
     จงใจไม่ขยายช่วงของ ``_prices_df`` เพราะ risk/correlation อ่านจากตัวนั้น
     การขยายจะทำให้ตัวเลขความเสี่ยงเปลี่ยนเงียบ ๆ ทั้งที่ไม่มีใครขอให้เปลี่ยน
 
-    ไม่ ffill ที่นี่เช่นกัน — ``calculate_period_returns`` ffill เองอยู่แล้วก่อนคำนวณ
-    ค่าที่ออกมาจึงเท่าเดิมทุกหลัก
+    ไม่ ffill ที่นี่เช่นกัน — ``calculate_period_returns`` คิดจาก**แท่งจริงรายคอลัมน์**
+    (``real_bars``) เอง การเติมช่องว่างก่อนส่งเข้าไปจะทำให้ ticker ที่ผู้ให้ข้อมูล
+    หยุดส่งแท่งได้ผลตอบแทน 0.00% แทนที่จะเป็นตัวเลขของแท่งจริง/``null`` (G7)
     """
     tickers = get_tickers()
     key = f"prices_{_RETURNS_HISTORY_YEARS}y:" + ",".join(sorted(tickers))
@@ -74,11 +74,11 @@ def get_etf_prices() -> dict[str, float]:
 def _real_bars(prices: pd.DataFrame, ticker: str) -> pd.Series:
     """แท่งที่ผู้ให้ข้อมูลส่งมาจริงของ ticker เดียว — ช่องว่างถูกตัดทิ้ง **ไม่เติม**.
 
-    ตัด ``inf``/``-inf`` ออกด้วย: ไม่ใช่ราคา และ ``JSONResponse`` (``allow_nan=False``)
-    จะพาทั้ง endpoint ลงเป็น 500 ถ้าหลุดออกไป
+    นิยามอยู่ที่ ``analysis.returns.real_bars`` ที่เดียวทั้งระบบ (G7) — ตาราง Returns,
+    snapshot, สัญญาณเทคนิค และรายงานรายสัปดาห์ต้องนับ "แท่งจริง" แบบเดียวกัน
+    (รวมถึงการตัด ``inf``/``-inf`` ที่ไม่ใช่ราคา และทำให้ ``JSONResponse`` ล้มทั้ง endpoint)
     """
-    series = pd.to_numeric(prices[ticker], errors="coerce")
-    return series[np.isfinite(series)]
+    return real_bars(prices[ticker])
 
 
 def get_etf_daily_eod_snapshot() -> dict[str, dict[str, float | str | bool | None]]:
@@ -151,6 +151,10 @@ def get_etf_returns() -> dict:
 
     ETF ที่เกิดทีหลัง (QQQM ต.ค. 2020, GLDM 2018) จะได้ ``null`` ในช่วงยาว ๆ
     ตามจริง — นั่นคือคำตอบที่ถูก ไม่ใช่ข้อผิดพลาด
+
+    ticker ที่ผู้ให้ข้อมูล**หยุดส่งแท่ง**ก็เข้ากติกาเดียวกัน (G7): ตัวเลขที่ได้คือ
+    ผลตอบแทนของแท่งจริงของ ticker นั้นเอง และเป็น ``null`` เมื่อแท่งจริงไม่ถึงหน้าต่าง
+    — ห้ามเป็น ``0.0`` ซึ่งอ่านได้ว่า "ราคาไม่ขยับเลยทั้งช่วง"
     """
     result = calculate_period_returns(_prices_df_for_returns())
     return frame_to_dict(result)

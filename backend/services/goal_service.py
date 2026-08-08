@@ -13,6 +13,7 @@ from ..schemas import GoalCreate
 
 from analysis.risk import portfolio_mu_sigma
 from portfolio.targets import RISK_PROFILES
+from utils.cache import is_cacheable
 
 EXPECTED_RETURNS: dict[str, float] = {
     "conservative": 0.07,
@@ -21,44 +22,124 @@ EXPECTED_RETURNS: dict[str, float] = {
 }
 DEFAULT_VOLATILITY = 0.15
 
-_real_assumptions_cache: tuple[float, dict[str, Any] | None] | None = None
+# สามสถานะที่ต้องแยกจากกันทุกชั้น (กฎเดียวกับ ``fetch_*_status`` ของ news):
+# "ดึงไม่สำเร็จ" ≠ "ไม่มีข้อมูล" — ยุบรวมกันเมื่อไหร่ ผู้ใช้ก็ไปแก้ผิดที่เมื่อนั้น
+ASSUMPTIONS_OK = "ok"        # มี μ/σ จากพอร์ตจริง
+ASSUMPTIONS_EMPTY = "empty"  # ยังไม่มีพอร์ต/ยังไม่มีกองที่ราคาพร้อม — ไม่ใช่ความล้มเหลว
+ASSUMPTIONS_ERROR = "error"  # ดึงราคา/อัตราแลกเปลี่ยนไม่สำเร็จ หรือคำนวณ μ/σ ไม่ได้
+
+_real_assumptions_cache: tuple[float, dict[str, Any]] | None = None
 _REAL_ASSUMPTIONS_TTL_SEC = 600.0
 
+_REAL_SOURCE = "พอร์ตจริงจาก ledger (ย้อนหลัง 10 ปี)"
 
-def real_portfolio_assumptions() -> dict[str, Any] | None:
-    """μ/σ ต่อปีจากพอร์ตจริง (น้ำหนักมูลค่าปัจจุบันใน ledger + ราคาย้อนหลัง 10 ปี).
+
+def _assumptions(
+    status: str,
+    *,
+    source: str,
+    mu: float | None = None,
+    sigma: float | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """รูปคืนค่ามาตรฐานของสมมติฐานพอร์ตจริง.
+
+    ``data_ok`` คือธงเดียวกับที่ทั้งระบบใช้ — ``utils.cache.is_cacheable`` อ่านมันเพื่อ
+    ปฏิเสธการแคช ผลจึงเป็น "ไม่แคชความล้มเหลว" โดยไม่ต้องนิยามกติกาซ้ำที่นี่
+    """
+    return {
+        "status": status,
+        "mu": mu,
+        "sigma": sigma,
+        "source": source,
+        "error": error,
+        "data_ok": status == ASSUMPTIONS_OK,
+    }
+
+
+def _compute_real_portfolio_assumptions() -> dict[str, Any]:
+    """คำนวณ μ/σ ของพอร์ตจริง — จับเฉพาะความล้มเหลวของ "ข้อมูล" เท่านั้น.
+
+    บั๊กจริงในโค้ด (TypeError/KeyError/...) ต้องดังต่อ ห้ามให้กลายเป็น "ยังไม่มีพอร์ต"
+    """
+    from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
+    from portfolio.tracker import get_portfolio_summary
+    from utils.fx import FxRateUnavailable
+
+    try:
+        holdings = get_portfolio_summary()
+    except (PriceDataUnavailableError, FxRateUnavailable) as exc:
+        return _assumptions(
+            ASSUMPTIONS_ERROR,
+            source="อ่านพอร์ตจริงไม่สำเร็จ",
+            error=f"อ่านพอร์ตจาก ledger ไม่สำเร็จ: {exc}",
+        )
+
+    priced = holdings[holdings["Price OK"]] if not holdings.empty else holdings
+    # เดิมเขียน ``float(x or 0) > 0`` — ``or`` ดัก NaN ไม่ได้ (NaN เป็น truthy) ใช้ isfinite ตรง ๆ
+    weights = {
+        str(row["Ticker"]): float(row["Current Value (THB)"])
+        for _, row in priced.iterrows()
+        if np.isfinite(float(row["Current Value (THB)"]))
+        and float(row["Current Value (THB)"]) > 0
+    }
+    if not weights:
+        return _assumptions(
+            ASSUMPTIONS_EMPTY,
+            source="ยังไม่มีพอร์ตจริงใน ledger (ยังไม่มีกองที่ราคาพร้อม)",
+        )
+
+    try:
+        prices = fetch_adjusted_close_data(list(weights), years=10)
+    except PriceDataUnavailableError as exc:
+        return _assumptions(
+            ASSUMPTIONS_ERROR,
+            source="ดึงราคาย้อนหลังของพอร์ตจริงไม่สำเร็จ",
+            error=f"ดึงราคาย้อนหลังไม่สำเร็จ: {exc}",
+        )
+
+    try:
+        mu, sigma = portfolio_mu_sigma(prices, weights)
+    except ValueError as exc:  # ข้อมูลสั้น/ไม่ตรงกอง — เป็นปัญหาข้อมูล ไม่ใช่บั๊ก
+        return _assumptions(
+            ASSUMPTIONS_ERROR,
+            source="คำนวณ μ/σ ของพอร์ตจริงไม่ได้",
+            error=f"คำนวณ μ/σ จากราคาที่ได้ไม่สำเร็จ: {exc}",
+        )
+
+    return _assumptions(ASSUMPTIONS_OK, source=_REAL_SOURCE, mu=mu, sigma=sigma)
+
+
+def real_portfolio_assumptions_with_status() -> dict[str, Any]:
+    """μ/σ ต่อปีจากพอร์ตจริง พร้อม **สาเหตุ** เมื่อใช้ไม่ได้.
 
     Roadmap ข้อ 15: Monte Carlo ของเป้าหมายต้องผูกพอร์ตจริง ไม่ใช่ค่าคงที่ต่อโปรไฟล์
-    คืน ``None`` เมื่อไม่มีพอร์ต/ราคา — ผู้เรียก fallback ไป preset พร้อมระบุที่มาเสมอ
-    (cache 10 นาที — หน้า goals เรียกซ้ำต่อหลายเป้าหมาย)
+    คืน dict เสมอ: ``status`` ∈ {``ok``, ``empty``, ``error``} + ``source``/``error``
+    ผู้เรียกที่ fallback ไป preset **ต้องบอกผู้ใช้ว่ากำลังใช้สมมติฐานสำเร็จรูป**
+
+    แคช 10 นาที **เฉพาะผลสำเร็จ** (หน้า goals เรียกซ้ำต่อหลายเป้าหมาย) — ความล้มเหลว
+    และ "ยังไม่มีพอร์ต" ต้องลองใหม่ทุกครั้ง ตามกฎเดียวกับ ``utils/cache.py`` (C1)
     """
     global _real_assumptions_cache
     now = time.monotonic()
     if _real_assumptions_cache is not None and now - _real_assumptions_cache[0] < _REAL_ASSUMPTIONS_TTL_SEC:
-        cached = _real_assumptions_cache[1]
-        return dict(cached) if cached is not None else None
+        return dict(_real_assumptions_cache[1])
 
-    result: dict[str, Any] | None = None
-    try:
-        from data.fetcher import fetch_adjusted_close_data
-        from portfolio.tracker import get_portfolio_summary
+    result = _compute_real_portfolio_assumptions()
+    _real_assumptions_cache = (now, result) if is_cacheable(result) else None
+    return dict(result)
 
-        holdings = get_portfolio_summary()
-        priced = holdings[holdings["Price OK"]] if not holdings.empty else holdings
-        if not priced.empty:
-            weights = {
-                str(row["Ticker"]): float(row["Current Value (THB)"])
-                for _, row in priced.iterrows()
-                if float(row["Current Value (THB)"] or 0) > 0
-            }
-            prices = fetch_adjusted_close_data(list(weights), years=10)
-            mu, sigma = portfolio_mu_sigma(prices, weights)
-            result = {"mu": mu, "sigma": sigma, "source": "พอร์ตจริงจาก ledger (ย้อนหลัง 10 ปี)"}
-    except Exception:
-        result = None
 
-    _real_assumptions_cache = (now, result)
-    return dict(result) if result is not None else None
+def real_portfolio_assumptions() -> dict[str, Any] | None:
+    """รูปย่อของ :func:`real_portfolio_assumptions_with_status` — ``None`` เมื่อใช้ไม่ได้.
+
+    ผู้เรียกที่ต้องแยก "ยังไม่มีพอร์ต" ออกจาก "ดึงราคาไม่สำเร็จ" ต้องใช้ตัว ``_with_status``
+    (คู่เดียวกับ ``get_news`` / ``get_news_with_status``)
+    """
+    status = real_portfolio_assumptions_with_status()
+    if status["status"] != ASSUMPTIONS_OK:
+        return None
+    return {"mu": status["mu"], "sigma": status["sigma"], "source": status["source"]}
 
 # ใช้ชุดเดียวกับ DCA/rebalance (portfolio/targets.py)
 ALLOCATION_MAP = RISK_PROFILES
@@ -168,16 +249,27 @@ def check_off_track(goal: InvestmentGoal, required_pmt: float) -> tuple[bool, st
 def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
     months = _months_remaining(goal.target_date)
 
-    # ผูกสมมติฐานกับพอร์ตจริงก่อน (Roadmap ข้อ 15) — ไม่มีพอร์ต/ราคา ค่อยใช้ preset
-    real_assumptions = real_portfolio_assumptions()
-    if real_assumptions is not None:
-        expected_return = float(real_assumptions["mu"])
-        volatility = float(real_assumptions["sigma"])
-        assumptions_source = str(real_assumptions["source"])
+    # ผูกสมมติฐานกับพอร์ตจริงก่อน (Roadmap ข้อ 15) — ใช้ไม่ได้ค่อยตกไป preset
+    # แต่ต้องบอกผู้ใช้ให้ตรงว่า "ยังไม่มีพอร์ต" หรือ "ดึงข้อมูลไม่สำเร็จ" (คนละเรื่องกัน)
+    assumptions = real_portfolio_assumptions_with_status()
+    assumptions_status = str(assumptions["status"])
+    assumptions_error = assumptions["error"]
+    if assumptions_status == ASSUMPTIONS_OK:
+        expected_return = float(assumptions["mu"])
+        volatility = float(assumptions["sigma"])
+        assumptions_source = str(assumptions["source"])
     else:
         expected_return = EXPECTED_RETURNS.get(goal.risk_profile, 0.09)
         volatility = DEFAULT_VOLATILITY
-        assumptions_source = f"preset โปรไฟล์ {goal.risk_profile} (ยังไม่มีพอร์ตจริง/ราคา)"
+        if assumptions_status == ASSUMPTIONS_ERROR:
+            assumptions_source = (
+                f"preset โปรไฟล์ {goal.risk_profile} — สมมติฐานสำเร็จรูป ไม่ใช่พอร์ตจริงของคุณ "
+                f"({assumptions_error})"
+            )
+        else:
+            assumptions_source = (
+                f"preset โปรไฟล์ {goal.risk_profile} ({assumptions['source']})"
+            )
     monthly_rate = expected_return / 12
 
     required_pmt = calculate_pmt(
@@ -211,6 +303,19 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
     )
     allocation = suggest_allocation(goal.risk_profile, needed if needed is not None else expected_return)
 
+    assumptions_note = (
+        f"ประมาณการใช้ผลตอบแทน {expected_return*100:.1f}% ต่อปี "
+        f"และความผันผวน {volatility*100:.1f}% (ที่มา: {assumptions_source}) — "
+        "อิงสถิติอดีต เป็นสมมติฐาน ไม่ใช่การรับประกัน"
+    )
+    if assumptions_status == ASSUMPTIONS_ERROR:
+        # ดึงข้อมูลพอร์ตจริงไม่สำเร็จ ≠ ยังไม่มีพอร์ต — ตัวเลขยังตอบได้ แต่ห้ามให้ผู้ใช้
+        # เข้าใจว่านี่คือพอร์ตของเขา (คำเตือนต้องมาก่อน ไม่ใช่ซ่อนท้ายประโยค)
+        assumptions_note = (
+            "ดึงข้อมูลพอร์ตจริงไม่สำเร็จ — ตัวเลขด้านล่างคิดจากสมมติฐานสำเร็จรูป (preset) "
+            f"ไม่ใช่พอร์ตจริงของคุณ ({assumptions_error}) · " + assumptions_note
+        )
+
     return {
         "goal_id": goal.id,
         "months_remaining": months,
@@ -223,11 +328,10 @@ def _build_progress(goal: InvestmentGoal) -> dict[str, Any]:
         "course_correction": correction,
         "suggested_allocation": allocation,
         "assumptions_source": assumptions_source,
-        "assumptions_note": (
-            f"ประมาณการใช้ผลตอบแทน {expected_return*100:.1f}% ต่อปี "
-            f"และความผันผวน {volatility*100:.1f}% (ที่มา: {assumptions_source}) — "
-            "อิงสถิติอดีต เป็นสมมติฐาน ไม่ใช่การรับประกัน"
-        ),
+        # ok = พอร์ตจริง · empty = ยังไม่มีพอร์ต · error = ดึงข้อมูลไม่สำเร็จ (ใช้ preset แทน)
+        "assumptions_status": assumptions_status,
+        "assumptions_error": assumptions_error,
+        "assumptions_note": assumptions_note,
     }
 
 

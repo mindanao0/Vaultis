@@ -16,6 +16,11 @@ AssetType = Literal["cash", "etf", "fund", "bond", "อื่นๆ"]
 #   partial          = บางตัวมีราคา บางตัวดึงไม่ได้ → ยอดรวม "ขาด" ดู ``missing_prices``
 #   from_snapshot    = ราคาสดใช้ไม่ได้/สมุดไม่มี ETF จึงใช้มูลค่า ETF จาก snapshot ล่าสุด
 #   unavailable      = ดึงราคาไม่ได้เลย และไม่มี snapshot ให้ถอย → ยอดไม่มี ETF เลย
+#   fx_unavailable   = **ราคาดึงมาได้ แต่ไม่มีอัตราแลกเปลี่ยนให้แปลงเป็นบาท** และไม่มี
+#                      snapshot ให้ถอย → ยอดไม่มี ETF เลย  แยกจาก ``unavailable``
+#                      เพราะ "ดึงราคาไม่ได้" กับ "แปลงเป็นบาทไม่ได้ (FX ล่ม/ค่าสำรองผิด)"
+#                      คนละสาเหตุ คนละวิธีแก้ — ``missing_prices`` ต้อง **ว่าง** ในเคสนี้
+#                      รายละเอียดอยู่ที่ ``fx_error`` (G3)
 #   ledger_unreadable= สมุดมีธุรกรรมอยู่ แต่ tracker ตัดทิ้งหมดจนไม่เหลือ holding
 #                      → **บอกไม่ได้ว่ามี ETF หรือไม่** (คนละเรื่องกับ ``no_holdings``)
 #   no_holdings      = สมุดไม่มี ETF จริง ๆ และไม่มีแถวไหนถูกตัดทิ้ง
@@ -23,7 +28,13 @@ AssetType = Literal["cash", "etf", "fund", "bond", "อื่นๆ"]
 # ``etf_status`` บอก "ตัวเลข ETF ในคำตอบนี้มาจากไหน" ส่วน "สมุดอ่านได้ครบไหม"
 # อยู่ที่ ``skipped_rows``/``skipped_reason`` เสมอ — ต้องอ่านทั้งคู่
 EtfStatus = Literal[
-    "live", "partial", "from_snapshot", "unavailable", "ledger_unreadable", "no_holdings"
+    "live",
+    "partial",
+    "from_snapshot",
+    "unavailable",
+    "fx_unavailable",
+    "ledger_unreadable",
+    "no_holdings",
 ]
 
 # อายุของ snapshot ที่เอา "สินทรัพย์นอก ETF + หนี้สิน" มาใช้
@@ -115,8 +126,18 @@ class NetWorthResponse(BaseModel):
 
     # ที่มาของอัตราแลกเปลี่ยนที่ใช้แปลง ETF เป็นบาท (``fx_is_live=False``
     # = ค่าสำรองจาก config ตัวเลขบาทอาจคลาดเคลื่อน) — None เมื่อไม่ได้ใช้ FX เลย
+    #
+    # สี่สถานะที่ห้ามยุบรวมกัน (G3) — "ไม่ได้ใช้" ≠ "ใช้ไม่ได้" ≠ "ใช้ค่าสำรอง":
+    #   ค่าสด            fx_rate=ตัวเลข  fx_is_live=True   fx_error=None
+    #   ค่าสำรอง          fx_rate=ตัวเลข  fx_is_live=False  fx_error=None
+    #   ไม่ได้ใช้ FX เลย   fx_rate=None   fx_is_live=None   fx_error=None
+    #   ใช้ FX ไม่ได้      fx_rate=None   fx_is_live=None   fx_error=ข้อความไทย
     fx_rate: float | None = None
     fx_is_live: bool | None = None
+    # เหตุผลที่ไม่มีอัตราแลกเปลี่ยนให้ใช้ (ข้อความจาก ``utils.fx.FxRateUnavailable``)
+    # — มีค่าเมื่อคำตอบนี้ **ต้องใช้** FX แล้วหาไม่ได้ ทำให้ยอด ETF ขาดหรือถอยไปใช้
+    # snapshot  ส่วนที่ไม่พึ่ง FX (เงินสด/สินทรัพย์อื่น/หนี้สิน) ยังถูกต้องตามปกติ
+    fx_error: str | None = None
 
     # snapshot ที่เอา "สินทรัพย์นอก ETF + หนี้สิน" มาใช้จริง — คนละอันกับ
     # ``snapshot_date`` ซึ่งเป็นวันที่คำนวณ (AUDIT_2026-08-06 L-NW-3)

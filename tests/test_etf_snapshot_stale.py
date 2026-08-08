@@ -207,6 +207,48 @@ def test_technical_flags_stale_ticker(stub_prices):
     assert tech["VOO"]["stale"] is False
 
 
+# ------------------------------------- G7: /api/etf/returns ต้องไม่พิมพ์ 0.00% แทน "ดึงไม่ได้"
+
+
+def test_returns_endpoint_does_not_report_zero_for_a_dead_ticker(stub_prices):
+    """GLDM หยุดส่งแท่ง 40 วัน → 1M ต้องเป็นผลตอบแทนของแท่งจริง ห้ามเป็น 0.0.
+
+    (AUDIT_ROUND2_2026-08-07 G7 — ``calculate_period_returns`` เคย ``ffill()`` ทั้งเฟรม
+    ก่อนคำนวณ ตัวตั้งกับตัวหารจึงเป็นราคาเดียวกันเป๊ะเมื่อช่องว่างยาวกว่าหน้าต่าง)
+    """
+    from analysis.returns import RETURN_WINDOWS, period_return_pct
+
+    frame = _base_frame()
+    frame.iloc[-40:, frame.columns.get_loc("GLDM")] = np.nan
+    stub_prices(frame)
+
+    body = _client().get("/api/etf/returns").json()["data"]
+
+    got = body["GLDM"]["1M"]
+    assert got is not None
+    assert got != pytest.approx(0.0, abs=1e-9), "ดึงราคาไม่ได้ ถูกรายงานเป็น 'ราคาไม่ขยับทั้งเดือน'"
+    assert got == pytest.approx(
+        period_return_pct(frame["GLDM"].dropna(), RETURN_WINDOWS["1M"]), rel=1e-12
+    )
+    assert body["VOO"]["1M"] == pytest.approx(
+        period_return_pct(frame["VOO"], RETURN_WINDOWS["1M"]), rel=1e-12
+    ), "ticker ที่ปกติต้องได้ตัวเลขเดิม"
+
+
+def test_returns_endpoint_reports_null_when_a_ticker_has_no_usable_bars(stub_prices):
+    """แท่งจริงน้อยกว่าหน้าต่าง → ``null`` ("ไม่รู้") ไม่ใช่ 0.0 ที่อ่านเป็นผลตอบแทนได้."""
+    frame = _base_frame()
+    col = frame.columns.get_loc("GLDM")
+    frame.iloc[15:, col] = np.nan  # เหลือแท่งจริง 15 แท่ง (หน้าต่าง 1M = 21)
+    stub_prices(frame)
+
+    body = _client().get("/api/etf/returns").json()["data"]
+
+    assert body["GLDM"]["1M"] is None
+    assert body["GLDM"]["1Y"] is None
+    assert body["VOO"]["1M"] is not None, "ticker เดียวที่ข้อมูลขาด ต้องไม่ลากตัวอื่นตกไปด้วย"
+
+
 # --------------------------------------------- risk/correlation ต้องไม่เปลี่ยนค่าเงียบ ๆ
 
 

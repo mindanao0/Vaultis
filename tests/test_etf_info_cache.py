@@ -266,3 +266,127 @@ async def test_failed_technical_is_not_cached(monkeypatch, client):
     assert len(tech_calls) == 2, "ผล technical ที่ล้มเหลวถูกแคช 15 นาที — ไม่ได้ลองใหม่"
     assert second.status_code == 200
     assert second.json()["technical"]["price"] == 520.0
+
+
+# ============================================================ AUDIT_ROUND2 G5 — NaN
+# ``_to_float()`` เคยเป็นตัวเดียวใน 6 ตัวแปลง float ของโปรเจกต์ที่ไม่กรอง NaN
+# (``float(nan)`` สำเร็จ ไม่โยน exception) ⇒ ``ETFInfo.ytd_return = nan`` พร้อม
+# ``data_ok=True`` แล้ว FastAPI serialize ด้วย ``json.dumps(allow_nan=False)``
+# **นอก** ตัว handler ⇒ ``except Exception`` ในเราเตอร์ดักไม่ทัน ผู้ใช้ได้ 500 เปล่า
+# และเพราะติดธง data_ok=True ค่านั้นถูกแคชค้างไว้ ``ETF_INFO_TTL`` = 6 ชม.
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_to_float_rejects_non_finite(value):
+    """NaN/inf ไม่ใช่ตัวเลขที่ใช้ได้ — ต้องคืน ``None`` เหมือน ``technical_service._scalar_float``."""
+    assert info_mod._to_float(value) is None
+
+
+@pytest.mark.parametrize("value,expected", [(0.0, 0.0), (-3.5, -3.5), ("1.25", 1.25), (7, 7.0)])
+def test_to_float_keeps_real_numbers(value, expected):
+    """ห้ามกรองจนตัวเลขจริงหาย — ``0.0`` คือข้อมูล (ผลตอบแทน 0% ก็คือคำตอบ)."""
+    assert info_mod._to_float(value) == expected
+
+
+def test_optional_str_rejects_nan():
+    """ช่องข้อความจาก pandas เป็น NaN ได้ — ``str(nan)`` = ``"nan"`` คือการกุข้อมูล."""
+    assert info_mod._optional_str(float("nan")) is None
+
+
+async def test_nan_price_falls_through_to_next_source(monkeypatch):
+    """NaN เป็น truthy ⇒ สำนวน ``a or b`` เลือก NaN ทิ้งราคาจริงที่อยู่ช่องถัดไป."""
+    _install_ticker(
+        monkeypatch,
+        {**_GOOD_INFO, "currentPrice": float("nan"), "regularMarketPrice": 520.0},
+    )
+    info = await info_mod.ETFInfoService().get_info("VOO")
+
+    assert info.price == 520.0, "ราคาจริงในช่องถัดไปถูก NaN บังไว้ — ตัดข้อมูลทิ้งเงียบ ๆ"
+
+
+async def test_nan_long_name_falls_through_to_short_name(monkeypatch):
+    """ชื่อสำรองก็ถูก NaN บังได้ด้วยสำนวนเดียวกัน — และ ``str(nan)`` = ``"nan"``."""
+    info_raw = {k: v for k, v in _GOOD_INFO.items() if k != "longName"}
+    _install_ticker(monkeypatch, {**info_raw, "longName": float("nan"), "shortName": "VOO ETF"})
+    info = await info_mod.ETFInfoService().get_info("VOO")
+
+    assert info.name == "VOO ETF", "ชื่อจริงในช่องสำรองหายไปเพราะ NaN ในช่องแรก"
+
+
+async def test_zero_price_is_not_a_price(monkeypatch):
+    """0 คือ "ไม่มีค่า" ของ yfinance ไม่ใช่ราคา — ห้ามกลายเป็นราคา $0.00."""
+    _install_ticker(
+        monkeypatch,
+        {**_GOOD_INFO, "currentPrice": 0.0, "regularMarketPrice": 0.0, "navPrice": 0.0},
+    )
+    info = await info_mod.ETFInfoService().get_info("VOO")
+
+    assert info.price is None, "ราคา 0 ถูกรายงานเป็นราคาจริง"
+
+
+async def test_all_fields_nan_is_reported_as_fetch_failure(monkeypatch):
+    """ทุกช่องเป็น NaN = ไม่ได้ข้อมูลอะไรเลย ⇒ ต้องเป็น "ดึงไม่สำเร็จ" ไม่ใช่ ETF ว่าง ๆ."""
+    nan = float("nan")
+    _install_ticker(
+        monkeypatch,
+        {"longName": nan, "regularMarketPrice": nan, "ytdReturn": nan, "beta3Year": nan},
+    )
+    info = await info_mod.ETFInfoService().get_info("VOO")
+
+    assert info.data_ok is False
+    assert info.error
+
+
+async def test_nan_field_becomes_null_instead_of_blank_500(monkeypatch, client):
+    """หัวใจของ G5: ช่องเสริมช่องเดียวเป็น NaN ต้องไม่ทำให้ทั้ง endpoint ตาย."""
+    _install_ticker(monkeypatch, {**_GOOD_INFO, "ytdReturn": float("nan")})
+    _stub_technical(monkeypatch, 520.0)
+
+    resp = client.get("/api/etf/VOO")
+    assert resp.status_code == 200, (
+        f"NaN ช่องเดียวทำให้ /api/etf/VOO ตอบ {resp.status_code} เปล่า ๆ (json.dumps ตายนอก handler)"
+    )
+    payload = resp.json()["info"]
+    assert payload["ytd_return"] is None, "ช่องที่อ่านไม่ได้ต้องเป็น null ไม่ใช่ NaN"
+    assert payload["name"] == "Vanguard S&P 500 ETF", "ช่องที่ดีต้องยังอยู่ครบ"
+    assert payload["price"] == 520.0
+
+
+async def test_compare_endpoint_survives_nan_field(monkeypatch, client):
+    _install_ticker(monkeypatch, {**_GOOD_INFO, "ytdReturn": float("nan")})
+    _stub_technical(monkeypatch, 520.0)
+
+    resp = client.get("/api/etf/compare?symbols=VOO")
+    assert resp.status_code == 200, "หน้าเปรียบเทียบล่มทั้งหน้าเพราะ NaN ช่องเดียว"
+    assert resp.json()["analyses"][0]["info"]["ytd_return"] is None
+
+
+async def test_dropped_nan_field_is_logged(monkeypatch, caplog):
+    """"ค่านี้อ่านไม่ได้" ต้องไม่หายเงียบ — null ในคำตอบบอกผู้ใช้ log บอกผู้ดูแล."""
+    _install_ticker(monkeypatch, {**_GOOD_INFO, "ytdReturn": float("nan")})
+
+    with caplog.at_level("WARNING", logger=info_mod.logger.name):
+        info = await info_mod.ETFInfoService().get_info("VOO")
+
+    assert info.ytd_return is None
+    assert any("ytdReturn" in rec.getMessage() for rec in caplog.records), (
+        "ช่องที่ถูกทิ้งเพราะ NaN ไม่ถูกรายงานที่ไหนเลย"
+    )
+
+
+async def test_nan_payload_is_never_cached():
+    """ชั้นกันสอง: ถ้ามี NaN หลุดเข้ามาอีก ห้ามค้างในแคช 6 ชม. (endpoint จะ 500 ทุกครั้งจนหมดอายุ)."""
+    cache = CacheService()
+    key = etf_info_cache_key("VOO")
+    payload = {"symbol": "VOO", "data_ok": True, "name": "Vanguard S&P 500 ETF", "ytd_return": float("nan")}
+
+    await cache.set(key, payload, ETF_INFO_TTL)
+
+    assert await cache.get(key) is None, "payload ที่ serialize เป็น JSON ไม่ได้ ถูกแคชไว้ 6 ชม."
+
+
+async def test_nested_non_finite_payload_is_never_cached():
+    """NaN ที่ซ่อนใน dict ซ้อน (เช่นผล backtest ของ forecast) ก็ทำให้ทั้งคำตอบ serialize ไม่ได้."""
+    cache = CacheService()
+    await cache.set("forecast:VOO", {"symbol": "VOO", "backtest": {"mae": float("nan")}}, 300)
+    assert await cache.get("forecast:VOO") is None

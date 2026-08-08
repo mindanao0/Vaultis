@@ -63,7 +63,10 @@ async def run_custom_screener(payload: CustomScreenerRequest):
                 field=str(rule.get("field", "")),
                 operator=str(rule.get("operator", "")),
                 value=rule.get("value"),
-                description=str(rule.get("description", "")),
+                # ``or ""`` ไม่ใช่ค่าดีฟอลต์ของ ``.get`` เพราะ ``{"description": null}``
+                # จะได้ ``str(None)`` = "None" ไปโชว์เป็นเหตุผลที่กฎผ่าน
+                # (ตัวกรณีไม่ใส่คำอธิบายเลย เอนจินเติมข้อความจากตัวกฎให้เอง — AUDIT_ROUND2_2026-08-07)
+                description=str(rule.get("description") or ""),
             )
             for rule in payload.rules
         ]
@@ -79,5 +82,9 @@ async def run_custom_screener(payload: CustomScreenerRequest):
             "total_signals": len(results),
             "errors": list(getattr(results, "errors", [])),
         }
+    except ValueError as exc:
+        # นิยามที่ผู้เรียกส่งมาผิดเอง (logic ไม่ใช่ AND/OR, ไม่มีกฎสักข้อ) = 400 ไม่ใช่ 500
+        # — เดิม logic ที่สะกดผิดถูกตีความเป็น OR เงียบ ๆ (AUDIT_ROUND2_2026-08-07)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"custom screener failed: {exc}") from exc

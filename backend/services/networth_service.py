@@ -30,19 +30,28 @@ STALE_SNAPSHOT_DAYS = 90
 
 
 class _LiveEtf(NamedTuple):
-    """ผลการตีมูลค่า ETF จากราคาสด **พร้อมสิ่งที่ตีไม่ได้**."""
+    """ผลการตีมูลค่า ETF จากราคาสด **พร้อมสิ่งที่ตีไม่ได้**.
+
+    ``fx_rate``/``fx_is_live`` เป็น ``None`` ได้สองความหมาย ซึ่งแยกกันด้วย ``fx_error``:
+    ไม่ได้ใช้ FX เลย (``fx_error is None``) กับ ต้องใช้แล้วใช้ไม่ได้ (มีข้อความ) — G3
+    """
 
     assets: list[Asset]
     missing_prices: list[str]
     skipped_rows: list[dict[str, Any]]
     skipped_reason: str
-    fx_rate: float
-    fx_is_live: bool
+    fx_rate: float | None
+    fx_is_live: bool | None
     holdings_count: int
+    # เหตุผลที่ไม่มีอัตราแลกเปลี่ยนให้ใช้ (ข้อความไทยจาก ``fx.FxRateUnavailable``)
+    fx_error: str | None
+    # ticker ที่ **มีราคาแล้ว** แต่แปลงเป็นบาทไม่ได้เพราะไม่มีอัตรา — คนละกองกับ
+    # ``missing_prices`` ซึ่งแปลว่าดึงราคาไม่ได้ (กฎข้อ 2 ห้ามยุบสองเหตุเป็นเหตุเดียว)
+    unconverted: list[str]
 
 
 def _etf_assets_live() -> _LiveEtf:
-    """ETF holdings ที่มีราคาจริง → Asset (THB) + รายงานตัวที่ดึงราคาไม่ได้.
+    """ETF holdings ที่มีราคาจริง → Asset (THB) + รายงานตัวที่ตีมูลค่าไม่ได้.
 
     ใช้ FX สดจากแหล่งกลาง — เดิมใช้ ``default_fx_rate`` 33.5 คงที่จาก config
     ทำให้มูลค่า Net Worth ต่างจากหน้า Portfolio (AUDIT.md M5) และเก็บ ``is_live``
@@ -50,12 +59,40 @@ def _etf_assets_live() -> _LiveEtf:
 
     ถือครองที่ดึงราคาไม่ได้ **ถูกข้ามและถูกรายงาน** — ข้ามเฉย ๆ ให้ผลเหมือนนับเป็น 0
     ทุกประการ เพราะมันหายจากตัวตั้งของยอดรวม (AUDIT_2026-08-06 H11)
-    """
-    report = get_holdings()
-    holdings = list(report.get("holdings") or [])
-    rate, fx_is_live = fx.get_usdthb()
 
-    assets: list[Asset] = []
+    **ขออัตราแลกเปลี่ยนเฉพาะเมื่อมีมูลค่า USD ที่ต้องแปลงจริง ๆ** (G3) เดิมเรียก
+    ``fx.get_usdthb()`` แบบไม่มีเงื่อนไขก่อนจะรู้ด้วยซ้ำว่ามี holding หรือไม่ ⇒ หลัง B9
+    ทำให้ค่าสำรองที่ตั้งผิดโยน :class:`fx.FxRateUnavailable` สมุดว่าง (ซึ่งไม่มีอะไร
+    ต้องแปลงเป็นบาทเลย) ก็พาทั้ง ``/api/networth/current`` เป็น HTTP 500 ตามไปด้วย
+    เงินสด/สินทรัพย์อื่น/หนี้สินที่เป็นตัวเลขบาทล้วนจึงหายไปทั้งก้อน — fail-closed
+    ต้องปิดเฉพาะส่วนที่เชื่อถือไม่ได้ ไม่ใช่ปิดทั้งคำตอบ
+    """
+    try:
+        report = get_holdings()
+    except fx.FxRateUnavailable as exc:
+        # ``tracker`` แปลงมูลค่าเป็นบาทตั้งแต่ต้นทาง สมุดที่มีธุรกรรมจริงจึงล้มตรงนี้
+        # ก่อนถึงบรรทัดขอ FX ข้างล่าง — ผลลัพธ์ต้องเหมือนกัน คือ ETF หายจากยอด
+        # (พร้อมเหตุผล) ไม่ใช่ทั้งคำตอบหาย
+        # ทางนี้ไม่ได้อ่านสมุดสำเร็จ จึงยังไม่รู้จำนวน holding เลย — ``fx_error`` เป็นตัว
+        # ตัดสินสถานะแทน ``holdings_count`` ทั้งหมด (ดู :func:`_resolve_etf`)
+        logger.warning("ตีมูลค่า ETF ในสมุดเป็นเงินบาทไม่ได้ (ไม่มีอัตราแลกเปลี่ยน): %s", exc)
+        return _LiveEtf(
+            assets=[],
+            missing_prices=[],
+            skipped_rows=[],
+            skipped_reason="",
+            fx_rate=None,
+            fx_is_live=None,
+            holdings_count=0,
+            fx_error=str(exc),
+            unconverted=[],
+        )
+
+    holdings = list(report.get("holdings") or [])
+    skipped_rows = list(report.get("skipped_rows") or [])
+    skipped_reason = str(report.get("skipped_reason") or "")
+
+    priced: list[tuple[str, float]] = []
     missing: list[str] = []
     for h in holdings:
         ticker = str(h.get("ticker") or "?")
@@ -63,7 +100,41 @@ def _etf_assets_live() -> _LiveEtf:
         if not h.get("price_ok") or value_usd is None:
             missing.append(ticker)
             continue
-        value_thb = round(float(value_usd) * rate, 2)
+        priced.append((ticker, float(value_usd)))
+
+    if not priced:
+        # ไม่มีดอลลาร์สักก้อนให้แปลง ⇒ อัตราแลกเปลี่ยนไม่เกี่ยวกับคำตอบนี้เลย
+        return _LiveEtf(
+            assets=[],
+            missing_prices=missing,
+            skipped_rows=skipped_rows,
+            skipped_reason=skipped_reason,
+            fx_rate=None,
+            fx_is_live=None,
+            holdings_count=len(holdings),
+            fx_error=None,
+            unconverted=[],
+        )
+
+    try:
+        rate, fx_is_live = fx.get_usdthb()
+    except fx.FxRateUnavailable as exc:
+        logger.warning("แปลงมูลค่า ETF เป็นเงินบาทไม่ได้: %s", exc)
+        return _LiveEtf(
+            assets=[],
+            missing_prices=missing,
+            skipped_rows=skipped_rows,
+            skipped_reason=skipped_reason,
+            fx_rate=None,
+            fx_is_live=None,
+            holdings_count=len(holdings),
+            fx_error=str(exc),
+            unconverted=[t for t, _ in priced],
+        )
+
+    assets: list[Asset] = []
+    for ticker, value_usd in priced:
+        value_thb = round(value_usd * rate, 2)
         if value_thb <= 0:
             # ไม่เหลือหน่วยลงทุนแล้ว — 0 ที่เป็นจริง ไม่ใช่ข้อมูลที่หายไป
             # (และ ``Asset.value_thb`` บังคับ > 0 อยู่แล้ว)
@@ -73,11 +144,13 @@ def _etf_assets_live() -> _LiveEtf:
     return _LiveEtf(
         assets=assets,
         missing_prices=missing,
-        skipped_rows=list(report.get("skipped_rows") or []),
-        skipped_reason=str(report.get("skipped_reason") or ""),
+        skipped_rows=skipped_rows,
+        skipped_reason=skipped_reason,
         fx_rate=rate,
         fx_is_live=fx_is_live,
         holdings_count=len(holdings),
+        fx_error=None,
+        unconverted=[],
     )
 
 
@@ -154,7 +227,16 @@ def _resolve_etf(
       **กรอกมูลค่าเอง** หายจากยอดรวมเงียบ ๆ (เท่ากับนับเป็น 0)
     - ``holdings=[]`` เพราะ tracker ตัดทุกแถวทิ้ง ให้ค่าเท่ากับสมุดที่ไม่มี ETF จริง ๆ
       ทั้งที่ความจริงคือ **อ่านสมุดไม่ได้** จึงยังบอกไม่ได้ว่ามี ETF หรือไม่
+
+    ``fx_error`` ถูกตัดสินก่อนทุกอย่าง เพราะไม่มีอัตราแลกเปลี่ยน = ตีมูลค่าสดไม่ได้
+    สักบาท ไม่ว่าราคาจะครบแค่ไหน — และต้องไม่ถูกรายงานว่า ``live`` (G3)
     """
+    if live.fx_error:
+        # มูลค่าใน snapshot เป็นเงินบาทที่ผู้ใช้กรอกเอง จึงยังใช้ได้ทั้งที่ FX ล่ม
+        if snapshot_etf:
+            return snapshot_etf, "from_snapshot"
+        return [], "fx_unavailable"
+
     # ตัดทุกแถวทิ้งจนไม่เหลือ holding = อ่านสมุดไม่ได้ ≠ สมุดไม่มี ETF
     ledger_unreadable = not live.holdings_count and bool(live.skipped_rows)
 
@@ -192,6 +274,10 @@ def get_current(db: Session) -> NetWorthResponse:
 
     ทุกสิ่งที่ "ไม่ได้อยู่ในยอดรวม" ต้องออกไปกับคำตอบด้วยเสมอ (``missing_prices`` /
     ``skipped_rows`` / ``etf_status`` / อายุของ snapshot / ที่มาของอัตราแลกเปลี่ยน)
+
+    **ความล้มเหลวของอัตราแลกเปลี่ยนกินแค่ส่วนที่ใช้อัตรานั้น** (G3) เงินสด สินทรัพย์
+    นอก ETF และหนี้สินเป็นตัวเลขบาทที่ผู้ใช้บันทึกเอง ไม่พึ่ง FX เลย จึงต้องออกไปกับ
+    คำตอบตามปกติพร้อม ``fx_error`` + ``warnings`` ภาษาไทย ไม่ใช่หายไปทั้งก้อนกับ 500
     """
     today = date.today()
     live = _etf_assets_live()
@@ -209,7 +295,27 @@ def get_current(db: Session) -> NetWorthResponse:
 
     warnings: list[str] = []
     tickers = ", ".join(live.missing_prices)
-    if etf_status == "from_snapshot":
+    if live.fx_error:
+        # "แปลงเป็นบาทไม่ได้" ≠ "ดึงราคาไม่ได้" ≠ "ไม่มี ETF" — ต้องแยกกันถึงหน้าจอ (G3)
+        unconverted = ", ".join(live.unconverted) if live.unconverted else "ในสมุด"
+        if etf_status == "from_snapshot":
+            warnings.append(
+                f"แปลงมูลค่า ETF ({unconverted}) เป็นเงินบาทไม่ได้ เพราะไม่มีอัตราแลกเปลี่ยน "
+                f"ที่ใช้ได้ — ใช้มูลค่า ETF จาก snapshot วันที่ {as_of} แทน (ไม่ใช่ราคาสด)"
+            )
+        else:
+            warnings.append(
+                f"แปลงมูลค่า ETF ({unconverted}) เป็นเงินบาทไม่ได้ เพราะไม่มีอัตราแลกเปลี่ยน "
+                "ที่ใช้ได้ และไม่มี snapshot ให้ใช้แทน — ยอดนี้ยังไม่รวม ETF "
+                "(ไม่ได้แปลว่าไม่มี ETF) ส่วนเงินสด/สินทรัพย์อื่น/หนี้สินเป็นตัวเลขบาทอยู่แล้ว "
+                "จึงยังใช้ได้ตามปกติ"
+            )
+        warnings.append(live.fx_error)
+        if live.missing_prices:
+            warnings.append(
+                f"ดึงราคาไม่ได้: {tickers} — ยอดรวมยังไม่รวมมูลค่าส่วนนี้ (ไม่ได้นับเป็น 0)"
+            )
+    elif etf_status == "from_snapshot":
         if live.missing_prices:
             warnings.append(
                 f"ดึงราคา ETF ไม่ได้เลย ({tickers}) — ใช้มูลค่าจาก snapshot วันที่ {as_of} แทน"
@@ -249,7 +355,10 @@ def get_current(db: Session) -> NetWorthResponse:
 
     if live.skipped_reason:
         warnings.append(live.skipped_reason)
-    if not live.fx_is_live and live.holdings_count:
+    # ``is False`` เท่านั้น — ``None`` แปลว่า "ไม่ได้ใช้ FX เลย" ซึ่งไม่ใช่ค่าสำรอง
+    # (เดิมเป็น ``not live.fx_is_live`` ที่กลืน ``None`` เข้ามาด้วย แล้วจะระเบิดที่
+    # ``{None:.2f}`` — "ไม่ได้ใช้" ห้ามถูกรายงานเป็น "ใช้ค่าสำรอง")
+    if live.fx_is_live is False:
         warnings.append(
             f"ใช้อัตราแลกเปลี่ยนสำรองจาก config ({live.fx_rate:.2f} บาท/ดอลลาร์) ไม่ใช่ค่าสด "
             "— ตัวเลขบาทอาจคลาดเคลื่อน"
@@ -294,6 +403,7 @@ def get_current(db: Session) -> NetWorthResponse:
         skipped_reason=live.skipped_reason,
         fx_rate=live.fx_rate,
         fx_is_live=live.fx_is_live,
+        fx_error=live.fx_error,
         as_of_snapshot_date=as_of,
         snapshot_age_days=age.days,
         snapshot_stale=age.stale,

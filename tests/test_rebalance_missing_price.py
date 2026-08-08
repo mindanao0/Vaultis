@@ -161,12 +161,50 @@ class TestHeldTickerMissingPrice:
 
 
 class TestAllPricesMissing:
-    """ราคาหายหมด = คำนวณ drift ไม่ได้ ห้ามคืน 1.0 (100% ที่ผลิตจากความล้มเหลว)."""
+    """ราคาหายหมด = คำนวณ drift ไม่ได้ ห้ามคืน 1.0 (100% ที่ผลิตจากความล้มเหลว).
+
+    ``calculate_drift()`` มี **สองกิ่ง** ที่คำนวณไม่ได้ และทั้งคู่เคยคืน 1.0 มาก่อน
+    (FIX_PLAN 1.3) — เทสต์ต้องเดินเข้าทั้งสองกิ่งจริง ไม่ใช่กิ่งเดียวสองครั้ง:
+
+    1. ``missing_holding_prices`` — ของที่ถืออยู่ไม่มีราคา = **ดึงราคาไม่สำเร็จ**
+    2. ``total <= 0`` — ราคาครบแต่ยังไม่มีหน่วยลงทุน = **ไม่มีอะไรให้เทียบสัดส่วน**
+
+    เดิมมีเทสต์ตัวเดียวที่ส่ง ``prices={}`` ซึ่งไปโดนกิ่งที่ 1 ตั้งแต่บรรทัดแรก
+    กิ่งที่ 2 จึงไม่เคยถูกเดินผ่านเลย: แทรก ``return 1.0`` กลับเข้าไปในกิ่งนั้นแล้ว
+    ชุดเทสต์เต็มยังเขียวครบ 1297 ตัว (AUDIT_ROUND2_2026-08-07 mutation M26)
+    ทั้งที่มันคือบั๊กเดิมที่ AUDIT ปิดไปแล้ว — พอร์ตที่ขายหมดจะรายงาน "เบี่ยงเบน 100%"
+    """
 
     def test_calculate_drift_raises_instead_of_returning_one(self):
+        """กิ่งที่ 1: ของที่ถืออยู่ไม่มีราคา."""
         with pytest.raises(ValueError) as exc:
             rebalance_service.calculate_drift(HOLDINGS, TARGET, {})
         assert "ราคา" in str(exc.value)
+        # ต้องเป็นสาเหตุ "ดึงราคาไม่สำเร็จ" ไม่ใช่ "มูลค่ารวมเป็น 0" — คนละเรื่องกัน
+        assert "ดึงราคาไม่สำเร็จ" in str(exc.value)
+
+    def test_calculate_drift_raises_when_the_portfolio_is_empty(self):
+        """กิ่งที่ 2 (ก): ราคาครบทุกตัว แต่ยังไม่ถืออะไรเลย → 0/0 ไม่ใช่ 100%.
+
+        ต้องส่ง ``PRICES_FULL`` เข้าไป ไม่งั้นจะไปติดกิ่งที่ 1 ก่อนแล้วไม่ได้ทดสอบอะไร
+        """
+        with pytest.raises(ValueError) as exc:
+            rebalance_service.calculate_drift([], TARGET, PRICES_FULL)
+        assert "มูลค่าพอร์ตรวมเป็น 0" in str(exc.value)
+        assert "ดึงราคาไม่สำเร็จ" not in str(exc.value)
+
+    def test_calculate_drift_raises_when_every_position_is_zero_shares(self):
+        """กิ่งที่ 2 (ข): พอร์ตที่ขายหมดแล้ว (ทุกแถว shares=0) ก็ต้องดังแบบเดียวกัน.
+
+        วันนี้ ``compute_rebalance()`` มีด่าน ``if not held:`` กันไว้อีกชั้น ผู้ใช้จึง
+        ยังไม่เจอ แต่ ``calculate_drift()`` เป็นฟังก์ชันสาธารณะที่ถูกเรียกตรง ๆ ได้
+        — ถ้าใครย้าย/ลบด่านนั้นในอนาคต ตาข่ายต้องอยู่ตรงนี้
+        """
+        sold_out = [{"symbol": h["symbol"], "shares": 0.0} for h in HOLDINGS]
+        with pytest.raises(ValueError) as exc:
+            rebalance_service.calculate_drift(sold_out, TARGET, PRICES_FULL)
+        assert "มูลค่าพอร์ตรวมเป็น 0" in str(exc.value)
+        assert "ดึงราคาไม่สำเร็จ" not in str(exc.value)
 
     def test_compute_rebalance_reports_every_missing_symbol(self, stub_env):
         stub_env["prices"] = {}
@@ -183,6 +221,116 @@ class TestAllPricesMissing:
 
         assert result["missing_prices"] == ["GLDM"]
         assert result["actions"] == []
+
+
+# ราคาที่ "มีค่าแต่ใช้ไม่ได้" ทุกแบบ — ต้องเดินเส้นทางเดียวกับ "ราคาหายไปจาก dict"
+UNUSABLE_PRICES = [0.0, -0.0, -3.0, float("inf"), float("-inf"), float("nan")]
+
+
+class TestUnusablePriceValues:
+    """AUDIT_ROUND2_2026-08-07 — ราคา 0 / ติดลบ ถูกรับเป็นราคาจริง แล้วเทสต์ยังเขียวหมด.
+
+    ตาข่ายเดิมครอบแค่ 2 แบบ: "ticker หายไปจาก dict" (``prices={}``) กับ ``nan``
+    ถอดเงื่อนไข ``price <= 0`` ออกจาก ``_usable_price()`` แล้วชุดเทสต์เต็มยังเขียว
+    1297 ตัว (mutation M28) ทั้งที่ ``0`` คือสำนวนที่ wrapper yfinance หลายตัวใช้แทน
+    "ดึงไม่ได้" — ถ้าแหล่งราคาเปลี่ยน contract มาแบบนั้น บั๊กจะกลับมาโดยไม่มีใครแดง
+
+    ความเสียหายที่วัดได้จริงกับโค้ดที่ถอดด่านออก (พอร์ตในไฟล์นี้ GLDM ราคาเสีย):
+    - ราคา ``0``  → GLDM ถูกตีมูลค่า 0 → ``missing_prices=[]`` → ``calculate_drift``
+      คืน 0.1 ที่ผลิตจากความล้มเหลวล้วน ๆ แล้ว ``usd_amount / price`` ระเบิดเป็น
+      ``ZeroDivisionError`` ดิบ (500 ภาษาอังกฤษ ไม่มี detail ไทย)
+    - ราคา ``-3`` → ได้แผนเต็มรูปแบบที่ **สั่งขายทั้งพอร์ต** (VOO 3,587.50 /
+      SCHD 2,562.50 / QQQM 2,050 / XLV 1,525 USD) และ "ซื้อ" GLDM -3,241.67 หน่วย
+    """
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_usable_price_rejects_every_unusable_value(self, bad_price):
+        """ด่านเดียวของทั้งไฟล์: ค่าที่ใช้ไม่ได้ต้องกลายเป็น ``None`` เท่านั้น."""
+        assert rebalance_service._usable_price("GLDM", {"GLDM": bad_price}) is None
+
+    def test_usable_price_still_accepts_a_real_price(self):
+        """กันการแก้ข้อนี้ไปปิดราคาจริงทิ้ง — ``ดึงไม่สำเร็จ`` ต้องไม่กินราคาที่ใช้ได้."""
+        assert rebalance_service._usable_price("GLDM", {"GLDM": 64.0}) == 64.0
+        assert rebalance_service._usable_price("GLDM", {"GLDM": 0.01}) == 0.01
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_held_ticker_with_unusable_price_is_reported_as_missing(self, stub_env, bad_price):
+        stub_env["prices"] = {**PRICES_FULL, "GLDM": bad_price}
+        result = rebalance_service.compute_rebalance(HOLDINGS, "moderate", 0.0)
+
+        assert result["missing_prices"] == ["GLDM"]
+        assert result["actions"] == []
+        assert result["needs_rebalance"] is None
+        assert result["max_drift_pct"] is None
+        assert "GLDM" in result["detail"]
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_unusable_price_never_flips_the_portfolio_into_sells(self, stub_env, bad_price):
+        """หลักฐานตรงของบั๊ก: ราคาติดลบทำให้ ETF ที่เหลือกลายเป็นคำสั่งขายทั้งพอร์ต."""
+        stub_env["prices"] = {**PRICES_FULL, "GLDM": bad_price}
+        result = rebalance_service.compute_rebalance(HOLDINGS, "moderate", 0.0)
+
+        assert [a["symbol"] for a in result["actions"] if a["action"] == "sell"] == []
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_unusable_price_never_orders_a_negative_share_count(self, stub_env, bad_price):
+        """``shares = เงิน ÷ ราคา`` — ราคาติดลบ = จำนวนหน่วยติดลบ ซึ่งไม่มีความหมาย."""
+        stub_env["prices"] = {**PRICES_FULL, "GLDM": bad_price}
+        result = rebalance_service.compute_rebalance(HOLDINGS, "moderate", 350000.0)
+
+        # มีงบ 10,000 USD อยู่ในมือก็ยังต้อง fail closed — งบไม่ได้ทำให้ราคาที่เสียใช้ได้
+        assert result["missing_prices"] == ["GLDM"]
+        assert all(a["shares"] >= 0 for a in result["actions"])
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_calculate_drift_raises_on_an_unusable_price(self, bad_price):
+        """drift ที่คิดจากมูลค่า 0 ของ ETF ที่ถืออยู่จริง = ตัวเลขที่ผลิตจากความล้มเหลว."""
+        prices = {**PRICES_FULL, "GLDM": bad_price}
+        with pytest.raises(ValueError) as exc:
+            rebalance_service.calculate_drift(HOLDINGS, TARGET, prices)
+        assert "GLDM" in str(exc.value)
+
+    @pytest.mark.parametrize("bad_price", UNUSABLE_PRICES)
+    def test_target_only_ticker_with_unusable_price_also_fails_closed(self, stub_env, bad_price):
+        """ราคาเสียของ ETF ที่อยู่ในเป้าแต่ยังไม่ถือ ก็ต้องนับเป็น "ขาด" เหมือนกัน.
+
+        ถ้าปล่อยผ่าน งบส่วนของ GLDM จะถูกหารด้วยราคาที่ใช้ไม่ได้ (0 = ระเบิด,
+        ติดลบ = จำนวนหน่วยติดลบ) โดยไม่มีอะไรบอกผู้ใช้
+        """
+        holdings = [h for h in HOLDINGS if h["symbol"] != "GLDM"]
+        prices = {**PRICES_FULL, "GLDM": bad_price}
+        stub_env["prices"] = dict(prices)
+
+        assert rebalance_service.missing_plan_prices(holdings, TARGET, prices) == ["GLDM"]
+
+        result = rebalance_service.compute_rebalance(holdings, "moderate", 350000.0)
+        assert result["missing_prices"] == ["GLDM"]
+        assert result["actions"] == []
+        assert result["needs_rebalance"] is None
+
+    @pytest.mark.parametrize("bad_price", [0.0, -3.0])
+    def test_unusable_price_does_not_pay_for_llm(self, stub_env, bad_price):
+        """ไม่มีแผน = ไม่มีอะไรให้ AI อธิบาย ห้ามเผา credit."""
+        stub_env["prices"] = {**PRICES_FULL, "GLDM": bad_price}
+        result = rebalance_service.compute_rebalance(
+            HOLDINGS, "moderate", 0.0, user_initiated=True
+        )
+
+        assert stub_env["llm_calls"] == 0
+        assert result["ai_comment"] == ""
+
+    def test_require_price_fails_in_thai_instead_of_a_bare_typeerror(self):
+        """ชั้นสุดท้ายก่อนคูณ/หาร: ต้องได้ ValueError ไทยที่บอกชื่อ ticker.
+
+        เดิมเขียน ``float(_usable_price(...))`` ตรง ๆ — ถ้าราคาหลุดด่านมาเป็น ``None``
+        จะได้ ``TypeError: float() argument ...`` ภาษาอังกฤษที่ไม่บอกว่า ticker ไหนพัง
+        """
+        assert rebalance_service._require_price("VOO", PRICES_FULL) == 500.0
+
+        for prices in ({"GLDM": 0.0}, {"GLDM": -3.0}, {"GLDM": float("nan")}, {}):
+            with pytest.raises(ValueError) as exc:
+                rebalance_service._require_price("GLDM", prices)
+            assert "GLDM" in str(exc.value)
 
 
 class TestEmptyPortfolio:
@@ -379,6 +527,80 @@ class TestNoInventedDenominator:
         ]
         assert offenders == [], f"เจอค่าสำรองที่กุขึ้นบนเส้นทางเงิน: {offenders}"
 
+    def test_value_path_functions_never_return_a_bare_number(self):
+        """``return 1.0`` ตรง ๆ ก็เป็นค่าที่กุขึ้นเหมือนกัน — ด่านเดิมจับแต่สำนวน ``x or 1.0``.
+
+        AUDIT_ROUND2_2026-08-07 mutation M26: แทรก ``return 1.0`` ในกิ่ง ``total <= 0``
+        ของ ``calculate_drift()`` แล้วเทสต์ AST ด้านบนไม่จับ เพราะมันมองหาเฉพาะ
+        ``ast.BoolOp``/``Or`` — ที่นี่จึงตรวจอีกสำนวนหนึ่ง: ฟังก์ชันที่ **ผลลัพธ์ของมัน
+        เป็นเงิน/สัดส่วน/อัตรา** ห้ามคืนค่าคงที่ตัวเลข ตัวเลขทุกตัวที่ออกจากฟังก์ชัน
+        เหล่านี้ต้องคำนวณจากพอร์ต/ราคา/อัตราจริงเท่านั้น
+
+        ``None`` ยังคืนได้ (= "ไม่มีค่า" ซึ่งเป็นคำตอบที่ซื่อสัตย์ คนละเรื่องกับตัวเลขปลอม)
+        และ ``True/False`` ก็ไม่ใช่จำนวนเงิน จึงยกเว้นทั้งคู่
+        """
+        # ฟังก์ชันที่ค่าที่คืนออกไปถูกเอาไปคูณ/หาร/เทียบเกณฑ์เป็นเงินโดยตรง
+        value_path = {
+            "calculate_drift",
+            "_usable_price",
+            "_require_price",
+            "_usable_budget_thb",
+            "_usable_fx_quote",
+            "_get_usdthb_rate",
+            "_get_fx_quote",
+            "_held_shares",
+        }
+
+        def _number_literal(node):
+            """คืนโหนดตัวเลขคงที่ (รองรับเครื่องหมายหน้าเลข เช่น ``return -1``)."""
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+                node = node.operand
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, (int, float))
+                and not isinstance(node.value, bool)
+            ):
+                return node
+            return None
+
+        tree = ast.parse(inspect.getsource(rebalance_service))
+        offenders = []
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func.name not in value_path:
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Return) or node.value is None:
+                    continue
+                # คืนเป็น tuple ก็นับทีละช่อง (เช่น ``return 1.0, True``)
+                parts = (
+                    node.value.elts if isinstance(node.value, ast.Tuple) else [node.value]
+                )
+                if any(_number_literal(p) is not None for p in parts):
+                    offenders.append(f"{func.name}: {ast.unparse(node)}")
+
+        assert offenders == [], (
+            f"ฟังก์ชันบนเส้นทางมูลค่าคืนค่าคงที่ตัวเลข (ตัวเลขที่ไม่ได้มาจากพอร์ตจริง): {offenders}"
+        )
+
+    def test_the_return_constant_check_actually_catches_the_old_bug(self):
+        """พิสูจน์ว่าด่านด้านบนไม่ใช่ตาข่ายที่มีรูโบ๋ — ป้อนโค้ดที่มีบั๊กเข้าไปต้องจับได้.
+
+        (ตรวจตรรกะเดียวกันบนซอร์สจำลอง ไม่แตะโมดูลจริง)
+        """
+        mutated = "def calculate_drift(h, t, p):\n    if total <= 0:\n        return 1.0\n    return max_drift\n"
+        tree = ast.parse(mutated)
+        found = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Return)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, (int, float))
+            and not isinstance(node.value.value, bool)
+        ]
+        assert found, "ตรรกะการตรวจต้องจับ ``return 1.0`` ได้"
+
     def test_empty_portfolio_never_divides_by_a_made_up_total(self, stub_env):
         """เรียกตรง ๆ ที่ฟังก์ชันสร้าง prompt: พอร์ตว่างต้องไม่ผลิตเปอร์เซ็นต์ใด ๆ."""
         comment = rebalance_service._generate_ai_comment(
@@ -432,3 +654,29 @@ class TestRebalanceRoute:
         assert data["actions"] == []
         assert data["needs_rebalance"] is None
         assert data["detail"]
+
+    @pytest.mark.parametrize("bad_price", [0.0, -3.0])
+    def test_unusable_price_returns_200_with_a_reason_not_a_bare_500(
+        self, stub_env, monkeypatch, bad_price
+    ):
+        """ราคา 0 เคยระเบิดเป็น ZeroDivisionError = 500 เปล่า ๆ ไม่มี detail ไทย
+        ส่วนราคาติดลบเคยตอบ 200 พร้อม **แผนขายทั้งพอร์ต** ซึ่งแย่กว่า 500 อีก
+        """
+        stub_env["prices"] = {**PRICES_FULL, "GLDM": bad_price}
+        client = self._client(monkeypatch)
+
+        resp = client.post(
+            "/api/portfolio/rebalance",
+            json={
+                "holdings": [{"symbol": h["symbol"], "shares": h["shares"]} for h in HOLDINGS],
+                "risk_profile": "moderate",
+                "available_budget_thb": 0.0,
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["missing_prices"] == ["GLDM"]
+        assert data["actions"] == []
+        assert data["needs_rebalance"] is None
+        assert "GLDM" in data["detail"]

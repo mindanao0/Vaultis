@@ -12,6 +12,66 @@ from technical import signal_rules
 logger = logging.getLogger(__name__)
 
 
+# --- นิยามชุดเดียวของ "กฎที่เอนจินรู้จัก" (AUDIT_ROUND2_2026-08-07) -----------------
+# ฟิลด์/ตัวดำเนินการที่ไม่อยู่ในตารางนี้ = **พรีเซ็ตพิมพ์ผิด** ไม่ใช่ "ไม่ผ่านกฎ"
+#
+# เดิม ``_evaluate_rule`` จบฟังก์ชันด้วย ``return False`` ⇒ ชื่อฟิลด์ที่สะกดผิดครั้งเดียว
+# (เช่น ``price_vs_ma_200`` แทน ``price_vs_ma200``) ทำให้พรีเซ็ต AND นั้น "ไม่มีสัญญาณ"
+# ตลอดกาลอย่างเงียบ ๆ และช่อง ``errors`` ที่เพิ่มมาก็ว่างเปล่าด้วย — ผู้ใช้จึงอ่านผลได้
+# อย่างเดียวว่า "วันนี้ไม่มีอะไรต้องทำ" ทั้งที่ความจริงคือ "ตรวจไม่ได้"
+# ("ดึงไม่สำเร็จ"/"ตรวจไม่ได้" ≠ "ไม่มีสัญญาณ" — กฎ C1 ของโครงการ)
+_ALLOWED_OPERATORS: dict[str, frozenset[str]] = {
+    "rsi": frozenset({"lt", "gt"}),
+    "macd_cross": frozenset({"cross_up", "cross_down"}),
+    "price_vs_ma200": frozenset({"gt", "lt"}),
+    "golden_cross": frozenset({"cross_up"}),
+    "death_cross": frozenset({"cross_down"}),
+    "bb_squeeze": frozenset({"squeeze"}),
+    "volume_spike": frozenset({"spike"}),
+    "price_drop_pct": frozenset({"drop_pct"}),
+}
+
+_VALID_LOGIC = frozenset({"AND", "OR"})
+
+
+def _normalize_logic(logic: str | None) -> str:
+    """คืน ``"AND"``/``"OR"`` — อย่างอื่นโยน ``ValueError`` ทันที ห้ามเดา.
+
+    AUDIT_ROUND2_2026-08-07: เดิม ``run()`` เขียนว่า
+    ``if preset.logic == "AND": ... else: passed = any(...)`` ⇒ **อะไรก็ตามที่ไม่ใช่
+    "AND" เป๊ะ ๆ แปลว่า OR** สะกดผิดครั้งเดียว (``"XOR"``, ``"and"``, ค่าว่าง)
+    พรีเซ็ตกลับความหมายทั้งใบจาก "ทุกกฎต้องผ่าน" เป็น "ผ่านข้อเดียวก็พอ"
+    แล้วยิงสัญญาณซื้อเข้า Telegram ตอน 07:00 จากกฎที่ผ่านแค่ข้อเดียว
+
+    ตัวพิมพ์เล็ก/ช่องว่างเกินยังรับได้ (สะกดถูก แค่คนละรูปแบบ — และ
+    ``/api/screener/custom`` ก็ ``.upper()`` ให้อยู่แล้ว) แต่คำที่ไม่รู้จักต้องดัง
+    """
+    normalized = (logic or "").strip().upper()
+    if normalized not in _VALID_LOGIC:
+        raise ValueError(
+            f"logic ของพรีเซ็ตต้องเป็น 'AND' หรือ 'OR' เท่านั้น (ได้ {logic!r}) — "
+            "ห้ามตีความเป็น OR เอง เพราะพรีเซ็ตจะกลับความหมายทั้งใบ"
+        )
+    return normalized
+
+
+def _rule_label(rule: ScreenerRule) -> str:
+    """ข้อความที่จะไปอยู่ใน ``matched_rules`` — ต้องมีเนื้อหาเสมอ ห้ามเป็นสตริงว่าง.
+
+    AUDIT_ROUND2_2026-08-07: ``/api/screener/custom`` ประกอบกฎจาก dict ของผู้เรียก
+    ซึ่งไม่บังคับให้มี ``description`` ⇒ response คืน ``"matched_rules": [""]``
+    คือบอกว่า "มีกฎผ่าน 1 ข้อ" แต่บอกไม่ได้ว่าข้อไหน หน้าจอที่วนแสดงจะได้บุลเล็ตเปล่า
+    ถ้าผู้เรียกไม่ได้ใส่คำอธิบาย ให้ประกอบข้อความจากตัวกฎเอง (เช่น ``rsi lt 70``)
+    """
+    description = (rule.description or "").strip()
+    if description:
+        return description
+    parts = [str(rule.field or "").strip(), str(rule.operator or "").strip()]
+    if rule.value is not None:
+        parts.append(str(rule.value))
+    return " ".join(p for p in parts if p) or "กฎที่ไม่มีคำอธิบาย"
+
+
 class ScreenerRunResults(list):
     """ลิสต์ ``ScreenerResult`` + ช่อง ``errors`` สำหรับสัญลักษณ์ที่ "ตรวจไม่ได้".
 
@@ -66,6 +126,23 @@ class ScreenerEngine:
         # หมายเหตุ (AUDIT.md C1): ห้ามครอบ try/except คืน False —
         # error ต้องเด้งขึ้นไปให้ run() log เป็น ERROR รายสัญลักษณ์
         # ไม่งั้น "ตรวจไม่ได้" จะแยกไม่ออกจาก "ไม่มีสัญญาณ"
+        #
+        # AUDIT_ROUND2_2026-08-07: ตรวจ "นิยาม" ของกฎก่อนแตะข้อมูลราคา — ฟิลด์หรือ
+        # ตัวดำเนินการที่เอนจินไม่รู้จักคือพรีเซ็ตพัง ต้องดังทันที ไม่ใช่ตกไปที่
+        # ``return False`` ท้ายฟังก์ชันแล้วกลายเป็น "กฎข้อนี้ไม่ผ่าน" อย่างเงียบ ๆ
+        allowed = _ALLOWED_OPERATORS.get(rule.field)
+        if allowed is None:
+            raise ValueError(
+                f"กฎ screener อ้างฟิลด์ที่ไม่รู้จัก: {rule.field!r} "
+                f"(ที่รองรับ: {', '.join(sorted(_ALLOWED_OPERATORS))}) — "
+                "พรีเซ็ตพิมพ์ผิด หรือยังไม่ได้เพิ่มตัวประเมินให้ฟิลด์นี้"
+            )
+        if rule.operator not in allowed:
+            raise ValueError(
+                f"ฟิลด์ {rule.field!r} ไม่รองรับตัวดำเนินการ {rule.operator!r} "
+                f"(ที่รองรับ: {', '.join(sorted(allowed))})"
+            )
+
         price = df["Close"].iloc[-1]
         if rule.field == "rsi":
             rsi = ta.rsi(df["Close"], length=14).iloc[-1]
@@ -99,7 +176,12 @@ class ScreenerEngine:
             return self.detector.detect_volume_spike(df, rule.value or 2.0)
         elif rule.field == "price_drop_pct":
             return self.detector.detect_price_drop_pct(df, rule.value or 5.0)
-        return False
+        # มาถึงบรรทัดนี้ไม่ได้ถ้า ``_ALLOWED_OPERATORS`` กับสาขาข้างบนตรงกัน — กันไว้
+        # ไม่ให้ฟิลด์ที่เพิ่มในตารางแต่ลืมเขียนตัวประเมินกลับไปเงียบเป็น "ไม่ผ่านกฎ" อีก
+        raise ValueError(
+            f"เอนจินยังไม่มีตัวประเมินสำหรับ {rule.field!r} {rule.operator!r} "
+            "(อยู่ใน _ALLOWED_OPERATORS แต่ไม่มีสาขาใน _evaluate_rule)"
+        )
 
     def _compute_signal_strength(
         self, matched: int, total: int, df: pd.DataFrame, preset: ScreenerPreset
@@ -134,10 +216,21 @@ class ScreenerEngine:
         """รันพรีเซ็ตกับรายสัญลักษณ์ — ส่ง ``frames`` มาได้เพื่อไม่ต้องดึงราคาซ้ำ (B6.2).
 
         คืน ``ScreenerRunResults`` (ลิสต์ผลลัพธ์ + ``.errors`` ของตัวที่ตรวจไม่ได้)
+
+        นิยามของพรีเซ็ตถูกตรวจ **ก่อน** วนสัญลักษณ์ และโยน ``ValueError`` ออกไปเลย
+        (AUDIT_ROUND2_2026-08-07) — พรีเซ็ตที่นิยามผิดไม่ใช่ "สัญลักษณ์นี้ตรวจไม่ได้"
+        แต่คือทั้งใบใช้ไม่ได้ จึงต้องดังที่ผู้เรียก ไม่ใช่ลงไปนอนใน ``.errors`` เงียบ ๆ
+        ส่วนกฎที่ประเมินไม่ได้รายสัญลักษณ์ยังคงถูกเก็บลง ``.errors`` เหมือนเดิม
         """
+        logic = _normalize_logic(preset.logic)
+        if not preset.rules:
+            raise ValueError(
+                f"พรีเซ็ต {preset.name!r} ไม่มีกฎสักข้อ — logic AND จะ 'ผ่าน' ทุกสัญลักษณ์"
+                "โดยไม่ได้ตรวจอะไรเลย (สัญญาณที่ไม่มีเหตุผลรองรับ)"
+            )
         results = []
         errors: list[str] = []
-        logger.info("Starting screener run: preset=%s logic=%s symbols=%d", preset.name, preset.logic, len(symbols))
+        logger.info("Starting screener run: preset=%s logic=%s symbols=%d", preset.name, logic, len(symbols))
         for symbol in symbols:
             try:
                 if frames is None:
@@ -150,8 +243,10 @@ class ScreenerEngine:
                     if df is None:
                         raise ValueError(f"ไม่มีข้อมูลราคา {symbol} ในชุดที่ส่งเข้ามา (ดึงไม่สำเร็จ)")
                 rule_results = [(r, self._evaluate_rule(r, df)) for r in preset.rules]
-                matched = [r.description for r, passed in rule_results if passed]
-                if preset.logic == "AND":
+                # ``_rule_label``: ถ้าผู้เรียกไม่ได้ใส่ ``description`` ให้ประกอบข้อความ
+                # จากตัวกฎแทน — รายการเหตุผลต้องไม่มีสมาชิกที่เป็นสตริงว่าง
+                matched = [_rule_label(r) for r, passed in rule_results if passed]
+                if logic == "AND":
                     passed = all(p for _, p in rule_results)
                 else:
                     passed = any(p for _, p in rule_results)
