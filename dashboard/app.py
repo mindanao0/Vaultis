@@ -2621,7 +2621,13 @@ def _render_news_source_status(sources: list[dict]) -> None:
             st.warning(f"ดึงจาก {s['name']} ไม่สำเร็จ: {s['detail']} — รายการด้านล่างจึงไม่ครบ")
     off = [s for s in sources if s["status"] == STATUS_OFF]
     ok = [s for s in sources if s["status"] not in (STATUS_ERROR, STATUS_OFF)]
-    parts = [f"{s['name']} {s['count']}" for s in ok]
+    # จำนวนที่ถูก "ตัดเพราะไม่เกี่ยวกับกองนี้" ต้องขึ้นจอ ไม่ใช่หายไปเงียบ ๆ — ผู้ใช้ต้อง
+    # แยกออกว่า "แหล่งนี้มีข่าว 3 ชิ้น" กับ "แหล่งนี้ส่งมา 20 แล้วเราตัดทิ้ง 17" ต่างกัน
+    # (``.get`` เพราะสถานะรุ่นเก่าที่ผู้เรียกอื่นประกอบเองอาจยังไม่มีคีย์นี้)
+    parts = []
+    for s in ok:
+        filtered = int(s.get("filtered") or 0)
+        parts.append(f"{s['name']} {s['count']}" + (f" (ตัดที่ไม่เกี่ยวออก {filtered})" if filtered else ""))
     caption = "แหล่งที่ดึงได้: " + (" · ".join(parts) if parts else "ไม่มี")
     if off:
         caption += " | ปิดอยู่ (ไม่ได้ตั้ง key): " + ", ".join(s["name"] for s in off)

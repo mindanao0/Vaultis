@@ -23,10 +23,11 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import parse_qsl, quote_plus, unquote, urlencode, urlsplit, urlunsplit
 
 import feedparser
 import praw
@@ -65,9 +66,82 @@ STATUS_OFF = "off"
 
 
 def _source_status(
-    name: str, kind: str, status: str, count: int = 0, detail: str = ""
+    name: str,
+    kind: str,
+    status: str,
+    count: int = 0,
+    detail: str = "",
+    fetched: int | None = None,
+    filtered: int = 0,
 ) -> dict[str, Any]:
-    return {"name": name, "kind": kind, "status": status, "count": count, "detail": detail}
+    """สถานะรายแหล่งหนึ่งชุด.
+
+    ``count`` = จำนวนที่**ส่งต่อออกไป** · ``fetched`` = จำนวนที่ดึงมาได้ก่อนกรอง ·
+    ``filtered`` = จำนวนที่ถูกตัดเพราะไม่เกี่ยวกับสัญลักษณ์  สามตัวนี้ต้องมาด้วยกันเสมอ
+    เพราะ "ตัดข้อมูลทิ้งแล้วไม่บอก" ผิดกฎเดียวกับ "ดึงไม่สำเร็จแล้วโชว์ว่าไม่มีข่าว" —
+    ผู้ใช้ต้องแยกออกว่า 3 ชิ้นที่เห็นมาจาก "มีแค่ 3" หรือ "มี 20 แล้วเราตัดทิ้ง 17"
+    """
+    return {
+        "name": name,
+        "kind": kind,
+        "status": status,
+        "count": count,
+        "fetched": count if fetched is None else fetched,
+        "filtered": filtered,
+        "detail": detail,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# ตัวกรองความเกี่ยวข้อง — ใช้กับ **แหล่งที่ค้นด้วยข้อความอิสระ** เท่านั้น
+# --------------------------------------------------------------------------- #
+#: คำพ้องของแต่ละกอง (ชื่อกอง + คำกลุ่มอุตสาหกรรม) — ทั้งหมดเทียบแบบ **ตัวพิมพ์เล็ก
+#: และเป็นสตริงย่อย** กับ ``title + description``  สัญลักษณ์ที่ไม่มีในตารางนี้จะถูก
+#: ตัดสินด้วยตัวย่อของมันเองอย่างเดียว (เข้มกว่า แต่ปลอดภัยกว่าการเดาคำพ้องให้)
+SYMBOL_ALIASES: dict[str, tuple[str, ...]] = {
+    "VOO": ("vanguard", "s&p 500", "s and p 500", "sp 500"),
+    "SCHD": ("schwab", "dividend equity"),
+    "QQQM": ("invesco", "nasdaq-100", "nasdaq 100"),
+    "XLV": ("health care select", "healthcare", "health care", "spdr"),
+    "GLDM": ("spdr gold", "gold minishares", "gold"),
+}
+
+
+def is_relevant(symbol: str, item: dict[str, Any]) -> bool:
+    """รายการนี้เกี่ยวกับ ``symbol`` จริงไหม — ดูจาก ``title`` + ``description`` เท่านั้น.
+
+    เกณฑ์: พบตัวย่อแบบ**คำเต็ม** (ไม่ใช่สตริงย่อยกลางคำ) หรือพบคำพ้องใน
+    :data:`SYMBOL_ALIASES` · ไม่พบเลย = ไม่เกี่ยว
+
+    ทำไมต้องดูแค่หัวข้อกับคำโปรย: NewsAPI ค้นทั้งเนื้อบทความ บทความที่เอ่ย ``XLV``
+    ผ่าน ๆ ในย่อหน้าที่ 8 จึงถูกส่งมาเป็น "ข่าวของ XLV" — และที่แย่กว่าคือ ``XLV`` เป็น
+    เลขโรมัน 45 ด้วย วัดจริง 2026-08-08 คำค้น ``q=XLV`` คืน **12 จาก 20 ชิ้นที่ไม่เกี่ยว**
+    รวมข่าวหอเกียรติยศทีม Packers และข่าวคริปโต
+
+    ตัวย่อต้องเทียบแบบคำเต็มเพราะตัวย่อสั้น ๆ ฝังอยู่ในคำอื่นได้ (``VOO`` ใน ``VOOG``)
+    """
+    sym = (symbol or "").strip().lower()
+    if not sym:
+        return False
+    blob = f"{item.get('title') or ''} {item.get('description') or ''}".lower()
+    if re.search(rf"(?<![a-z0-9]){re.escape(sym)}(?![a-z0-9])", blob):
+        return True
+    return any(alias in blob for alias in SYMBOL_ALIASES.get(sym.upper(), ()))
+
+
+def _filter_relevant(
+    symbol: str, items: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """คัดเฉพาะรายการที่เกี่ยวกับสัญลักษณ์ คืน ``(ที่เหลือ, จำนวนที่ตัดออก)``.
+
+    **ห้ามใช้กับแหล่งที่ผูกกับสัญลักษณ์อยู่แล้วโดยโครงสร้าง** (ฟีด Yahoo ที่ยิงด้วย
+    ``?s=<SYM>`` และสตรีม StockTwits ราย symbol) — วัดจริง 2026-08-08 การกรองข้อความ
+    ทับฟีด Yahoo ตัดข่าวจริงทิ้งมหาศาล (VOO 13→4, SCHD 20→8, QQQM 10→2) เพราะพาดหัว
+    ข่าวของกองมักไม่พิมพ์ตัวย่อซ้ำ ฟีดนั้น "เกี่ยว" ตั้งแต่ URL แล้ว การกรองจึงเป็นการ
+    ทำลายข้อมูล ไม่ใช่การเพิ่มความแม่น
+    """
+    kept = [item for item in items if is_relevant(symbol, item)]
+    return kept, len(items) - len(kept)
 
 
 def _iso_from_struct_time(st: Any) -> str:
@@ -122,7 +196,13 @@ def fetch_newsapi_status(symbol: str, api_key: str) -> tuple[list[dict[str, Any]
                     "kind": KIND_NEWS,
                 }
             )
-        return out, _source_status(name, KIND_NEWS, STATUS_OK, len(out))
+        # NewsAPI ค้นทั้งเนื้อบทความ ผลดิบจึงมีของไม่เกี่ยวปนมาเยอะที่สุดในบรรดาแหล่งทั้งหมด
+        # (วัด q=XLV 2026-08-08: 12/20 ไม่เกี่ยว) — กรองแล้ว **รายงานจำนวนที่ตัด** ออกไปด้วย
+        kept, dropped = _filter_relevant(symbol, out)
+        detail = f"ตัดข่าวที่ไม่เกี่ยวกับ {symbol.strip().upper()} ออก {dropped} ชิ้น" if dropped else ""
+        return kept, _source_status(
+            name, KIND_NEWS, STATUS_OK, len(kept), detail, fetched=len(out), filtered=dropped
+        )
     except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
         return [], _source_status(
             name, KIND_NEWS, STATUS_ERROR, 0, f"{type(exc).__name__}: {exc}"
@@ -249,7 +329,19 @@ def fetch_stocktwits(symbol: str) -> list[dict[str, Any]]:
 def fetch_rss_status(
     feed_url: str, kind: str = KIND_NEWS, source_name: str = "RSS"
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Parse RSS ด้วย feedparser; คืน ``(รายการ, สถานะ)`` ไม่ throw."""
+    """Parse RSS ด้วย feedparser; คืน ``(รายการ, สถานะ)`` ไม่ throw.
+
+    **HTTP 200 ที่ไม่ใช่ฟีด ต้องเป็น ``error`` ไม่ใช่ "ไม่มีข่าว"** (AUDIT.md C1) —
+    เซิร์ฟเวอร์ข่าวตอบ 200 พร้อมหน้า HTML ได้บ่อย (หน้า consent, หน้า error, หน้า
+    rate-limit) ``feedparser`` ไม่ throw กับ HTML: มันคืน ``entries=[]`` เฉย ๆ
+    ⇒ ``raise_for_status()`` ผ่าน แล้วสถานะออกมาเป็น ``ok count=0`` ซึ่งอ่านได้ว่า
+    "วันนี้ไม่มีข่าว" ทั้งที่แปลว่าเราดึงไม่ได้เลย
+
+    ตัวชี้ขาดคือ ``parsed.version`` — feedparser ตั้งเป็น ``rss20``/``atom10``/ฯลฯ
+    เมื่ออ่านออกว่าเป็นฟีดชนิดไหน และเป็นสตริงว่างเมื่ออ่านไม่ออก **ฟีดที่ว่างจริง ๆ
+    ยังมี version** จึงยังได้ ``ok count=0`` ตามเดิม (ห้ามใช้ ``bozo`` เป็นตัวตัดสิน
+    ลำพัง: ฟีดที่มีของครบแต่ XML ไม่สะอาดก็ติด ``bozo`` เหมือนกัน)
+    """
     url = (feed_url or "").strip()
     if not url:
         return [], _source_status(source_name, kind, STATUS_OFF, 0, "ไม่ได้ระบุ URL ของฟีด")
@@ -262,11 +354,24 @@ def fetch_rss_status(
         resp = requests.get(url, headers=headers, timeout=20)
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
+        entries = getattr(parsed, "entries", None) or []
+        if not entries and not str(getattr(parsed, "version", "") or "").strip():
+            content_type = str(resp.headers.get("Content-Type") or "ไม่ทราบ").split(";")[0].strip()
+            bozo_exc = getattr(parsed, "bozo_exception", None)
+            reason = f" ({type(bozo_exc).__name__}: {bozo_exc})" if bozo_exc else ""
+            return [], _source_status(
+                source_name,
+                kind,
+                STATUS_ERROR,
+                0,
+                f"ตอบ HTTP {resp.status_code} แต่เนื้อหาไม่ใช่ฟีด (Content-Type: "
+                f"{content_type}){reason} — นี่คือ 'ดึงไม่สำเร็จ' ไม่ใช่ 'ไม่มีข่าว'",
+            )
         feed_title = ""
         if getattr(parsed, "feed", None):
             feed_title = (parsed.feed.get("title") or "").strip()
         out: list[dict[str, Any]] = []
-        for entry in getattr(parsed, "entries", None) or []:
+        for entry in entries:
             pub = ""
             if getattr(entry, "published_parsed", None):
                 pub = _iso_from_struct_time(entry.published_parsed)
@@ -324,11 +429,28 @@ def fetch_google_news_status(symbol: str) -> tuple[list[dict[str, Any]], dict[st
     sym = (symbol or "").strip()
     if not sym:
         return [], _source_status(name, KIND_NEWS, STATUS_OFF, 0, "ไม่ได้ระบุสัญลักษณ์")
-    return fetch_rss_status(
+    items, status = fetch_rss_status(
         GOOGLE_NEWS_RSS_TEMPLATE.format(query=quote_plus(f"{sym} ETF")),
         kind=KIND_NEWS,
         source_name=name,
     )
+    if status["status"] != STATUS_OK:
+        return items, status
+    # คำค้นเป็นข้อความอิสระ ("<SYM> ETF") ไม่ใช่ฟีดที่ผูกกับสัญลักษณ์ จึงต้องกรอง —
+    # วัดจริง 2026-08-08 เหลือ 54–85% แล้วแต่กอง (ตัวที่ตัดคือข่าวที่ไม่เอ่ยทั้งตัวย่อ
+    # ชื่อกอง และคำกลุ่มอุตสาหกรรมเลย)
+    kept, dropped = _filter_relevant(sym, items)
+    if dropped:
+        status = _source_status(
+            name,
+            KIND_NEWS,
+            STATUS_OK,
+            len(kept),
+            f"ตัดข่าวที่ไม่เกี่ยวกับ {sym.upper()} ออก {dropped} ชิ้น",
+            fetched=len(items),
+            filtered=dropped,
+        )
+    return kept, status
 
 
 def fetch_google_news(symbol: str) -> list[dict[str, Any]]:
@@ -358,19 +480,107 @@ _MAX_ARTICLES = 30
 _SOCIAL_RESERVED_SLOTS = 5
 
 
+#: ชื่อพารามิเตอร์ติดตามผลที่ไม่เปลี่ยนตัวบทความ — ตัดทิ้งก่อนเทียบว่าซ้ำกันไหม
+_TRACKING_PARAM_PREFIXES = (
+    "utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src",
+    "guccounter", "guce_", "yptr", ".tsrc", "tsrc", "cmp", "campaign",
+)
+
+#: ตัวคั่นที่ผู้รวมข่าวใช้ต่อท้ายชื่อสำนักข่าวเข้ากับพาดหัว
+_TITLE_PUBLISHER_SEP = re.compile(r"\s+[-–—|]\s+")
+#: ชื่อสำนักข่าวท้ายพาดหัวยาวไม่เกินเท่านี้ (คำ) — ยาวกว่านี้ถือว่าเป็นเนื้อพาดหัวเอง
+_MAX_PUBLISHER_WORDS = 5
+
+
+def _normalize_url(url: str) -> str:
+    """URL ในรูปที่เอาไปเทียบว่า "บทความเดียวกัน" ได้ — ตัดสิ่งที่ไม่เปลี่ยนตัวบทความ.
+
+    ตัด scheme, ``www.``, แฟรกเมนต์, ``/`` ท้าย และพารามิเตอร์ติดตามผล แล้วเรียง
+    query ที่เหลือ · คลี่ Google News redirect รูปเก่าที่พก ``?url=`` มาด้วย
+
+    ⚠ **อย่าคาดหวังว่าตัวนี้จะจับข่าวซ้ำข้ามแหล่งได้** — วัดจริง 2026-08-08 บนห้ากอง
+    มันจับได้ **0 ชิ้นเพิ่ม** เพราะ Google News สมัยใหม่คืนลิงก์ทึบ
+    (``news.google.com/rss/articles/CBMi…``) ที่ไม่มี URL ปลายทางอยู่ในนั้นเลย
+    ตัวที่ทำงานจริงคือกุญแจพาดหัวด้านล่าง ตัวนี้ยังต้องมีเพราะมันคือด่านที่ถูกต้อง
+    สำหรับลิงก์ตรงที่ต่างกันแค่พารามิเตอร์ติดตามผล (เช่น ``?.tsrc=rs`` ของ Yahoo)
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        split = urlsplit(raw)
+    except ValueError:
+        return raw.lower()
+    host = split.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    query = parse_qsl(split.query, keep_blank_values=False)
+    if "news.google.com" in host:
+        for key, value in query:
+            if key.lower() == "url" and value:
+                unwrapped = unquote(value)
+                # กันลูปเมื่อ redirect ชี้กลับมาที่ตัวเอง
+                return _normalize_url(unwrapped) if "news.google.com" not in unwrapped else raw.lower()
+    kept = [
+        (key, value)
+        for key, value in query
+        if not key.lower().lstrip(".").startswith(_TRACKING_PARAM_PREFIXES)
+    ]
+    return urlunsplit(("", host, split.path.rstrip("/"), urlencode(sorted(kept)), ""))
+
+
+def _title_key(title: str) -> str:
+    """กุญแจ "บทความเดียวกัน" จากพาดหัว — ตัวจับข่าวซ้ำข้ามแหล่งตัวจริง.
+
+    ตัดชื่อสำนักข่าวที่ต่อท้าย (``"... - The Motley Fool"`` แบบที่ Google News ใส่มา)
+    แล้วลดเหลือตัวอักษร/ตัวเลขล้วน  **เทียบด้วยสตริงเต็ม ไม่ตัดความยาว** เพราะการตัด
+    N ตัวแรกทำให้พาดหัวคนละบทความที่ขึ้นต้นเหมือนกันชนกันได้ (ชุดนี้มีเยอะมาก:
+    ``"Which is the better State Street healthcare ETF: the broad XLV or …"``)
+
+    วัดจริง 2026-08-08 บน Yahoo RSS + Google News: กุญแจนี้จับข่าวซ้ำได้
+    VOO 15 · SCHD 23 · QQQM 12 · XLV 12 · GLDM 8 ชิ้น ขณะที่การเทียบพาดหัวดิบ
+    จับได้ 2 · 1 · 1 · 2 · 0 (เพราะติดชื่อสำนักข่าวท้ายพาดหัวอยู่)
+    """
+    raw = " ".join(str(title or "").split())
+    if not raw:
+        return ""
+    parts = _TITLE_PUBLISHER_SEP.split(raw)
+    if len(parts) > 1 and len(parts[-1].split()) <= _MAX_PUBLISHER_WORDS:
+        raw = " ".join(parts[:-1])
+    return " ".join(re.sub(r"[^0-9a-z]+", " ", raw.lower()).split())
+
+
 def _merge_and_rank(merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """ลบซ้ำตาม url แล้วจัดลำดับ: ข่าวจริงก่อนโซเชียล ภายในกลุ่มเรียงล่าสุดก่อน.
+    """ลบซ้ำ (url + พาดหัว) แล้วจัดลำดับ: ข่าวจริงก่อนโซเชียล ภายในกลุ่มเรียงล่าสุดก่อน.
 
     เพดานรวม ``_MAX_ARTICLES`` โดยกันช่องให้โซเชียลไว้ ``_SOCIAL_RESERVED_SLOTS`` ช่อง
     ฝั่งไหนมีของไม่ถึงโควตา อีกฝั่งได้ช่องที่เหลือไปใช้ต่อ — ไม่มีช่องว่างเปล่า
+
+    **ลบซ้ำสองชั้น** เพราะชั้นเดียวไม่พอ: เทียบ url ดิบจับข่าวซ้ำข้ามแหล่งไม่ได้เลย
+    (Google News คืนลิงก์ทึบคนละอันกับลิงก์ตรงของ Yahoo) บทความเดียวจึงกินได้หลายช่อง
+    จาก 30 ช่อง และตอนเข้า sentiment มันถูกนับเป็นหลายเสียงจนพลิกป้ายได้
+    ตัวแรกที่เจอชนะ — ลำดับการรวมคือ Yahoo → Google → NewsAPI ซึ่งทำให้ลิงก์ตรงของ
+    สำนักข่าวชนะลิงก์ทึบของ Google โดยอัตโนมัติ
+
+    รายการที่ **ไม่มี url** ยังถูกตัดทิ้งเหมือนเดิม (ไม่มีลิงก์ให้ผู้ใช้กดดู) และ
+    รายการที่ไม่มีพาดหัวจะถูกตัดสินด้วย url อย่างเดียว ไม่ใช่ยุบรวมกันทั้งหมด
     """
-    seen: set[str] = set()
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
     unique: list[dict[str, Any]] = []
     for item in merged:
         u = (item.get("url") or "").strip()
-        if not u or u in seen:
+        if not u:
             continue
-        seen.add(u)
+        url_key = _normalize_url(u) or u
+        if url_key in seen_urls:
+            continue
+        title_key = _title_key(str(item.get("title") or ""))
+        if title_key and title_key in seen_titles:
+            continue
+        seen_urls.add(url_key)
+        if title_key:
+            seen_titles.add(title_key)
         unique.append(item)
 
     # เรียงสองรอบ (sort ของ Python เสถียร): เวลาใหม่ก่อน แล้วดัน news ขึ้นเหนือ social
