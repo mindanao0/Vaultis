@@ -3668,7 +3668,7 @@ def render_dashboard() -> None:
                 st.session_state["analysis_section"] = "ภาพรวมพอร์ต"
             render_analysis_workspace(prices, default_weights, tickers)
     except Exception as exc:
-        st.error(f"เกิดข้อผิดพลาดใน dashboard: {exc}
+        st.error(f"เกิดข้อผิดพลาดใน dashboard: {exc}")
 
 if __name__ == "__main__":
     render_dashboard()
