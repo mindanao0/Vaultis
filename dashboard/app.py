@@ -137,14 +137,22 @@ THEME = {
 
 BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 
-NAV_GROUPS = [
-    ("Main", ["Overview", "Scorecard", "Portfolio"]),
-    ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
-    ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
-    ("System", ["Settings"]),
+# การใช้งานหลักของ Vaultis คือเปิดมาดูแผนลงทุนและวิเคราะห์พอร์ต ไม่ใช่เลือก
+# เครื่องมือย่อยจากเมนูยาว ๆ จึงเก็บเครื่องมือเดิมไว้ แต่ย้ายไปเมนูรอง
+# เพื่อไม่ให้แย่งความสนใจจาก workspace หลัก.
+PRIMARY_NAV_ITEMS = ["Analyze", "Portfolio", "Settings"]
+ADVANCED_NAV_ITEMS = [
+    "Backtest",
+    "DCA Simulator",
+    "Technical Signals",
+    "Correlation",
+    "DCF Analysis",
+    "AI Advisor",
+    "Macro",
+    "News",
+    "Price Alerts",
 ]
-
-NAV_ITEMS = [item for _, group_items in NAV_GROUPS for item in group_items]
+NAV_ITEMS = PRIMARY_NAV_ITEMS + ADVANCED_NAV_ITEMS
 
 
 def _inject_premium_theme() -> None:
@@ -338,51 +346,41 @@ def _apply_plotly_dark_theme(fig: go.Figure) -> go.Figure:
 
 def _render_custom_sidebar(default_page: str) -> str:
     if "page" not in st.session_state:
-        st.session_state["page"] = default_page if default_page in NAV_ITEMS else "Overview"
+        # ค่าเก่าจาก config (Overview/Scorecard) ให้เปิด workspace วิเคราะห์ใหม่เสมอ
+        st.session_state["page"] = default_page if default_page in NAV_ITEMS else "Analyze"
 
     with st.sidebar:
         st.markdown('<p class="logo">VAULTIS</p>', unsafe_allow_html=True)
 
-        st.markdown('<p class="nav-group">MAIN</p>', unsafe_allow_html=True)
-        if st.button("Overview", key="nav_overview", use_container_width=True):
-            st.session_state["page"] = "Overview"
-        if st.button("Scorecard", key="nav_scorecard", use_container_width=True):
-            st.session_state["page"] = "Scorecard"
-        if st.button("Portfolio", key="nav_portfolio", use_container_width=True):
+        st.markdown('<p class="nav-group">WORKSPACE</p>', unsafe_allow_html=True)
+        if st.button("วิเคราะห์พอร์ต", key="nav_analyze", use_container_width=True):
+            st.session_state["page"] = "Analyze"
+        if st.button("ธุรกรรมของฉัน", key="nav_portfolio", use_container_width=True):
             st.session_state["page"] = "Portfolio"
-
-        st.markdown('<p class="nav-group">ANALYSIS</p>', unsafe_allow_html=True)
-        if st.button("Backtest", key="nav_backtest", use_container_width=True):
-            st.session_state["page"] = "Backtest"
-        if st.button("DCA Simulator", key="nav_dca_simulator", use_container_width=True):
-            st.session_state["page"] = "DCA Simulator"
-        if st.button("Technical Signals", key="nav_technical_signals", use_container_width=True):
-            st.session_state["page"] = "Technical Signals"
-        if st.button("Correlation", key="nav_correlation", use_container_width=True):
-            st.session_state["page"] = "Correlation"
-        if st.button("DCF Analysis", key="nav_dcf_analysis", use_container_width=True):
-            st.session_state["page"] = "DCF Analysis"
-
-        st.markdown('<p class="nav-group">AI & ALERTS</p>', unsafe_allow_html=True)
-        if st.button("AI Advisor", key="nav_ai_advisor", use_container_width=True):
-            st.session_state["page"] = "AI Advisor"
-        if st.button("Macro", key="nav_macro", use_container_width=True):
-            st.session_state["page"] = "Macro"
-        if st.button("News", key="nav_news", use_container_width=True):
-            st.session_state["page"] = "News"
-        if st.button("Price Alerts", key="nav_price_alerts", use_container_width=True):
-            st.session_state["page"] = "Price Alerts"
-
-        st.markdown('<p class="nav-group">SYSTEM</p>', unsafe_allow_html=True)
-        if st.button("Settings", key="nav_settings", use_container_width=True):
+        if st.button("ตั้งค่า", key="nav_settings", use_container_width=True):
             st.session_state["page"] = "Settings"
+
+        with st.expander("เครื่องมือขั้นสูง"):
+            for page, label in [
+                ("Backtest", "Backtest"),
+                ("DCA Simulator", "จำลอง DCA"),
+                ("DCF Analysis", "DCF และคะแนน"),
+                ("Technical Signals", "สัญญาณเชิงเทคนิค"),
+                ("Correlation", "Correlation"),
+                ("Macro", "Macro"),
+                ("News", "ข่าว"),
+                ("AI Advisor", "AI Advisor"),
+                ("Price Alerts", "Price Alerts"),
+            ]:
+                if st.button(label, key=f"nav_{page.lower().replace(' ', '_')}", use_container_width=True):
+                    st.session_state["page"] = page
 
         st.markdown(
             '<div class="sidebar-footer">Vaultis v1.0</div>',
             unsafe_allow_html=True,
         )
 
-    return str(st.session_state.get("page", "Overview"))
+    return str(st.session_state.get("page", "Analyze"))
 
 
 def _render_market_ticker_bar(tickers: list[str], prices: pd.DataFrame) -> None:
@@ -628,19 +626,7 @@ def render_settings_page() -> None:
 
     config = load_config()
     current_tickers = get_tickers()
-    page_options = [
-        "Overview",
-        "Scorecard",
-        "Portfolio",
-        "Backtest",
-        "DCA Simulator",
-        "Technical Signals",
-        "DCF Analysis",
-        "AI Advisor",
-        "Macro",
-        "Price Alerts",
-        "Settings",
-    ]
+    page_options = ["Analyze", "Portfolio", "Settings"]
 
     st.subheader("1) DCA Settings")
     dca_budget = st.number_input(
@@ -768,6 +754,8 @@ def render_settings_page() -> None:
     st.divider()
     st.subheader("5) Display Settings")
     current_default_page = str(config["display"]["default_page"])
+    if current_default_page not in page_options:
+        current_default_page = "Analyze"
     default_page = st.selectbox(
         "หน้าเริ่มต้นเมื่อเปิดแอป",
         page_options,
@@ -1417,9 +1405,10 @@ def _render_trend_channel_section(ticker: str, close_series: pd.Series) -> None:
     )
 
 
-def render_technical_signals_page(prices: pd.DataFrame) -> None:
+def render_technical_signals_page(prices: pd.DataFrame, *, embedded: bool = False) -> None:
     """หน้า Technical Signals: กราฟ Candlestick + RSI + การ์ดสรุปสัญญาณ."""
-    st.header("Technical Signals")
+    if not embedded:
+        st.header("Technical Signals")
     technical_tickers = get_tickers()
     if not technical_tickers:
         st.warning("ยังไม่มี ETF ในระบบ — เพิ่มได้ที่หน้า Settings")
@@ -3311,9 +3300,10 @@ def _render_drift_advisory() -> None:
     )
 
 
-def render_scorecard_page() -> None:
+def render_scorecard_page(*, embedded: bool = False) -> None:
     """หน้า Scorecard (Roadmap B1): เรียง 5 ETF + การ์ด "คำตัดสินเดือนนี้"."""
-    st.header("Scorecard")
+    if not embedded:
+        st.header("Scorecard")
     now = datetime.now()
     st.caption(
         f"คำตัดสินเดือน{THAI_MONTHS[now.month - 1]} {now.year + 543}: ซื้ออะไร เท่าไร เพราะอะไร "
@@ -3426,6 +3416,19 @@ def render_scorecard_page() -> None:
 
     _render_drift_advisory()
 
+    # หน้า workspace ต้องพาไปถึง "ซื้ออะไร เท่าไร" ก่อน รายละเอียดคะแนนจึงเป็น opt-in
+    # (ยังคงแสดงครบเมื่อเปิด Scorecard เดิมจากลิงก์เก่า/เครื่องมือขั้นสูง)
+    if embedded and not st.checkbox(
+        "ดูรายละเอียดคะแนนและเหตุผลราย ETF",
+        value=False,
+        key="scorecard_show_details",
+    ):
+        st.caption(
+            "คะแนนคำนวณจากโมเดลกลางเดียวกับ DCF และ AI Advisor — "
+            "เปิดรายละเอียดเมื่ออยากตรวจเหตุผลของแต่ละ ETF"
+        )
+        return
+
     # --- stacked bar: คะแนนรวมแยก 8 องค์ประกอบ ---
     st.subheader("คะแนน 0-100 แยกองค์ประกอบ")
     ranked = sorted(ok_rows, key=lambda r: float(r.get("total_pct") or 0), reverse=True)
@@ -3491,109 +3494,31 @@ def render_scorecard_page() -> None:
     )
 
 
-def render_dashboard() -> None:
-    """เรนเดอร์ dashboard หลักของ Vaultis."""
-    try:
-        st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
-        _inject_premium_theme()
-        st.title("Vaultis Premium Financial Dashboard")
-        tickers = get_tickers()
-        st.caption(f"Dark & Luxury Finance view | ETF Universe: {', '.join(tickers)}")
 
-        if st.button("Refresh Data"):
-            st.cache_data.clear()
-            st.success("ล้างแคชแล้ว กำลังโหลดข้อมูลใหม่...")
-            st.rerun()
+def _render_market_overview(prices: pd.DataFrame, tickers: list[str]) -> None:
+    """ภาพรวมที่ตอบคำถามก่อนลงทุน โดยไม่ทำให้หน้าหลักกลายเป็น dashboard ยาว."""
+    _render_overview_metrics(prices, tickers)
 
-        try:
-            with st.spinner("กำลังโหลดข้อมูลราคา..."):
-                prices = cached_prices(tickers, years=10)
-        except PriceDataUnavailableError as exc:
-            # ข้อมูลราคาพัง = หยุดทันที ห้ามแสดงหน้าวิเคราะห์จากข้อมูลว่าง (AUDIT.md C1)
-            st.error(f"ดึงข้อมูลราคา ETF ไม่สำเร็จ: {exc}")
-            st.info("ลองกด Refresh Data อีกครั้งในอีกสักครู่ (yfinance อาจจำกัดการเรียกชั่วคราว)")
-            return
+    st.subheader("แนวโน้มผลตอบแทน")
+    normalized_prices = prices.ffill().apply(
+        lambda series: (series / series.dropna().iloc[0]) * 100 if not series.dropna().empty else series
+    )
+    price_trend_fig = px.line(normalized_prices, x=normalized_prices.index, y=normalized_prices.columns)
+    st.plotly_chart(_apply_plotly_dark_theme(price_trend_fig), use_container_width=True)
 
-        # สัดส่วนเป้าหมายจากแหล่งเดียว (portfolio/targets.py) — ตรงกับที่ DCA/rebalance ใช้
-        default_weights = get_target_weights(tickers)
-        config = load_config()
+    return_col, risk_col = st.columns(2)
+    with return_col:
+        st.subheader("ผลตอบแทนย้อนหลัง")
+        returns_df = calculate_period_returns(prices)
+        st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"), use_container_width=True)
+        st.caption("QQQM เริ่มซื้อขายปี 2020 — ช่วงก่อนหน้าจึงไม่มีข้อมูล")
+    with risk_col:
+        st.subheader("ความเสี่ยง")
+        risk_df = calculate_risk_metrics(prices)
+        st.dataframe(risk_df.style.format("{:.4f}"), use_container_width=True)
 
-        default_page = str(config["display"]["default_page"])
-        _render_custom_sidebar(default_page)
-        page = st.session_state.get("page", "Overview")
-
-        if page == "Overview":
-            pass
-        elif page == "Scorecard":
-            render_scorecard_page()
-            return
-        elif page == "Portfolio":
-            render_portfolio_page()
-            return
-        elif page == "Backtest":
-            render_backtest_page(prices, default_weights, tickers)
-            return
-        elif page == "DCA Simulator":
-            render_dca_simulator_page(prices, default_weights, tickers)
-            return
-        elif page == "Technical Signals":
-            render_technical_signals_page(prices)
-            return
-        elif page == "DCF Analysis":
-            render_dcf_analysis_page()
-            return
-        elif page == "Correlation":
-            pass
-        elif page == "AI Advisor":
-            render_ai_advisor_page()
-            return
-        elif page == "Macro":
-            render_macro_page()
-            return
-        elif page == "News":
-            render_news_page()
-            return
-        elif page == "Price Alerts":
-            render_price_alerts_page()
-            return
-        elif page == "Settings":
-            render_settings_page()
-            return
-
-        _render_pdf_export_panel(
-            section_key="overview",
-            prepare_label="Export Monthly Report",
-            download_label="ดาวน์โหลด PDF",
-        )
-        st.divider()
-        _render_realtime_price_ticker_bar()
-        _render_overview_metrics(prices, tickers)
-        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        st.subheader("Price Trend (Normalized = 100)")
-        normalized_prices = prices.ffill().apply(
-            lambda series: (series / series.dropna().iloc[0]) * 100 if not series.dropna().empty else series
-        )
-        price_trend_fig = px.line(normalized_prices, x=normalized_prices.index, y=normalized_prices.columns)
-        st.plotly_chart(_apply_plotly_dark_theme(price_trend_fig), use_container_width=True)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.subheader("Return Analysis")
-            with st.spinner(" ..."):
-                returns_df = calculate_period_returns(prices)
-            st.dataframe(returns_df.style.format("{:.2f}%", na_rep="N/A"))
-            st.caption("*QQQM เริ่มซื้อขายปี 2020 — ช่วงก่อนหน้าจึงไม่มีข้อมูล")
-
-        with col2:
-            st.subheader("Risk Metrics")
-            with st.spinner(" ..."):
-                risk_df = calculate_risk_metrics(prices)
-            st.dataframe(risk_df.style.format("{:.4f}"))
-
-        st.subheader("Correlation Heatmap")
-        with st.spinner(" ..."):
-            corr_df = calculate_correlation_matrix(prices)
+    with st.expander("ดู Correlation เพื่อเช็กการกระจายความเสี่ยง"):
+        corr_df = calculate_correlation_matrix(prices)
         if corr_df.empty:
             st.warning("Correlation data is unavailable.")
             return
@@ -3616,33 +3541,134 @@ def render_dashboard() -> None:
         )
         heatmap.update_layout(coloraxis_colorbar_title="Correlation")
         st.plotly_chart(_apply_plotly_dark_theme(heatmap), use_container_width=True)
+        st.caption("Correlation ต่ำ = กระจายความเสี่ยงได้ดีกว่า")
 
-        corr_pairs = corr_for_display.where(
-            pd.DataFrame(
-                [[col_idx < row_idx for col_idx in range(len(corr_for_display.columns))]
-                 for row_idx in range(len(corr_for_display.index))],
-                index=corr_for_display.index,
-                columns=corr_for_display.columns,
-            )
-        ).stack()
-        max_pair = corr_pairs.idxmax()
-        min_pair = corr_pairs.idxmin()
-        max_value = float(corr_pairs.loc[max_pair])
-        min_value = float(corr_pairs.loc[min_pair])
 
-        st.markdown("**อ่านค่าจาก Correlation Heatmap**")
-        st.markdown(
-            f"-   correlation  : **{max_pair[0]} - {max_pair[1]} ({max_value:.2f})**    "
-        )
-        st.markdown(
-            f"-   correlation  : **{min_pair[0]} - {min_pair[1]} ({min_value:.2f})**    "
-        )
-        st.markdown("- correlation ต่ำ = กระจายความเสี่ยงได้ดีกว่า")
+def _open_advanced_page(page: str) -> None:
+    st.session_state["page"] = page
+    st.rerun()
 
-        st.info("ดู Backtest และ DCA Simulator ได้จากเมนูด้านซ้าย")
+
+def render_analysis_workspace(
+    prices: pd.DataFrame, default_weights: dict[str, float], tickers: list[str]
+) -> None:
+    """พื้นที่ใช้งานหลัก: ตัดสินใจลงทุนก่อน แล้วค่อยเปิดข้อมูลลึกตามต้องการ."""
+    title_col, action_col = st.columns([5, 1])
+    with title_col:
+        st.header("วิเคราะห์พอร์ต")
+        st.caption("เริ่มจากแผนซื้อเดือนนี้ แล้วค่อยเจาะข้อมูลเมื่อจำเป็น")
+    with action_col:
+        st.write("")
+        if st.button("รีเฟรชข้อมูล", use_container_width=True, key="analysis_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+    section = st.radio(
+        "มุมมองการวิเคราะห์",
+        ["แผนซื้อเดือนนี้", "ภาพรวมพอร์ต", "สัญญาณเทคนิค", "บริบทตลาด", "เครื่องมือขั้นสูง"],
+        horizontal=True,
+        label_visibility="collapsed",
+        key="analysis_section",
+    )
+    st.divider()
+
+    if section == "แผนซื้อเดือนนี้":
+        render_scorecard_page(embedded=True)
+    elif section == "ภาพรวมพอร์ต":
+        _render_market_overview(prices, tickers)
+    elif section == "สัญญาณเทคนิค":
+        render_technical_signals_page(prices, embedded=True)
+    elif section == "บริบทตลาด":
+        st.subheader("บริบทตลาด")
+        st.caption("ใช้เป็นข้อมูลประกอบ ไม่ได้เปลี่ยนคะแนนหรือแผน DCA อัตโนมัติ")
+        macro_col, news_col, ai_col = st.columns(3)
+        with macro_col:
+            st.markdown("**Macro**  \nดูเงินเฟ้อ VIX และภาพเศรษฐกิจ")
+            if st.button("เปิด Macro", use_container_width=True):
+                _open_advanced_page("Macro")
+        with news_col:
+            st.markdown("**ข่าว**  \nดูข่าวและโซเชียลของ ETF")
+            if st.button("เปิดข่าว", use_container_width=True):
+                _open_advanced_page("News")
+        with ai_col:
+            st.markdown("**AI Advisor**  \nขอคำอธิบายจากแผนที่คำนวณแล้ว")
+            if st.button("เปิด AI Advisor", use_container_width=True):
+                _open_advanced_page("AI Advisor")
+    else:
+        st.subheader("เครื่องมือขั้นสูง")
+        st.caption("เครื่องมือเหล่านี้ไม่จำเป็นต่อการตัดสินใจ DCA ประจำเดือน")
+        first_col, second_col, third_col = st.columns(3)
+        with first_col:
+            if st.button("Backtest", use_container_width=True):
+                _open_advanced_page("Backtest")
+        with second_col:
+            if st.button("จำลอง DCA", use_container_width=True):
+                _open_advanced_page("DCA Simulator")
+        with third_col:
+            if st.button("DCF และคะแนนเชิงลึก", use_container_width=True):
+                _open_advanced_page("DCF Analysis")
+
+def render_dashboard() -> None:
+    """เรนเดอร์ dashboard หลักของ Vaultis."""
+    try:
+        st.set_page_config(page_title="Vaultis ETF Analyzer", layout="wide")
+        _inject_premium_theme()
+        tickers = get_tickers()
+        config = load_config()
+        default_page = str(config["display"]["default_page"])
+        _render_custom_sidebar(default_page)
+        page = str(st.session_state.get("page", "Analyze"))
+        if page in {"Overview", "Scorecard"}:
+            page = "Analyze"
+            st.session_state["page"] = page
+
+        # หน้าจัดการและข้อมูลเสริมไม่ควรรอราคาย้อนหลัง 10 ปี
+        if page == "Portfolio":
+            render_portfolio_page()
+            return
+        if page == "Settings":
+            render_settings_page()
+            return
+        if page == "DCF Analysis":
+            render_dcf_analysis_page()
+            return
+        if page == "AI Advisor":
+            render_ai_advisor_page()
+            return
+        if page == "Macro":
+            render_macro_page()
+            return
+        if page == "News":
+            render_news_page()
+            return
+        if page == "Price Alerts":
+            render_price_alerts_page()
+            return
+
+        try:
+            with st.spinner("กำลังโหลดข้อมูลราคา..."):
+                prices = cached_prices(tickers, years=10)
+        except PriceDataUnavailableError as exc:
+            # ข้อมูลราคาพัง = หยุดทันที ห้ามแสดงหน้าวิเคราะห์จากข้อมูลว่าง (AUDIT.md C1)
+            st.error(f"ดึงข้อมูลราคา ETF ไม่สำเร็จ: {exc}")
+            if st.button("ลองโหลดข้อมูลใหม่"):
+                st.cache_data.clear()
+                st.rerun()
+            return
+
+        default_weights = get_target_weights(tickers)
+        if page == "Backtest":
+            render_backtest_page(prices, default_weights, tickers)
+        elif page == "DCA Simulator":
+            render_dca_simulator_page(prices, default_weights, tickers)
+        elif page == "Technical Signals":
+            render_technical_signals_page(prices)
+        else:
+            if page == "Correlation":
+                st.session_state["analysis_section"] = "ภาพรวมพอร์ต"
+            render_analysis_workspace(prices, default_weights, tickers)
     except Exception as exc:
-        st.error(f"เกิดข้อผิดพลาดใน dashboard: {exc}")
-
+        st.error(f"เกิดข้อผิดพลาดใน dashboard: {exc}
 
 if __name__ == "__main__":
     render_dashboard()
