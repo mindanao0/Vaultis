@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from analysis import trend_channel
 from analysis.ta_compat import ta
 from technical import signal_rules
 from utils.cache import cache_data_1h
@@ -204,6 +205,15 @@ def dcf_valuation(ticker: str, years: int = 10) -> dict[str, Any]:
 
 TREND_MAX, TIMING_MAX, MOMENTUM_MAX, DIVIDEND_MAX = 40, 30, 20, 10
 
+# มิติเพิ่มเติม (2026-08) — ทั้งหมดตัด max_score ออกเมื่อข้อมูลไม่พร้อม (ตาม pattern DIVIDEND เดิม)
+# ไม่รื้อสัดส่วนเดิม 4 มิติ เพราะ total_pct = total/max_score เสมอ จึง normalize เองอัตโนมัติ
+VOLATILITY_MAX = 10          # ผันผวนรายวัน + max drawdown 1 ปี — คำนวณจาก closes ได้เสมอ
+VALUATION_MAX = 10           # ราคาเทียบเทรนด์ log-linear หลายปี (ต้องมีข้อมูล >= 504 วันเทรด)
+RELATIVE_STRENGTH_MAX = 5    # ผลตอบแทน 3 เดือนเทียบ benchmark (VOO) — ตัวเองไม่เทียบกับตัวเอง
+EXPENSE_MAX = 5              # ค่าธรรมเนียมกองทุน (expense ratio) จาก yfinance
+
+RELATIVE_STRENGTH_BENCHMARK = "VOO"
+
 
 def _trend_score(price: float, ma50: float, ma200: float) -> int:
     """แนวโน้มระยะยาว (0-40) — เหนือ MA200 คือเงื่อนไขตั้งต้นของการสะสม."""
@@ -278,6 +288,123 @@ def _dividend_yield(ticker: str) -> float | None:
     return _normalize_dividend_yield(info.get("dividendYield"))
 
 
+def _volatility_score(closes: pd.Series) -> int:
+    """ความเสี่ยงผันผวน/drawdown (0-10) จากราคาปิด 1 ปีล่าสุด — คำนวณจาก ``closes`` ได้เสมอ.
+
+    ผันผวนรายวัน annualized ต่ำ (0-5) + max drawdown ตื้น (0-5) = คะแนนสูง
+    ไม่ raise/ไม่คืน None เพราะ ``closes`` ต้องมีอย่างน้อย 200 แถวอยู่แล้ว (เงื่อนไขของ score_from_prices)
+    """
+    window = closes.tail(252)
+    returns = window.pct_change().dropna()
+    vol_s = 0
+    if not returns.empty:
+        annualized_vol_pct = float(returns.std() * (252**0.5) * 100)
+        if annualized_vol_pct <= 12:
+            vol_s = 5
+        elif annualized_vol_pct <= 18:
+            vol_s = 3
+        elif annualized_vol_pct <= 25:
+            vol_s = 1
+
+    cummax = window.cummax()
+    drawdown_pct = float(((cummax - window) / cummax).max() * 100)
+    if drawdown_pct <= 8:
+        dd_s = 5
+    elif drawdown_pct <= 15:
+        dd_s = 3
+    elif drawdown_pct <= 25:
+        dd_s = 1
+    else:
+        dd_s = 0
+
+    return vol_s + dd_s
+
+
+def _valuation_score(closes: pd.Series) -> int | None:
+    """ราคาปัจจุบันเทียบเทรนด์ log-linear หลายปี (0-10) — ต่ำกว่าเทรนด์มาก = undervalued = คะแนนสูง.
+
+    ใช้ ``trend_channel.fit_trend_channel`` ตัวเดียวกับที่วาดกราฟ (สถิติพรรณนาเดียวกันทั้งระบบ)
+    ต้องมีข้อมูล >= ``trend_channel.MIN_TREND_POINTS`` (~2 ปีเทรด) ไม่งั้นคืน ``None``
+    → ตัดออกจาก max_score แทนการเดา (C1) ไม่ใช่ 0 (ซึ่งจะเท่ากับ "แพงที่สุด" ผิดความจริง
+    """
+    try:
+        fit = trend_channel.fit_trend_channel(closes)
+    except ValueError:
+        return None
+    sigma = float(fit["current_sigma"])
+    if sigma <= -1.5:
+        return 10
+    if sigma <= -0.5:
+        return 7
+    if sigma <= 0.5:
+        return 5
+    if sigma <= 1.5:
+        return 2
+    return 0
+
+
+def _relative_strength_score(closes: pd.Series, benchmark_closes: pd.Series | None) -> int | None:
+    """ผลตอบแทน 3 เดือนเทียบ benchmark (0-5) เช่น VOO — วัดว่าแข็งกว่า/อ่อนกว่าตลาดกว้าง.
+
+    คืน ``None`` เมื่อไม่มี benchmark ให้เทียบ (ticker คือ benchmark เอง หรือดึงราคา benchmark ไม่ได้)
+    → ตัดออกจาก max_score เหมือนมิติ optional อื่น ๆ (C1)
+    """
+    if benchmark_closes is None:
+        return None
+    bench = pd.to_numeric(benchmark_closes, errors="coerce").dropna()
+    if len(bench) < 64:
+        return None
+    ticker_return_3m = float(closes.pct_change().tail(63).sum() * 100)
+    bench_return_3m = float(bench.pct_change().tail(63).sum() * 100)
+    rs = ticker_return_3m - bench_return_3m
+    if rs > 5:
+        return 5
+    if rs > 0:
+        return 3
+    if rs > -5:
+        return 1
+    return 0
+
+
+# ค่าธรรมเนียมกองทุนที่เป็นไปได้จริงของ ETF ทั่วไปไม่เกินระดับนี้ — เกินคือข้อมูลผิด ไม่ใช่ ETF จริง (C1)
+_MAX_PLAUSIBLE_EXPENSE_RATIO_PCT = 5.0
+
+
+def _expense_ratio_pct(ticker: str) -> float | None:
+    """ค่าธรรมเนียมกองทุนเป็น % (เช่น 0.03 = 0.03%); ล้มเหลว/ไม่มี/ค่าเพี้ยนคืน None (C1).
+
+    yfinance คืน ``annualReportExpenseRatio``/``netExpenseRatio`` เป็นสัดส่วน (0.0003 = 0.03%)
+    — คูณ 100 ตรง ๆ เท่านั้น ห้ามเดาหน่วยแบบที่เคยพลาดกับ dividend yield (M15)
+    """
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        return None
+    raw = info.get("annualReportExpenseRatio")
+    if raw is None:
+        raw = info.get("netExpenseRatio")
+    if raw is None:
+        return None
+    value = _safe_float(raw, -1.0)
+    if value < 0:
+        return None
+    pct = value * 100.0
+    if pct > _MAX_PLAUSIBLE_EXPENSE_RATIO_PCT:
+        return None
+    return round(pct, 3)
+
+
+def _expense_score(expense_ratio_pct: float) -> int:
+    """ค่าธรรมเนียมกองทุน (0-5) — ยิ่งต่ำยิ่งดี. ``expense_ratio_pct`` เป็น % เช่น 0.03 = 0.03%."""
+    if expense_ratio_pct <= 0.10:
+        return 5
+    if expense_ratio_pct <= 0.20:
+        return 4
+    if expense_ratio_pct <= 0.40:
+        return 2
+    return 0
+
+
 def _signal_label(total_pct: float) -> str:
     if total_pct >= 70:
         return "Strong Buy"
@@ -294,10 +421,15 @@ def score_from_prices(
     ticker: str,
     closes: pd.Series,
     div_yield: float | None = None,
+    benchmark_closes: pd.Series | None = None,
+    expense_ratio_pct: float | None = None,
 ) -> dict[str, Any]:
     """คะแนนกลางจากอนุกรมราคา — ใช้ร่วมกันทุก entry point ของระบบ.
 
     ต้องมีข้อมูลอย่างน้อย 200 วันเทรด ไม่งั้น raise (ผู้เรียกต้องแปลงเป็น NO DATA)
+
+    ``benchmark_closes``/``expense_ratio_pct`` เป็น optional เหมือน ``div_yield`` เดิม:
+    ไม่ส่งมา = มิตินั้นถูกตัดออกจาก ``max_score`` ไม่ใช่ให้คะแนน 0 (C1 — ห้ามลงโทษข้อมูลที่หายไป)
     """
     closes = pd.to_numeric(closes, errors="coerce").dropna()
     if len(closes) < 200:
@@ -317,14 +449,40 @@ def score_from_prices(
     trend_s = _trend_score(price, ma50, ma200)
     timing_s = _timing_score(price, ma200, rsi)
     mom_s = _momentum_score(return_1m, return_3m)
+    vol_s = _volatility_score(closes)
 
-    max_score = TREND_MAX + TIMING_MAX + MOMENTUM_MAX
+    max_score = TREND_MAX + TIMING_MAX + MOMENTUM_MAX + VOLATILITY_MAX
+    total = trend_s + timing_s + mom_s + vol_s
+
     div_s = 0
     if div_yield is not None:
         div_s = _dividend_score(div_yield)
         max_score += DIVIDEND_MAX
+        total += div_s
 
-    total = trend_s + timing_s + mom_s + div_s
+    val_s = _valuation_score(closes)
+    valuation_available = val_s is not None
+    if valuation_available:
+        max_score += VALUATION_MAX
+        total += val_s
+    else:
+        val_s = 0
+
+    rs_s = _relative_strength_score(closes, benchmark_closes)
+    rs_available = rs_s is not None
+    if rs_available:
+        max_score += RELATIVE_STRENGTH_MAX
+        total += rs_s
+    else:
+        rs_s = 0
+
+    exp_s = 0
+    expense_available = expense_ratio_pct is not None
+    if expense_available:
+        exp_s = _expense_score(expense_ratio_pct)
+        max_score += EXPENSE_MAX
+        total += exp_s
+
     total_pct = round(total * 100.0 / max_score, 1)
     central = signal_rules.dca_signal(price, ma50, ma200, rsi)
 
@@ -342,6 +500,13 @@ def score_from_prices(
         "momentum_score": mom_s,
         "dividend_score": div_s,
         "dividend_available": div_yield is not None,
+        "volatility_score": vol_s,
+        "valuation_score": val_s,
+        "valuation_available": valuation_available,
+        "relative_strength_score": rs_s,
+        "relative_strength_available": rs_available,
+        "expense_score": exp_s,
+        "expense_available": expense_available,
         "total_score": total,
         "max_score": max_score,
         "total_pct": total_pct,
@@ -359,7 +524,19 @@ def calculate_signal_score(ticker: str) -> dict[str, Any]:
     → ticker ที่ข้อมูลพังถูกลองใหม่ทุกคำขอ ตัวที่ดีไม่ต้องยิง yfinance ซ้ำ
     """
     closes = _download_close(ticker, "2y")
-    result = score_from_prices(ticker, closes, div_yield=_dividend_yield(ticker))
+    benchmark_closes: pd.Series | None = None
+    if ticker.strip().upper() != RELATIVE_STRENGTH_BENCHMARK:
+        try:
+            benchmark_closes = _download_close(RELATIVE_STRENGTH_BENCHMARK, "2y")
+        except Exception:
+            benchmark_closes = None
+    result = score_from_prices(
+        ticker,
+        closes,
+        div_yield=_dividend_yield(ticker),
+        benchmark_closes=benchmark_closes,
+        expense_ratio_pct=_expense_ratio_pct(ticker),
+    )
 
     try:
         dcf = dcf_valuation(ticker)
@@ -550,12 +727,19 @@ def _no_data(ticker: str, reason: str) -> dict[str, Any]:
     }
 
 
-def _score_ticker(ticker: str) -> dict[str, Any]:
+def _score_ticker(ticker: str, benchmark_closes: pd.Series | None = None) -> dict[str, Any]:
     closes = _yf_close_series(ticker)
     if closes.empty:
         return _no_data(ticker, "ดึงราคาไม่สำเร็จ")
+    is_benchmark = ticker.strip().upper() == RELATIVE_STRENGTH_BENCHMARK
     try:
-        return score_from_prices(ticker, closes, div_yield=_dividend_yield(ticker))
+        return score_from_prices(
+            ticker,
+            closes,
+            div_yield=_dividend_yield(ticker),
+            benchmark_closes=None if is_benchmark else benchmark_closes,
+            expense_ratio_pct=_expense_ratio_pct(ticker),
+        )
     except ValueError as exc:
         return _no_data(ticker, str(exc))
 
@@ -565,6 +749,15 @@ def build_etf_scores(tickers: list[str] | None = None) -> list[dict[str, Any]]:
 
     ถ้า ``tickers`` เป็น ``None`` ใช้ค่าเริ่มต้น
     ``VOO``, ``SCHD``, ``QQQM``, ``XLV``, ``GLDM``.
+
+    ดึงราคา benchmark (VOO) ครั้งเดียวสำหรับทุก ticker ในชุดนี้ (ไม่ใช่ต่อตัว) — ลดจำนวนคำขอ yfinance
     """
     symbols = DEFAULT_ETF_TICKERS if tickers is None else list(tickers)
-    return [_score_ticker(sym.strip().upper()) for sym in symbols if sym.strip()]
+    benchmark_closes = _yf_close_series(RELATIVE_STRENGTH_BENCHMARK)
+    if benchmark_closes.empty:
+        benchmark_closes = None
+    return [
+        _score_ticker(sym.strip().upper(), benchmark_closes=benchmark_closes)
+        for sym in symbols
+        if sym.strip()
+    ]

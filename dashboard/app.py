@@ -37,11 +37,15 @@ from analysis.correlation import calculate_correlation_matrix
 from analysis.ai_advisor import ai_suggest_alerts, get_monthly_advice
 from analysis.financial_model import (
     DIVIDEND_MAX,
+    EXPENSE_MAX,
     MOMENTUM_MAX,
+    RELATIVE_STRENGTH_MAX,
     TILT_MAX,
     TILT_MIN,
     TIMING_MAX,
     TREND_MAX,
+    VALUATION_MAX,
+    VOLATILITY_MAX,
     _dividend_yield,
     build_etf_scores,
     calculate_allocation,
@@ -1774,6 +1778,10 @@ def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
                     "Timing": None,
                     "Momentum": None,
                     "Dividend": None,
+                    "Volatility": None,
+                    "Valuation": None,
+                    "RelStrength": None,
+                    "Expense": None,
                     "RSI": None,
                     "Signal": "NO DATA",
                     "Current (USD)": None,
@@ -1794,6 +1802,10 @@ def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
                 "Timing": int(payload.get("timing_score", 0) or 0),
                 "Momentum": int(payload.get("momentum_score", 0) or 0),
                 "Dividend": int(payload.get("dividend_score", 0) or 0),
+                "Volatility": int(payload.get("volatility_score", 0) or 0),
+                "Valuation": int(payload.get("valuation_score", 0) or 0),
+                "RelStrength": int(payload.get("relative_strength_score", 0) or 0),
+                "Expense": int(payload.get("expense_score", 0) or 0),
                 "RSI": float(payload.get("rsi", 0) or 0),
                 "Signal": str(payload.get("signal", "")),
                 "Current (USD)": float(dcf.get("current_price") or 0) if dcf_ok else None,
@@ -1889,12 +1901,20 @@ def render_dcf_analysis_page() -> None:
         f"Timing (เต็ม {TIMING_MAX})",
         f"Momentum (เต็ม {MOMENTUM_MAX})",
         f"Dividend (เต็ม {DIVIDEND_MAX})",
+        f"Volatility (เต็ม {VOLATILITY_MAX})",
+        f"Valuation (เต็ม {VALUATION_MAX})",
+        f"RelStrength (เต็ม {RELATIVE_STRENGTH_MAX})",
+        f"Expense (เต็ม {EXPENSE_MAX})",
     ]
     component_values = [
         float(selected_row["Trend"]),
         float(selected_row["Timing"]),
         float(selected_row["Momentum"]),
         float(selected_row["Dividend"]),
+        float(selected_row["Volatility"]),
+        float(selected_row["Valuation"]),
+        float(selected_row["RelStrength"]),
+        float(selected_row["Expense"]),
     ]
     waterfall_fig = go.Figure(
         go.Waterfall(
@@ -1942,7 +1962,17 @@ def render_dcf_analysis_page() -> None:
         )
 
     st.subheader("Heatmap Score (All ETFs)")
-    heat_cols = ["Score %", "Trend", "Timing", "Momentum", "Dividend"]
+    heat_cols = [
+        "Score %",
+        "Trend",
+        "Timing",
+        "Momentum",
+        "Dividend",
+        "Volatility",
+        "Valuation",
+        "RelStrength",
+        "Expense",
+    ]
     heatmap_df = score_df.set_index("Ticker")[heat_cols].astype(float)
     heatmap_fig = px.imshow(
         heatmap_df,
@@ -2984,12 +3014,16 @@ THAI_MONTHS = [
     "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
 ]
 
-# สี 4 องค์ประกอบคะแนน (โทน GitHub dark เดียวกับ THEME)
+# สี 8 องค์ประกอบคะแนน (โทน GitHub dark เดียวกับ THEME)
 _SCORE_PARTS = [
     ("Trend", "trend_score", TREND_MAX, THEME["accent"]),
     ("Timing", "timing_score", TIMING_MAX, "#A371F7"),
     ("Momentum", "momentum_score", MOMENTUM_MAX, "#D29922"),
     ("Dividend", "dividend_score", DIVIDEND_MAX, THEME["text_secondary"]),
+    ("Volatility", "volatility_score", VOLATILITY_MAX, THEME["negative"]),
+    ("Valuation", "valuation_score", VALUATION_MAX, THEME["positive"]),
+    ("RelStrength", "relative_strength_score", RELATIVE_STRENGTH_MAX, "#39C5CF"),
+    ("Expense", "expense_score", EXPENSE_MAX, "#DB6D28"),
 ]
 
 
@@ -3082,11 +3116,25 @@ def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
 
 def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
     """audit trail "ทำไมได้เท่านี้" (Roadmap ข้อ 9) — โชว์เลขที่โมเดลคืนมาทุกชั้น ไม่คำนวณใหม่."""
-    dividend_max_text = str(DIVIDEND_MAX) if row.get("dividend_available") else "ตัดออก (ไม่มีข้อมูลปันผล)"
+    def _max_text(available: bool, max_value: int, reason: str) -> str:
+        return str(max_value) if available else f"ตัดออก ({reason})"
+
+    dividend_max_text = _max_text(bool(row.get("dividend_available")), DIVIDEND_MAX, "ไม่มีข้อมูลปันผล")
+    valuation_max_text = _max_text(
+        bool(row.get("valuation_available")), VALUATION_MAX, "ข้อมูลราคาน้อยกว่า ~2 ปี"
+    )
+    rs_max_text = _max_text(
+        bool(row.get("relative_strength_available")), RELATIVE_STRENGTH_MAX, "ไม่มี benchmark เทียบ"
+    )
+    expense_max_text = _max_text(bool(row.get("expense_available")), EXPENSE_MAX, "ไม่มีข้อมูลค่าธรรมเนียม")
     st.markdown(
         f"**ชั้น 1 — คะแนนดิบ** (จาก `score_from_prices`)  \n"
         f"Trend {row.get('trend_score')}/{TREND_MAX} · Timing {row.get('timing_score')}/{TIMING_MAX} · "
-        f"Momentum {row.get('momentum_score')}/{MOMENTUM_MAX} · Dividend {row.get('dividend_score')}/{dividend_max_text}  \n"
+        f"Momentum {row.get('momentum_score')}/{MOMENTUM_MAX} · Dividend {row.get('dividend_score')}/{dividend_max_text} · "
+        f"Volatility {row.get('volatility_score')}/{VOLATILITY_MAX} · "
+        f"Valuation {row.get('valuation_score')}/{valuation_max_text} · "
+        f"RelStrength {row.get('relative_strength_score')}/{rs_max_text} · "
+        f"Expense {row.get('expense_score')}/{expense_max_text}  \n"
         f"รวม {row.get('total_score')}/{row.get('max_score')} = **{float(row.get('total_pct') or 0):.1f}%**"
     )
     if alloc_item:
@@ -3378,7 +3426,7 @@ def render_scorecard_page() -> None:
 
     _render_drift_advisory()
 
-    # --- stacked bar: คะแนนรวมแยก 4 องค์ประกอบ ---
+    # --- stacked bar: คะแนนรวมแยก 8 องค์ประกอบ ---
     st.subheader("คะแนน 0-100 แยกองค์ประกอบ")
     ranked = sorted(ok_rows, key=lambda r: float(r.get("total_pct") or 0), reverse=True)
     bar_fig = go.Figure()

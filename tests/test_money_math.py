@@ -68,8 +68,10 @@ class TestUnifiedScore:
         series = self._uptrend_then_dip()
         with_div = score_from_prices("TEST", series, div_yield=0.05)
         without_div = score_from_prices("TEST", series, div_yield=None)
-        assert with_div["max_score"] == 100
-        assert without_div["max_score"] == 90
+        # 90 (Trend+Timing+Momentum) + 10 (Volatility, คำนวณจาก closes ได้เสมอ) + 10 (Dividend ถ้ามี)
+        # Valuation/RelStrength/Expense ยังไม่รวม เพราะ fixture นี้สั้นกว่า 504 วัน / ไม่ได้ส่ง benchmark/expense
+        assert with_div["max_score"] == 110
+        assert without_div["max_score"] == 100
         assert without_div["dividend_available"] is False
 
     def test_insufficient_history_raises_not_zero_score(self):
