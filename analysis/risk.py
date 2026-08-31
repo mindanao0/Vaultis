@@ -458,3 +458,67 @@ def calculate_risk_metrics(
         raise
     except Exception as exc:
         raise RuntimeError(f"เกิดข้อผิดพลาดในการรวม Risk Metrics: {exc}") from exc
+
+
+#: ความยาวหน้าต่างมาตรฐานของ ATR ทั้งระบบ (Wilder ใช้ 14) — เปลี่ยนที่นี่ที่เดียว
+ATR_LENGTH = 14
+
+#: จำนวนแท่งที่ใช้จัดอันดับว่า ATR วันนี้ "กว้าง/แคบ" เทียบกับตัวเอง (~1 ปีทำการ)
+ATR_PERCENTILE_WINDOW = TRADING_DAYS_PER_YEAR
+
+
+def atr_stats(ohlc: pd.DataFrame, length: int = ATR_LENGTH) -> dict[str, object]:
+    """ช่วงแกว่งเฉลี่ยต่อวัน (Average True Range) ของแท่งล่าสุด + บริบทว่ากว้างแค่ไหน.
+
+    **สถิติเชิงพรรณนาล้วน — ห้ามไหลเข้าเลขคะแนนหรือการจัดสรร DCA** (invariant เดียวกับ
+    ``trend_channel.py`` และ ``portfolio/lookthrough.py``) ATR บอก "ปกติวันหนึ่งราคาขยับ
+    กี่ดอลลาร์" ไม่ได้บอกทิศทาง จึงไม่ใช่สัญญาณซื้อขายและไม่ควรถูกใช้เป็นอย่างนั้น
+
+    คืน ``atr`` (ดอลลาร์), ``atr_pct`` (เทียบราคาปิดล่าสุด), ``percentile`` (ATR วันนี้
+    อยู่อันดับกี่ % ของ ``ATR_PERCENTILE_WINDOW`` แท่งหลังสุด) และ ``bars`` ที่ใช้จริง
+
+    ทำไมต้องมี ``atr_pct`` คู่กับ ``atr``: ตัวเลขดอลลาร์เทียบข้ามกองไม่ได้เลย —
+    GLDM ราคา ~$60 กับ VOO ราคา ~$500 ขยับ $2 เท่ากันคือคนละความผันผวนกันสิบเท่า
+
+    ข้อมูลไม่พอ (แท่งน้อยกว่า ``length`` + 1 หรือ ATR ล่าสุดเป็น ``NaN``) → ``ValueError``
+    ไม่ใช่คืน 0 ซึ่งอ่านว่า "ราคานิ่งสนิท" (C1)
+    """
+    from analysis.ta_compat import ta
+
+    required = {"High", "Low", "Close"}
+    missing = required - set(map(str, ohlc.columns))
+    if missing:
+        raise ValueError(f"ATR ต้องใช้คอลัมน์ {sorted(required)} — ขาด {sorted(missing)}")
+
+    frame = ohlc[["High", "Low", "Close"]].apply(pd.to_numeric, errors="coerce").dropna(how="any")
+    if len(frame) < length + 1:
+        raise ValueError(
+            f"ATR({length}) ต้องมีอย่างน้อย {length + 1} แท่ง — มี {len(frame)} แท่ง"
+        )
+
+    series = ta.atr(frame["High"], frame["Low"], frame["Close"], length=length).dropna()
+    if series.empty:
+        raise ValueError(f"ATR({length}) คำนวณไม่ได้จากข้อมูลชุดนี้")
+
+    latest = float(series.iloc[-1])
+    last_close = float(frame["Close"].iloc[-1])
+    if last_close <= 0:
+        raise ValueError("ราคาปิดล่าสุดไม่เป็นบวก — คิด ATR เป็น % ไม่ได้")
+
+    window = series.tail(ATR_PERCENTILE_WINDOW)
+    # อันดับเปอร์เซ็นไทล์ของค่าล่าสุดในหน้าต่างของตัวเอง — ต้องมีอย่างน้อย 2 ค่า
+    # ไม่งั้น "อันดับ 100%" จากค่าเดียวเป็นข้อความที่ไม่มีความหมาย จึงคืน None
+    percentile = (
+        round(float((window <= latest).sum()) * 100.0 / float(len(window)), 1)
+        if len(window) >= 2
+        else None
+    )
+    return {
+        "atr": round(latest, 4),
+        "atr_pct": round(latest / last_close * 100.0, 3),
+        "length": int(length),
+        "bars": int(len(frame)),
+        "percentile": percentile,
+        "percentile_window": int(len(window)),
+        "as_of": frame.index[-1],
+    }

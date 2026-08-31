@@ -78,6 +78,7 @@ from analysis.returns import (
 )
 from analysis.macro import get_thai_inflation
 from analysis.risk import (
+    atr_stats,
     calculate_risk_metrics,
     drawdown_episodes,
     mix_vs_benchmark_test,
@@ -99,7 +100,7 @@ from alerts.price_alert import (
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from db.sentiment_models import get_latest_sentiment_summaries
 from portfolio.backtest import run_portfolio_backtest
-from portfolio.lookthrough import look_through, overlap_pairs
+from portfolio.lookthrough import look_through, overlap_pairs, weighted_ratios
 from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
 from portfolio.targets import (
     RISK_PROFILES,
@@ -1747,6 +1748,44 @@ def _add_buy_overlay(fig: go.Figure, ticker: str, display_ohlc: pd.DataFrame) ->
     )
 
 
+def _render_atr_section(ticker: str, ohlc: pd.DataFrame) -> None:
+    """ช่วงแกว่งเฉลี่ยต่อวัน (ATR) — **สถิติพรรณนา ไม่เข้าเลขคะแนน/จัดสรร DCA**.
+
+    ATR ตอบคำถามเดียว: "ปกติวันหนึ่งราคาขยับกี่ดอลลาร์" ไม่ได้บอกทิศทาง จึงไม่ใช่
+    สัญญาณซื้อขายและหน้าจอต้องไม่เขียนให้อ่านเป็นอย่างนั้น — โดยเฉพาะกับเครื่องมือ
+    DCA ระยะยาวที่ไม่มีคำสั่งขายอยู่แล้ว ประโยชน์จริงคือ **ตั้งความคาดหวัง**: เห็นว่า
+    ราคาที่ลง 1.5% วันนี้คือวันธรรมดาหรือวันที่ผิดปกติ จะได้ไม่ตกใจขายของที่ไม่ควรขาย
+    """
+    st.subheader(f"ช่วงแกว่งต่อวัน — {ticker} (ATR)")
+    try:
+        stats = atr_stats(ohlc)
+    except ValueError as exc:
+        st.error(f"{ticker}: {exc}")  # ข้อมูลไม่พอ = บอกตรง ๆ ห้ามโชว์ 0 (C1)
+        return
+
+    atr_value = float(stats["atr"])
+    atr_pct = float(stats["atr_pct"])
+    percentile = stats["percentile"]
+
+    cols = st.columns(3)
+    cols[0].metric(f"ATR({stats['length']})", f"${atr_value:,.2f}")
+    cols[1].metric("คิดเป็น % ของราคา", f"{atr_pct:.2f}%")
+    cols[2].metric(
+        "เทียบตัวเองย้อนหลัง 1 ปี",
+        f"อันดับ {percentile:.0f}%" if percentile is not None else "N/A",
+        help="ATR วันนี้สูงกว่ากี่ % ของวันในหน้าต่างนี้ — สูงแปลว่าตลาดกำลังผันผวนกว่าปกติของกองนี้เอง",
+    )
+
+    band_low, band_high = atr_pct, atr_pct * 2.0
+    st.caption(
+        f"วันธรรมดาของ {ticker} ราคาขยับราว **${atr_value:,.2f} (~{band_low:.2f}%)** "
+        f"— วันที่ขยับเกิน ~{band_high:.2f}% คือวันที่ผิดปกติสำหรับกองนี้ "
+        f"(คำนวณแบบ Wilder จาก {stats['bars']:,} แท่ง · True Range นับ gap ตอนเปิดตลาดด้วย) · "
+        "ตัวเลข % ต่างหากที่เทียบข้ามกองได้ ส่วนตัวเลขดอลลาร์เทียบไม่ได้เพราะราคาต่อหน่วยต่างกัน · "
+        "**เป็นสถิติพรรณนา ไม่ใช่สัญญาณซื้อขาย และไม่เข้าเลขคะแนนหรือแผน DCA**"
+    )
+
+
 def _render_trend_channel_section(ticker: str, close_series: pd.Series) -> None:
     """Trend channel (Roadmap A2): ราคาปัจจุบันอยู่ส่วนไหนของช่องเทรนด์หลายปีตัวเอง.
 
@@ -2022,6 +2061,8 @@ def render_technical_signals_page(prices: pd.DataFrame) -> None:
     _render_underwater_section(selected_ticker, prices[selected_ticker].dropna())
 
     _render_trend_channel_section(selected_ticker, prices[selected_ticker].dropna())
+
+    _render_atr_section(selected_ticker, selected_ohlc)
 
     _render_seasonality_section(selected_ticker, prices[selected_ticker].dropna())
 
@@ -3923,6 +3964,52 @@ def _render_lookthrough() -> None:
             + ", ".join(f"{r['symbol']} {r['weight_pct']:.2f}% ({'+'.join(r['via'])})" for r in overlaps[:6])
         )
     st.caption(result["notes"])
+    _render_lookthrough_ratios(result)
+
+
+def _render_lookthrough_ratios(result: dict) -> None:
+    """อัตราส่วนพื้นฐานถ่วงน้ำหนักจากหุ้นข้างในกอง — **ไม่เข้าเลขคะแนน/จัดสรร DCA**.
+
+    P/E หรือ ROE ของ ticker ``VOO`` เองไม่มีความหมาย (กองไม่ได้ทำธุรกิจ) ตัวเลขชุดนี้
+    จึงมาจากหุ้นที่ทะลุกองเจอเท่านั้น และต้องแสดง ``coverage`` คู่กันเสมอ ไม่งั้นผู้อ่าน
+    จะเข้าใจว่าเป็นค่าเฉลี่ยของทั้งพอร์ต ทั้งที่เป็นค่าเฉลี่ยของ **หุ้นใหญ่ที่สุด** เท่านั้น
+    """
+    st.markdown("**อัตราส่วนพื้นฐานของของที่ถือจริง**")
+    try:
+        summary = weighted_ratios(result)
+    except ValueError as exc:
+        st.caption(f"ยังคิดอัตราส่วนไม่ได้: {exc}")
+        return
+
+    rows = []
+    for item in summary["ratios"].values():
+        value = item["value"]
+        if value is None:
+            shown = "คำนวณไม่ได้"
+        elif item["label"] in {"ROE", "Profit margin"}:
+            shown = f"{value:.2f}%"
+        else:
+            shown = f"{value:.2f}"
+        dropped = []
+        if item["missing"]:
+            dropped.append(f"ไม่มีข้อมูล: {', '.join(item['missing'])}")
+        if item["not_meaningful"]:
+            dropped.append(f"ค่าใช้ไม่ได้: {', '.join(item['not_meaningful'])}")
+        rows.append(
+            {
+                "อัตราส่วน": item["label"],
+                "ค่า": shown,
+                "วิธีรวม": "ฮาร์มอนิก" if item["method"] == "harmonic" else "เลขคณิต",
+                "ตัวหารที่ใช้ (% พอร์ต)": item["weight_pct"],
+                "ตัดออก": " · ".join(dropped) or "—",
+            }
+        )
+    st.dataframe(
+        pd.DataFrame(rows).style.format({"ตัวหารที่ใช้ (% พอร์ต)": "{:.2f}%"}),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption(summary["notes"])
 
 
 def _render_overlap_section() -> None:
