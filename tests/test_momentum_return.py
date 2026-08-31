@@ -36,6 +36,13 @@ from analysis.returns import RETURN_WINDOWS, calculate_period_returns  # noqa: E
 _BARS_1M = RETURN_WINDOWS["1M"]
 _BARS_3M = RETURN_WINDOWS["3M"]
 
+#: เพดานของมิติที่คำนวณจากราคาได้ **เสมอ** จึงไม่มีสถานะ "ตัดออก" — ส่วนของ
+#: ``max_score`` ที่ไม่เกี่ยวกับโมเมนตัมเลย เขียนรวมไว้ที่เดียวเพื่อให้เทสต์ในไฟล์นี้
+#: พูดถึงเฉพาะ "โควตาโมเมนตัมอยู่หรือหายไป" ซึ่งเป็นประเด็นของ FIX_PLAN 1.5
+#: (มิติ optional อย่าง Dividend/Valuation/RelStrength/Expense ไม่ถูกนับ เพราะซีรีส์
+#: ทดสอบในไฟล์นี้ไม่มีข้อมูลของมัน — ทั้งหมดถูกตัดออกจากเพดานตาม C1 อยู่แล้ว)
+_ALWAYS_ON_MAX = fm.TREND_MAX + fm.TIMING_MAX + fm.VOLATILITY_MAX
+
 
 def _series(values: list[float]) -> pd.Series:
     idx = pd.date_range("2023-01-02", periods=len(values), freq="B")
@@ -121,7 +128,8 @@ class TestScoreFromPricesUsesRealReturn:
         assert result["return_3m_pct"] == pytest.approx(0.0, abs=1e-6)
         assert result["momentum_score"] == 0
         assert result["momentum_available"] is True
-        assert result["max_score"] == fm.TREND_MAX + fm.TIMING_MAX + fm.MOMENTUM_MAX
+        assert result["momentum_max"] == fm.MOMENTUM_MAX
+        assert result["max_score"] == _ALWAYS_ON_MAX + fm.MOMENTUM_MAX
 
     def test_steady_growth_reports_compound_return(self):
         result = fm.score_from_prices("TEST", _steady_growth_series(), div_yield=None)
@@ -398,8 +406,11 @@ class TestMomentumMissingIsNotZero:
         assert result["momentum_max"] == 0
         assert result["return_1m_pct"] is None and result["return_3m_pct"] is None
         # เพดานไม่มีโควตาโมเมนตัม และคะแนนรวมไม่ถูกบวก 0 เข้ามาแบบเงียบ ๆ
-        assert result["max_score"] == fm.TREND_MAX + fm.TIMING_MAX
-        assert result["total_score"] == result["trend_score"] + result["timing_score"]
+        assert result["max_score"] == _ALWAYS_ON_MAX
+        assert (
+            result["total_score"]
+            == result["trend_score"] + result["timing_score"] + result["volatility_score"]
+        )
         assert result["total_pct"] == round(
             result["total_score"] * 100.0 / result["max_score"], 1
         )
@@ -409,4 +420,4 @@ class TestMomentumMissingIsNotZero:
         result = fm.score_from_prices("TEST", _round_trip_series(), div_yield=None)
         assert result["momentum_score"] == 0
         assert result["momentum_available"] is True
-        assert result["max_score"] == fm.TREND_MAX + fm.TIMING_MAX + fm.MOMENTUM_MAX
+        assert result["max_score"] == _ALWAYS_ON_MAX + fm.MOMENTUM_MAX

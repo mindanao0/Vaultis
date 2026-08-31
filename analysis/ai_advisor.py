@@ -21,6 +21,7 @@ from alerts.notifier import send_discord_webhook
 from analysis.llm import LLMDisabledError, chat_text
 from analysis.ta_compat import ta
 from data.fetcher import fetch_adjusted_close_data
+from db.sentiment_models import get_latest_sentiment_summaries
 from utils.config import get_tickers, load_config
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -28,6 +29,11 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 # โหลด .env **ครั้งเดียวตอน import** — env ของโปรเซสคือแหล่งความจริงตอนรัน
 # ไฟล์เป็นแค่ค่าเริ่มต้นตอนบูต (เดิมเรียกซ้ำในทุกฟังก์ชัน ทำให้ unset ตัวแปรไม่มีผล)
 load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
+
+# ระดับ sentiment ที่ถือว่า "ลบรุนแรง" พอจะเตือนผู้ใช้ — เป็นบริบทเสริมเท่านั้น
+# (ห้ามใช้ปรับคะแนน/allocation ที่ financial_model คำนวณแล้ว — invariant ของระบบ)
+SENTIMENT_WARNING_SCORE = -0.4
+SENTIMENT_WARNING_MIN_ARTICLES = 3
 
 VAULTIS_ADVISOR_SYSTEM_PROMPT = """
 You are Vaultis AI, a long-term ETF investment advisor for Thai retail investors.
@@ -43,12 +49,15 @@ You are Vaultis AI, a long-term ETF investment advisor for Thai retail investors
 **💰 แผน DCA เดือนนี้** — อธิบายแผนจัดสรรใน "แผนจัดสรรที่คำนวณแล้ว" (ยกตัวเลขตามนั้นเป๊ะ ๆ)
   อธิบายด้วยว่าทำไมบางตัวได้มากกว่า/น้อยกว่าสัดส่วนเป้าหมาย (ดูคอลัมน์ตัวคูณ)
   และย้ำว่าทุกตัวยังได้ซื้อทุกเดือนเพื่อรักษาการกระจายความเสี่ยง
-**⚠️ ความเสี่ยงที่ควรระวัง** — 1-2 ข้อ
+**⚠️ ความเสี่ยงที่ควรระวัง** — 1-2 ข้อ (รวม sentiment warning ถ้ามี)
 
 Rules:
 - ใช้ "สัญญาณชี้ว่า…" ไม่ใช่ "แนะนำให้ซื้อ"
 - ห้ามรับประกันผลตอบแทน
 - ถ้า vix_warning = true ให้ขึ้นต้นด้วยคำเตือนความผันผวนสูงก่อนเสมอ
+- ถ้ามี "Sentiment warnings" ระบุ ETF ตัวใด ให้เพิ่มเป็นคำเตือนบริบทใน "ความเสี่ยงที่ควรระวัง"
+  เท่านั้น (เช่น "ข่าวรอบล่าสุดของ X เป็นลบเด่นชัด") — ห้ามใช้ปรับคะแนน สัดส่วน หรือคำแนะนำซื้อ/ขาย
+  ที่คำนวณมาแล้วเด็ดขาด เพราะ sentiment เป็นบริบทประกอบเท่านั้น
 """.strip()
 
 
@@ -60,12 +69,39 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def _sentiment_warnings(tickers: list[str]) -> list[dict[str, Any]]:
+    """คืนรายชื่อ ETF ที่ sentiment ล่าสุด "ลบรุนแรง" — บริบทเสริมเท่านั้น (ไม่เข้าเลขคะแนน/allocation).
+
+    คืน ``[]`` เงียบ ๆ เมื่อไม่ได้ตั้ง DATABASE_URL หรือดึงไม่ได้ — เหมือนนโยบาย sentiment job เดิม
+    (ไม่ใช่ข้อผิดพลาดที่ต้อง fail advisor)
+    """
+    summaries = get_latest_sentiment_summaries(tickers)
+    if not summaries:
+        return []
+    warnings: list[dict[str, Any]] = []
+    for item in summaries:
+        score = item.get("score")
+        articles = item.get("total_articles") or 0
+        if score is None or articles < SENTIMENT_WARNING_MIN_ARTICLES:
+            continue
+        if float(score) <= SENTIMENT_WARNING_SCORE:
+            warnings.append(
+                {
+                    "ticker": item.get("symbol"),
+                    "score": float(score),
+                    "total_articles": int(articles),
+                }
+            )
+    return warnings
+
+
 def _build_user_message(
     etf_scores: list[dict[str, Any]],
     macro: dict[str, Any],
     portfolio: dict[str, Any] | None,
     allocation: dict[str, dict[str, Any]] | None = None,
     unallocated_thb: float | None = None,
+    sentiment_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     """รวม etf_scores + allocation + macro (+ portfolio) เป็นข้อความ plain text ให้ LLM อธิบาย."""
     lines: list[str] = []
@@ -118,6 +154,17 @@ def _build_user_message(
         lines.append("(ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร — อธิบายให้ผู้ใช้ทราบว่าดึงข้อมูลไม่ได้)")
 
     lines.append("")
+    lines.append("=== Sentiment warnings (บริบทเสริม — ห้ามใช้ปรับคะแนน/allocation) ===")
+    if sentiment_warnings:
+        for item in sentiment_warnings:
+            lines.append(
+                f"{item.get('ticker')}\tscore {item.get('score'):+.2f}\t"
+                f"{item.get('total_articles')} ข่าว\t(ลบรุนแรง)"
+            )
+    else:
+        lines.append("(ไม่มี ETF ที่ sentiment ลบรุนแรง หรือไม่มีข้อมูล sentiment)")
+
+    lines.append("")
     lines.append("=== Macro ===")
     macro_order = ["fed_rate", "vix", "dxy", "vix_warning", "monthly_dca_budget_thb"]
     seen_macro: set[str] = set()
@@ -145,12 +192,15 @@ def get_ai_advice(
     allocation: dict[str, dict[str, Any]] | None = None,
     unallocated_thb: float | None = None,
     user_initiated: bool = False,
+    sentiment_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     """ให้ LLM อธิบายคะแนน/แผนจัดสรรที่คำนวณแล้ว; คืนข้อความคำอธิบาย.
 
     ``user_initiated=True`` เฉพาะเมื่อผู้ใช้กดปุ่มเอง — ไม่งั้นจะ raise LLMDisabledError
     """
-    user_content = _build_user_message(etf_scores, macro, portfolio, allocation, unallocated_thb)
+    user_content = _build_user_message(
+        etf_scores, macro, portfolio, allocation, unallocated_thb, sentiment_warnings
+    )
     text = chat_text(
         VAULTIS_ADVISOR_SYSTEM_PROMPT,
         user_content,
@@ -275,6 +325,7 @@ def _allocation_summary_lines(
     budget_thb: float,
     unallocated_thb: float,
     no_data_tickers: list[str],
+    sentiment_warnings: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """สร้างข้อความสรุปแผนจัดสรรจากตัวเลขที่คำนวณแล้ว (ใช้ใน Discord — ไม่พึ่งข้อความ AI)."""
     lines = [f"📋 แผนจัดสรรจากโมเดล (งบ {budget_thb:,.0f} บาท):"]
@@ -291,6 +342,9 @@ def _allocation_summary_lines(
         lines.append("• ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร (ดึงข้อมูลไม่ได้)")
     if no_data_tickers:
         lines.append(f"⚠️ ข้อมูลไม่พร้อม (ไม่ถูกนำมาคิด): {', '.join(no_data_tickers)}")
+    if sentiment_warnings:
+        tickers_txt = ", ".join(f"{w['ticker']} ({w['score']:+.2f})" for w in sentiment_warnings)
+        lines.append(f"🗞️ Sentiment ลบรุนแรง (บริบทเท่านั้น ไม่กระทบสัดส่วนข้างบน): {tickers_txt}")
     return lines
 
 
@@ -326,6 +380,7 @@ def get_monthly_advice(
         allocated_total = sum(item.get("amount_thb", 0) for item in allocation.values())
         unallocated_thb = max(0.0, float(budget_thb) - float(allocated_total))
         no_data_tickers = [r["ticker"] for r in etf_scores if not r.get("data_ok", True)]
+        sentiment_warnings = _sentiment_warnings(list(advisor_tickers))
 
         # --- สแนปช็อตพอร์ต: ส่งเฉพาะแถวที่ราคาปัจจุบันดึงได้จริง + ระบุตัวที่ขาด ---
         holdings_df = get_portfolio_summary()
@@ -352,6 +407,7 @@ def get_monthly_advice(
                 allocation=allocation,
                 unallocated_thb=unallocated_thb,
                 user_initiated=user_initiated,
+                sentiment_warnings=sentiment_warnings,
             )
             ai_used = True
         except LLMDisabledError as exc:
@@ -374,7 +430,7 @@ def get_monthly_advice(
         discord_result: dict[str, Any] = {"success": False, "skipped": True}
         if webhook_url and send_discord:
             summary_lines = _allocation_summary_lines(
-                allocation, float(budget_thb), unallocated_thb, no_data_tickers
+                allocation, float(budget_thb), unallocated_thb, no_data_tickers, sentiment_warnings
             )
             description = "\n".join(summary_lines) + "\n\n" + advice_text
             discord_result = send_discord_webhook(
@@ -391,6 +447,7 @@ def get_monthly_advice(
             "allocation": allocation,
             "unallocated_thb": unallocated_thb,
             "no_data_tickers": no_data_tickers,
+            "sentiment_warnings": sentiment_warnings,
             "macro": macro,
             "advice_text": advice_text,
             # False = "ไม่ได้ใช้คำอธิบายจาก AI ในรอบนี้" ไม่ใช่ "ไม่มีค่าใช้จ่าย":

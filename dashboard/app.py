@@ -47,11 +47,15 @@ from analysis.financial_model import (
     EXCLUDED_NO_DATA,
     EXCLUDED_ROUNDED_TO_ZERO,
     EXCLUDED_ZERO_TARGET,
+    EXPENSE_MAX,
     MOMENTUM_MAX,
+    RELATIVE_STRENGTH_MAX,
     TILT_MAX,
     TILT_MIN,
     TIMING_MAX,
     TREND_MAX,
+    VALUATION_MAX,
+    VOLATILITY_MAX,
     AllocationPlan,
     _dividend_yield,
     build_etf_scores,
@@ -2259,6 +2263,10 @@ def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
                     "Timing": None,
                     "Momentum": None,
                     "Dividend": None,
+                    "Volatility": None,
+                    "Valuation": None,
+                    "RelStrength": None,
+                    "Expense": None,
                     "RSI": None,
                     "Signal": "NO DATA",
                     "Current (USD)": None,
@@ -2280,6 +2288,10 @@ def _full_analysis_score_dcf_df(full_analysis: dict | None) -> pd.DataFrame:
                 # โมเมนตัมที่คำนวณไม่ได้ = N/A ไม่ใช่ 0 (0 อ่านว่า "ราคาไม่ขึ้น" ซึ่งคนละเรื่อง)
                 "Momentum": _momentum_points(payload),
                 "Dividend": int(payload.get("dividend_score", 0) or 0),
+                "Volatility": int(payload.get("volatility_score", 0) or 0),
+                "Valuation": int(payload.get("valuation_score", 0) or 0),
+                "RelStrength": int(payload.get("relative_strength_score", 0) or 0),
+                "Expense": int(payload.get("expense_score", 0) or 0),
                 "RSI": float(payload.get("rsi", 0) or 0),
                 "Signal": str(payload.get("signal", "")),
                 "Current (USD)": float(dcf.get("current_price") or 0) if dcf_ok else None,
@@ -2370,8 +2382,9 @@ def render_dcf_analysis_page() -> None:
 
     st.subheader("Score Breakdown (คะแนนเดียวกับที่ AI Advisor ใช้)")
     # waterfall แทน flat bar (Roadmap "ของแถม" ข้อสุดท้าย) — เห็นการสะสมทีละองค์ประกอบจนถึงคะแนนรวม
-    # หมวดที่คำนวณไม่ได้ (โมเมนตัม/ปันผล) ถูก **ตัดออกจากกราฟและจากคะแนนเต็ม**
-    # ไม่ใช่วาดเป็นแท่ง 0 ซึ่งอ่านว่า "ได้ 0 คะแนน" ทั้งที่ความจริงคือไม่มีข้อมูล (C1)
+    # หมวดที่คำนวณไม่ได้ (โมเมนตัม/ปันผล/Valuation/RelStrength/Expense) ถูก **ตัดออกจากกราฟ
+    # และจากคะแนนเต็ม** ไม่ใช่วาดเป็นแท่ง 0 ซึ่งอ่านว่า "ได้ 0 คะแนน" ทั้งที่ความจริงคือ
+    # ไม่มีข้อมูล (C1) — ตรงกับที่ ``score_from_prices`` หด ``max_score`` ให้เองแล้ว
     momentum_ok = _momentum_available(selected_raw)
     dividend_ok = bool(selected_raw.get("dividend_available", True))
     components: list[tuple[str, float]] = [
@@ -2389,6 +2402,18 @@ def render_dcf_analysis_page() -> None:
         components.append((f"Dividend (เต็ม {DIVIDEND_MAX})", float(selected_row["Dividend"])))
     else:
         excluded.append("Dividend")
+    # Volatility คำนวณจาก closes ได้เสมอ (ราคา >= 200 แถวเป็นเงื่อนไขของคะแนนอยู่แล้ว)
+    # จึงไม่มีสถานะ "ตัดออก" ต่างจากอีกสามมิติที่ตามมา
+    components.append((f"Volatility (เต็ม {VOLATILITY_MAX})", float(selected_row["Volatility"])))
+    for label, max_points, available_key in (
+        ("Valuation", VALUATION_MAX, "valuation_available"),
+        ("RelStrength", RELATIVE_STRENGTH_MAX, "relative_strength_available"),
+        ("Expense", EXPENSE_MAX, "expense_available"),
+    ):
+        if bool(selected_raw.get(available_key)):
+            components.append((f"{label} (เต็ม {max_points})", float(selected_row[label])))
+        else:
+            excluded.append(label)
     component_labels = [label for label, _ in components]
     component_values = [value for _, value in components]
     waterfall_fig = go.Figure(
@@ -2443,7 +2468,17 @@ def render_dcf_analysis_page() -> None:
         )
 
     st.subheader("Heatmap Score (All ETFs)")
-    heat_cols = ["Score %", "Trend", "Timing", "Momentum", "Dividend"]
+    heat_cols = [
+        "Score %",
+        "Trend",
+        "Timing",
+        "Momentum",
+        "Dividend",
+        "Volatility",
+        "Valuation",
+        "RelStrength",
+        "Expense",
+    ]
     heatmap_df = score_df.set_index("Ticker")[heat_cols].astype(float)
     heatmap_fig = px.imshow(
         heatmap_df,
@@ -4486,12 +4521,16 @@ THAI_MONTHS = [
     "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม",
 ]
 
-# สี 4 องค์ประกอบคะแนน (โทน GitHub dark เดียวกับ THEME)
+# สี 8 องค์ประกอบคะแนน (โทน GitHub dark เดียวกับ THEME)
 _SCORE_PARTS = [
     ("Trend", "trend_score", TREND_MAX, THEME["accent"]),
     ("Timing", "timing_score", TIMING_MAX, "#A371F7"),
     ("Momentum", "momentum_score", MOMENTUM_MAX, "#D29922"),
     ("Dividend", "dividend_score", DIVIDEND_MAX, THEME["text_secondary"]),
+    ("Volatility", "volatility_score", VOLATILITY_MAX, THEME["negative"]),
+    ("Valuation", "valuation_score", VALUATION_MAX, THEME["positive"]),
+    ("RelStrength", "relative_strength_score", RELATIVE_STRENGTH_MAX, "#39C5CF"),
+    ("Expense", "expense_score", EXPENSE_MAX, "#DB6D28"),
 ]
 
 
@@ -4636,8 +4675,19 @@ def _render_verdict_cards(allocation: dict, budget_thb: float) -> None:
 
 def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
     """audit trail "ทำไมได้เท่านี้" (Roadmap ข้อ 9) — โชว์เลขที่โมเดลคืนมาทุกชั้น ไม่คำนวณใหม่."""
-    dividend_max_text = str(DIVIDEND_MAX) if row.get("dividend_available") else "ตัดออก (ไม่มีข้อมูลปันผล)"
-    # ตัวหารต้องเป็นเพดานจริงของแถวนี้ (ข้อ 1.5) — ค่าคงที่ 20 จะโกหกเมื่อหน้าต่างถูกตัดออก
+    def _max_text(available: bool, max_value: int, reason: str) -> str:
+        return str(max_value) if available else f"ตัดออก ({reason})"
+
+    dividend_max_text = _max_text(bool(row.get("dividend_available")), DIVIDEND_MAX, "ไม่มีข้อมูลปันผล")
+    valuation_max_text = _max_text(
+        bool(row.get("valuation_available")), VALUATION_MAX, "ข้อมูลราคาน้อยกว่า ~2 ปี"
+    )
+    rs_max_text = _max_text(
+        bool(row.get("relative_strength_available")), RELATIVE_STRENGTH_MAX, "ไม่มี benchmark เทียบ"
+    )
+    expense_max_text = _max_text(bool(row.get("expense_available")), EXPENSE_MAX, "ไม่มีข้อมูลค่าธรรมเนียม")
+    # ตัวหารของโมเมนตัมต้องเป็นเพดานจริงของแถวนี้ (ข้อ 1.5) — ค่าคงที่ MOMENTUM_MAX จะโกหก
+    # เมื่อหน้าต่าง 1M/3M หน้าใดหน้าหนึ่งคำนวณไม่ได้แล้วถูกตัดออกจากทั้งคะแนนและเพดาน
     momentum_points = _momentum_points(row)
     momentum_text = (
         f"{momentum_points}/{_momentum_max(row)}"
@@ -4647,7 +4697,11 @@ def _render_score_audit_trail(row: dict, alloc_item: dict | None) -> None:
     st.markdown(
         f"**ชั้น 1 — คะแนนดิบ** (จาก `score_from_prices`)  \n"
         f"Trend {row.get('trend_score')}/{TREND_MAX} · Timing {row.get('timing_score')}/{TIMING_MAX} · "
-        f"Momentum {momentum_text} · Dividend {row.get('dividend_score')}/{dividend_max_text}  \n"
+        f"Momentum {momentum_text} · Dividend {row.get('dividend_score')}/{dividend_max_text} · "
+        f"Volatility {row.get('volatility_score')}/{VOLATILITY_MAX} · "
+        f"Valuation {row.get('valuation_score')}/{valuation_max_text} · "
+        f"RelStrength {row.get('relative_strength_score')}/{rs_max_text} · "
+        f"Expense {row.get('expense_score')}/{expense_max_text}  \n"
         f"รวม {row.get('total_score')}/{row.get('max_score')} = **{float(row.get('total_pct') or 0):.1f}%**"
     )
     if alloc_item:
@@ -5063,7 +5117,7 @@ def render_scorecard_page() -> None:
 
     _render_drift_advisory()
 
-    # --- stacked bar: คะแนนรวมแยก 4 องค์ประกอบ ---
+    # --- stacked bar: คะแนนรวมแยก 8 องค์ประกอบ ---
     st.subheader("คะแนน 0-100 แยกองค์ประกอบ")
     ranked = sorted(ok_rows, key=lambda r: float(r.get("total_pct") or 0), reverse=True)
     bar_fig = go.Figure()
