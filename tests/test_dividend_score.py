@@ -96,7 +96,9 @@ class TestScoreExcludesDividendWhenUnavailable:
         with_div = fm.score_from_prices("TEST", closes, div_yield=0.033)
         without = fm.score_from_prices("TEST", closes, div_yield=None)
 
-        assert with_div["max_score"] == 100
-        assert without["max_score"] == 90
+        # 90 (Trend+Timing+Momentum) + 10 (Volatility เสมอ) + 10 (Dividend ถ้ามี) — ดู
+        # test_new_score_dimensions.py สำหรับมิติ Valuation/RelStrength/Expense ที่เพิ่มมาใหม่
+        assert with_div["max_score"] == 110
+        assert without["max_score"] == 100
         assert without["dividend_score"] == 0
         assert without["dividend_available"] is False
