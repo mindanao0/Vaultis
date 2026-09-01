@@ -402,11 +402,53 @@ GLDM    -0.11  +0.13  +0.31  +0.30
 
 ---
 
-## รายการที่ยัง **ไม่ผ่านการตรวจซ้ำ** (19 ข้อ — ต้องยืนยันก่อนแก้)
+## รายการที่เคย "ไม่ผ่านการตรวจซ้ำ" — **ตรวจครบแล้ว 2026-09-01**
 
-ตอนตรวจจำกัดการตรวจซ้ำไว้ 4 ข้อรุนแรงที่สุดต่อรอบ ข้างล่างนี้จึงเป็น "อ้างว่าเจอ" ยังไม่ผ่านด่านหักล้าง — **ห้ามแก้ก่อนพิสูจน์ซ้ำ** เพราะจากสถิติของรอบนี้ ~49% ของข้ออ้างถูกหักล้างทิ้ง
+รายการ 19 ข้อชุดนี้ถูกเขียนไว้ตอนตรวจ (2026-08-02) เป็น "อ้างว่าเจอ" ที่ยังไม่ผ่านด่าน
+หักล้าง แล้ว **ไม่มีใครกลับมาขีดออกระหว่างทำเฟส 1–5** ผลคือรายการค้างอยู่ 1 เดือน
+โดยที่ 18 ใน 19 ข้อถูกแก้ไปแล้วในระหว่างนั้น — ใครหยิบไปทำต่อจะเสียเวลาไล่แก้ของที่
+แก้แล้ว **บทเรียน: คิวงานที่ไม่ถูกล้างหลังปิดเฟส มีค่าเท่ากับคิวที่ผิด**
 
-`ta_compat.py:59` RSI 2 ชุดต่างกันสูงสุด 21.16 จุด · `tests/test_money_math.py:240` เทสต์ warm-up สั้นไป 1 index · `screener/engine.py:74` โบนัส +1.0 เมื่อ RSI>65 ในพรีเซ็ตฝั่งซื้อ · `utils/fx.py:76` แคช fallback 1 ชม. + ทิ้ง `is_live` · `tracker.py:490` ตัวหารไม่ตรงกันเมื่อราคาบางตัวหาย · `benchmark.py:41` guard `or 0.0` ดัก NaN ไม่ได้ · `targets.py:43` weight ที่ผู้ใช้ตั้งเองถูกบิด (ตั้ง 0 ไม่มีผล) · `cashflow_rebalance.py:63` เศษ <100 บาทหาย · `financial_model.py:444` งบ 1-99 บาทคืนแผนว่างเงียบ · `goal_service.py:173` arithmetic mean ใช้เป็นอัตราทบต้น · `backtest_engine.py:120,154` กลืน exception + กลยุทธ์ที่ไม่เคยเทรดถูกรายงานว่าชนะ · `ab_backtest.py:307` แขน benchmark ซื้อคนละวัน · `sentiment_analyzer.py:84,144` batch ที่ล้มหายเงียบ + ทุกแหล่งพังอ่านเป็น no news · `price_alert.py:280` นับ alert ที่ดึงราคาไม่ได้รวมใน checked · `routers/analysis.py:45` DCF ticker ไม่มีจริง → 500
+ไล่เช็คทุกข้อกับโค้ดปัจจุบันแล้ว (2026-09-01) — สรุป **แก้แล้ว 18 · ยังจริง 1**
+
+| ข้ออ้างเดิม | สถานะ | หลักฐานในโค้ดวันนี้ |
+|---|---|---|
+| `ta_compat.py:59` RSI 2 ชุดต่างกัน 21.16 จุด | ✅ แก้แล้ว | `_TaWrapper.rsi` และ fallback เรียก `_rsi_fallback` ตัวเดียวกัน (D3.8) |
+| `tests/test_money_math.py:240` เทสต์ warm-up สั้นไป 1 index | ✅ แก้แล้ว | `rsi.iloc[:14]` + `first_valid_index() == index[14]` พร้อมคอมเมนต์อธิบายขอบเขตเดิม |
+| `screener/engine.py:74` โบนัส +1.0 เมื่อ RSI>65 ฝั่งซื้อ | ✅ แก้แล้ว | `_compute_signal_strength` ดู `preset.direction` และใช้ `signal_rules.RSI_OVERSOLD/OVERBOUGHT` (B6.3) |
+| `utils/fx.py:76` แคช fallback 1 ชม. | ✅ แก้แล้ว | `FALLBACK_CACHE_TTL_SEC = 60` แยกจาก `CACHE_TTL_SEC` |
+| `utils/fx.py:76` ทิ้ง `is_live` | ✅ แก้แล้ว | `FxRate.is_live` ถูกเก็บใน `_cached` และคืนออกทุกเส้นทาง |
+| `tracker.py:490` ตัวหารไม่ตรงกันเมื่อราคาบางตัวหาย | ✅ แก้แล้ว | แยก `invested_thb_all` / `invested_thb_priced` (H9) |
+| `benchmark.py:41` guard `or 0.0` ดัก NaN ไม่ได้ | ✅ แก้แล้ว | เหลือแต่คอมเมนต์ห้ามใช้สำนวนนั้น (`bool(nan) is True`) |
+| `targets.py:43` ตั้ง weight = 0 เองแล้วไม่มีผล | ✅ แก้แล้ว | "มีคีย์ = ตั้งแล้ว" `{"GLDM": 0}` = ไม่ถือ (B10) |
+| `cashflow_rebalance.py:63` เศษ <100 บาทหาย | ✅ แก้แล้ว | largest-remainder + `unallocated_thb` ที่ผู้เรียกต้องแสดง |
+| `financial_model.py:444` งบ 1-99 บาทคืนแผนว่างเงียบ | ✅ แก้แล้ว | `raise ValueError` เมื่อ `budget_thb < ALLOCATION_UNIT_THB` (D3.10) |
+| `goal_service.py:173` arithmetic mean ใช้เป็นอัตราทบต้น | ✅ แก้แล้ว | `mu_geometric` + `monthly_compound_rate()` |
+| `backtest_engine.py:120` กลืน exception | ✅ แก้แล้ว | ไม่จับ `except Exception` แล้ว — บั๊กจริงต้องดังถึงผู้เรียก (B3.2) |
+| `backtest_engine.py:154` กลยุทธ์ที่ไม่เคยเทรดถูกรายงานว่าชนะ | ✅ แก้แล้ว | `num_trades > 0` เป็นเงื่อนไขก่อนคิดตัวชี้วัด (B3.2) |
+| `ab_backtest.py:307` แขน benchmark ซื้อคนละวัน | ✅ แก้แล้ว | แขน VOO ใช้ `arm_rows` ชุดเดียวกับอีกสองแขน พร้อมคอมเมนต์อธิบายเหตุ |
+| `sentiment_analyzer.py:84` batch ที่ล้มหายเงียบ | ✅ แก้แล้ว | `failed_batches` ไหลเข้า `aggregate_sentiment()` และขึ้นในโน้ต coverage |
+| `sentiment_analyzer.py:144` ทุกแหล่งพังอ่านเป็น no news | ✅ แก้แล้ว | `_process_symbol` แยก `all_news_sources_failed` / `has_error` ออกจาก "ไม่มีข่าว" |
+| `price_alert.py:280` นับ alert ที่ดึงราคาไม่ได้รวมใน checked | ✅ แก้แล้ว | `checked += 1` อยู่หลังด่าน `unchecked.append(...) + continue` ทุกด่าน |
+| `routers/analysis.py:45` DCF ticker ไม่มีจริง → 500 | 🔴 **ยังจริง** | ดูข้างล่าง |
+
+### ข้อเดียวที่ยังจริง — `/api/analysis/dcf/{ticker}` กับ ticker ที่ไม่มีอยู่
+
+วัดจริง 2026-09-01 ในคอนเทนเนอร์:
+
+```
+ZZZZNOTREAL  -> HTTPError: HTTP Error 404   (route ไม่ได้ดัก ⇒ HTTP 500)
+GLDM         -> ValueError ⇒ HTTP 422       (ถูกต้องแล้ว)
+```
+
+`get_dcf_for_ticker` ดักเฉพาะ `ValueError` แต่ ticker ที่ไม่มีอยู่ทำให้ yfinance โยน
+`urllib.error.HTTPError` ทะลุออกไป ⇒ **อินพุตผิดของผู้เรียกถูกรายงานเป็น "เซิร์ฟเวอร์พัง"**
+ซึ่งชี้ผู้ใช้ไปผิดที่ (บั๊กชนิดเดียวกับที่ `7b73827` แก้ไว้ให้ route อื่นแล้ว แต่ตัวนี้ตกสำรวจ)
+GLDM ที่คืน 422 พร้อมเหตุผลไทยคือพฤติกรรมที่ถูก และต้องไม่ถูกทำให้เปลี่ยนไปตอนแก้ข้อนี้
+
+แก้ที่ `backend/routers/analysis.py` — เพิ่มการดักให้ครอบข้อผิดพลาดฝั่งเครือข่าย/ผู้ให้ข้อมูล
+แล้วแยกให้ชัดว่า "ticker นี้ไม่มีอยู่" (404) ต่างจาก "ผู้ให้ข้อมูลล่มชั่วคราว" (503)
+— ห้ามยุบเป็นข้อความเดียว เพราะผู้ใช้แก้ได้เองแค่กรณีแรก
 
 ## ยังไม่มีใครตรวจเลย (คิวถัดไปหลังจบแผนนี้)
 
