@@ -65,6 +65,44 @@ def _rsi_fallback(series: pd.Series, length: int = 14) -> pd.Series:
     return rsi.astype(float)
 
 
+def _true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    """True Range รายแท่ง = ``max(H−L, |H−C_prev|, |L−C_prev|)``.
+
+    **สองพจน์ที่อ้างอิงราคาปิดของแท่งก่อนเป็นหัวใจของนิยาม ไม่ใช่ของแถม** — ถ้าตัดออก
+    เหลือ ``H−L`` เฉย ๆ ช่วงที่ราคา **เปิดกระโดด** (gap) จะถูกวัดว่าผันผวนต่ำ ทั้งที่วันนั้น
+    คือวันที่ราคาขยับมากที่สุด: หุ้นปิด 100 แล้ววันรุ่งขึ้นเปิด-ปิดที่ 90 ทรงตัวทั้งวัน
+    ได้ ``H−L`` เกือบศูนย์ แต่ TR จริงคือ 10
+
+    แท่งแรกไม่มี ``C_prev`` → ``NaN`` (ไม่ใช่ ``H−L`` ซึ่งเป็นการเดาว่าไม่มี gap)
+    """
+    high_n = pd.to_numeric(high, errors="coerce")
+    low_n = pd.to_numeric(low, errors="coerce")
+    prev_close = pd.to_numeric(close, errors="coerce").shift(1)
+    ranges = pd.concat(
+        [high_n - low_n, (high_n - prev_close).abs(), (low_n - prev_close).abs()],
+        axis=1,
+    )
+    # skipna=False: แถวที่มีช่องว่าง (เช่นแท่งแรกที่ยังไม่มี prev_close) ต้องเป็น NaN
+    # ไม่ใช่หยิบพจน์ที่เหลือมาเป็นคำตอบ ซึ่งเท่ากับเดาว่าไม่มี gap (C1)
+    return ranges.max(axis=1, skipna=False)
+
+
+def _atr_frame(
+    high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14
+) -> pd.Series:
+    """Average True Range (Wilder smoothing) — ช่วง warmup เป็น ``NaN`` ห้าม fill.
+
+    ใช้ ``ewm(alpha=1/length)`` สำนวนเดียวกับ :func:`_rsi_fallback` เพราะเป็นการ smooth
+    แบบ Wilder ตัวเดียวกัน (ไม่ใช่ EMA มาตรฐานที่ ``alpha = 2/(n+1)``) — เขียนสองสำนวน
+    ในไฟล์เดียวกันแล้วมันจะ drift ออกจากกันเหมือนที่ RSI เคยเป็น (AUDIT_2026-08-06 D3.8)
+
+    ``min_periods=length`` ทำให้ต้องมี TR ครบ ``length`` แท่งก่อน ⇒ ซีรีส์สั้นได้ ``NaN``
+    ทั้งเส้น ซึ่งเป็นคำตอบที่ถูก ("คำนวณไม่ได้") ผู้เรียกต้องแปลงเป็น "ไม่มีข้อมูล" เอง
+    """
+    tr = _true_range(high, low, close)
+    return tr.ewm(alpha=1 / length, min_periods=length, adjust=False).mean().astype(float)
+
+
 class _FallbackIndicatorAPI:
     """Fallback implementation (pandas ล้วน) เมื่อไม่มี library `ta`."""
 
@@ -86,6 +124,12 @@ class _FallbackIndicatorAPI:
     def bbands(series: pd.Series, length: int = 20, std: float = 2.0) -> pd.DataFrame:
         return _bbands_frame(series, length=length, std=std)
 
+    @staticmethod
+    def atr(
+        high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14
+    ) -> pd.Series:
+        return _atr_frame(high, low, close, length=length)
+
 
 try:
     import ta as ta_lib  # type: ignore
@@ -99,7 +143,12 @@ try:
 
         @staticmethod
         def rsi(series: pd.Series, length: int = 14) -> pd.Series:
-            return ta_lib.momentum.RSIIndicator(close=series, window=length, fillna=False).rsi()
+            # ใช้สูตร pandas ล้วนตัวเดียวกับ fallback ด้วยเหตุผลเดียวกับ MACD/BBands
+            # เดิมเรียก ``ta_lib.momentum.RSIIndicator`` ซึ่งเริ่มคืนค่าที่แท่งที่ 14
+            # (13 การเปลี่ยนแปลง) = เร็วไปหนึ่งแท่ง ⇒ ซีรีส์ขาขึ้นล้วนได้ 100.0 ปลอม
+            # (zone=overbought) และเป็นตัวชี้วัดคนละชุดกับ fallback ในไฟล์เดียวกัน
+            # ขัดกับกฎ "นิยามมีที่เดียว" — AUDIT_2026-08-06 D3.8
+            return _rsi_fallback(series, length=length)
 
         @staticmethod
         def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
@@ -109,6 +158,15 @@ try:
         @staticmethod
         def bbands(series: pd.Series, length: int = 20, std: float = 2.0) -> pd.DataFrame:
             return _bbands_frame(series, length=length, std=std)
+
+        @staticmethod
+        def atr(
+            high: pd.Series, low: pd.Series, close: pd.Series, length: int = 14
+        ) -> pd.Series:
+            # สูตร pandas ล้วนตัวเดียวกับ fallback ด้วยเหตุผลเดียวกับ RSI/MACD/BBands:
+            # ``ta_lib`` ใช้ SMA ของ TR ในช่วงแรกแล้วค่อยสลับเป็น Wilder ⇒ ค่าต่างจาก
+            # fallback ในไฟล์เดียวกัน ซึ่งขัดกฎ "นิยามมีที่เดียว"
+            return _atr_frame(high, low, close, length=length)
 
     ta = _TaWrapper()
 except Exception:

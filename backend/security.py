@@ -4,7 +4,7 @@
 เดิม backend เปิดสาธารณะโดยไม่มี auth และ CORS = ``*`` → ใครรู้ URL ก็:
 - เพิ่ม/ลบธุรกรรมในสมุดบัญชีของเจ้าของได้
 - เผา credit ของ Anthropic ผ่าน /api/transactions/upload-slip
-- ยิง Groq/Claude ผ่าน /api/ai/*
+- ยิง Claude ผ่าน /api/ai/*
 
 นโยบายตอนนี้: ถ้าตั้ง ``VAULTIS_API_KEY`` ทุก endpoint ที่เปลี่ยนสถานะหรือเรียก LLM
 ต้องส่ง header ``X-API-Key`` ให้ตรง — endpoint อ่านอย่างเดียว (ราคา, สัญญาณ) ยังเปิดได้

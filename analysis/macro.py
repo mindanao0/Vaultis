@@ -156,11 +156,11 @@ def _yfinance_last_close(symbol: str) -> float | None:
 def get_macro_snapshot() -> dict[str, float | bool | None]:
     """สรุป macro ล่าสุดสำหรับ advisor: Fed rate, VIX, DXY และ flag ความผันผวน.
 
-    โหลด ``.env`` ด้วย python-dotenv ทุกครั้งที่เรียก ค่าตัวเลขปัดทศนิยม 2 ตำแหน่ง
+    ``.env`` ถูกโหลดครั้งเดียวตอน import โมดูลนี้ (env ของโปรเซสเป็นแหล่งความจริง
+    ตอนรัน ไฟล์เป็นแค่ค่าเริ่มต้นตอนบูต) ค่าตัวเลขปัดทศนิยม 2 ตำแหน่ง
     แหล่ง fed_rate/vix/dxy ล้มเหลวคืน ``None`` สำหรับฟิลด์นั้น (ไม่ throw)
     ``vix_warning`` เป็น True เมื่อ VIX > 25; ถ้าไม่มีค่า VIX ใช้ False
     """
-    load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)  # env จริงมาก่อนไฟล์
     fed_rate = _fred_latest_fed_funds_rate()
     vix = _yfinance_last_close("^VIX")
     dxy = _yfinance_last_close("DX-Y.NYB")

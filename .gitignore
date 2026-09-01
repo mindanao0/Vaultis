@@ -10,6 +10,15 @@ vaultis.db
 portfolio/data/transactions.csv
 
 # ข้อมูลรันไทม์ของ Docker (SQLite) — ห้าม track (AUDIT.md H1)
-.docker-data/
-# alert ส่วนตัว — ห้าม track (repo เป็น public); โค้ดสร้างไฟล์เปล่าให้เองถ้าไม่มี
+# ignore เฉพาะ "ของข้างใน" ไม่ใช่ตัวโฟลเดอร์ — ต้องเหลือ .gitkeep ไว้ให้ fresh clone
+# ไม่งั้น docker สร้างโฟลเดอร์นี้เป็นของ root แล้ว container (uid ของ host) เขียน
+# vaultis.db ไม่ได้ → backend crash-loop "unable to open database file"
+.docker-data/*
+!.docker-data/.gitkeep
+# alert ส่วนตัว — ห้าม track (repo เป็น public)
+# .bak/.lock/.tmp คือไฟล์ข้างเคียงของการบันทึกแบบ atomic ใน alerts/price_alert.py
+# (.bak มีเนื้อ alert ของผู้ใช้เต็ม ๆ — หลุดไม่ได้เท่ากับตัวไฟล์หลัก)
 alerts/data/price_alerts.json
+alerts/data/price_alerts.json.bak
+alerts/data/price_alerts.json.lock
+alerts/data/price_alerts.json.tmp.*

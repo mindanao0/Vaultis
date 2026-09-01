@@ -6,6 +6,7 @@ PRESETS = {
         name="oversold_momentum",
         description="RSI oversold + MACD bullish cross + above MA200",
         logic="AND",
+        direction="buy",
         rules=[
             ScreenerRule("rsi", "lt", 35, "RSI < 35 (oversold)"),
             ScreenerRule("macd_cross", "cross_up", None, "MACD bullish crossover"),
@@ -16,6 +17,7 @@ PRESETS = {
         name="golden_cross_alert",
         description="Golden Cross occurred in last 3 days",
         logic="AND",
+        direction="buy",
         rules=[
             ScreenerRule("golden_cross", "cross_up", 3, "Golden Cross within 3 days"),
         ],
@@ -24,6 +26,8 @@ PRESETS = {
         name="bb_breakout_watch",
         description="BB squeeze + volume spike",
         logic="AND",
+        # บีบตัวแล้วมีวอลุ่ม — แตกได้ทั้งสองทาง จึงไม่มีทิศให้บวกโบนัส
+        direction="neutral",
         rules=[
             ScreenerRule("bb_squeeze", "squeeze", None, "Bollinger Band squeeze"),
             ScreenerRule("volume_spike", "spike", 2.0, "Volume > 2x MA20"),
@@ -33,6 +37,7 @@ PRESETS = {
         name="dividend_dip",
         description="SCHD/XLV price dropped 5%+ in 10 days",
         logic="AND",
+        direction="buy",
         rules=[
             ScreenerRule("price_drop_pct", "drop_pct", 5.0, "Price dropped 5%+ in 10 days"),
         ],
@@ -41,6 +46,7 @@ PRESETS = {
         name="overbought_warning",
         description="RSI overbought + MACD bearish",
         logic="AND",
+        direction="sell",
         rules=[
             ScreenerRule("rsi", "gt", 70, "RSI > 70 (overbought)"),
             ScreenerRule("macd_cross", "cross_down", None, "MACD bearish crossover"),

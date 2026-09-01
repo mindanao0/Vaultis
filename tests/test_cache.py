@@ -5,6 +5,8 @@
 ผลลัพธ์ต้องเป็นสำเนา, key ต้องคิดจากเนื้อหา argument ไม่ใช่ identity
 """
 
+import threading
+
 import pandas as pd
 import pytest
 
@@ -102,6 +104,8 @@ def test_dataframe_key_is_content_based():
 
 
 def test_returned_value_is_a_copy():
+    """ค่าที่ได้จาก **miss** ถูกแก้ ต้องไม่สะสมเข้าคลัง (คุมสำเนาฝั่ง store)."""
+
     @cache_data_1h
     def build():
         return {"data_ok": True, "items": [1, 2]}
@@ -120,6 +124,126 @@ def test_returned_dataframe_is_a_copy():
     first = build()
     first.iloc[0, 0] = 555.0
     assert build().iloc[0, 0] == 1.0
+
+
+# --- สำเนาฝั่ง "cache hit" ---------------------------------------------------
+# เทสต์สองตัวข้างบนแก้ค่าที่ได้จาก *miss* ซึ่งเป็นค่าที่ return ตรงจากฟังก์ชัน
+# ไม่ใช่ของในคลัง → ถอด deepcopy ของเส้นทาง hit ออกก็ยังเขียว (AUDIT_ROUND2 ข้อ
+# "cache hit คืน object ตัวจริง ไม่ใช่สำเนา": mutation `return hit[0]` รอดทั้ง 1297 ตัว)
+# ชุดล่างนี้จึงแก้ค่าที่ได้จาก **hit** โดยเฉพาะ
+
+
+def test_cache_hit_returns_a_new_object_every_time():
+    compute = _counting(lambda: {"data_ok": True, "items": [1, 2]})
+    cached = cache_data_1h(compute)
+
+    first = cached()  # miss
+    second = cached()  # hit
+    third = cached()  # hit
+
+    assert len(compute.calls) == 1  # ต้องเป็น hit จริง ไม่ใช่คำนวณใหม่
+    assert second is not first
+    assert third is not second
+    assert third["items"] is not second["items"]  # ต้องลึก ไม่ใช่ shallow copy
+
+
+def test_mutating_value_from_cache_hit_does_not_poison_store():
+    """ผู้เรียกแก้ dict ที่ได้จาก cache hit → ผู้เรียกรายถัดไปต้องได้ของเดิม."""
+    compute = _counting(lambda: {"data_ok": True, "price": 500.0, "items": [1, 2]})
+    cached = cache_data_1h(compute)
+
+    cached()  # miss — คลังเก็บสำเนาของค่านี้ไว้
+    from_hit = cached()  # hit — เส้นทางที่เคยคืน object ตัวจริง
+    from_hit["price"] = -999.0
+    from_hit["items"].append(999)
+
+    again = cached()
+    assert again["price"] == 500.0  # ราคาที่ถูกแก้ต้องไม่ค้างในคลัง 1 ชม.
+    assert again["items"] == [1, 2]
+    assert len(compute.calls) == 1
+
+
+def test_dataframe_from_cache_hit_is_a_copy():
+    compute = _counting(lambda: pd.DataFrame({"a": [1.0, 2.0]}))
+    cached = cache_data_1h(compute)
+
+    cached()  # miss
+    from_hit = cached()  # hit
+    from_hit.iloc[0, 0] = 555.0
+
+    assert cached().iloc[0, 0] == 1.0
+    assert len(compute.calls) == 1
+
+
+def test_series_from_cache_hit_is_a_copy():
+    compute = _counting(lambda: pd.Series([1.0, 2.0], name="close"))
+    cached = cache_data_1h(compute)
+
+    cached()  # miss
+    from_hit = cached()  # hit
+    from_hit.iloc[0] = 555.0
+
+    assert cached().iloc[0] == 1.0
+    assert len(compute.calls) == 1
+
+
+def test_nested_dataframe_and_dict_from_cache_hit_are_deep_copied():
+    """DataFrame/dict ที่ซ้อนอยู่ข้างในต้องถูกสำเนาด้วย — shallow copy ไม่พอ."""
+    compute = _counting(
+        lambda: {
+            "data_ok": True,
+            "prices": pd.DataFrame({"VOO": [500.0]}),
+            "meta": {"tickers": ["VOO"], "scores": {"VOO": 7.0}},
+        }
+    )
+    cached = cache_data_1h(compute)
+
+    cached()  # miss
+    from_hit = cached()  # hit
+    from_hit["prices"].iloc[0, 0] = -1.0
+    from_hit["meta"]["tickers"].append("EVIL")
+    from_hit["meta"]["scores"]["VOO"] = 0.0
+
+    again = cached()
+    assert again["prices"].iloc[0, 0] == 500.0
+    assert again["meta"]["tickers"] == ["VOO"]
+    assert again["meta"]["scores"] == {"VOO": 7.0}
+    assert len(compute.calls) == 1
+
+
+def test_hit_copy_does_not_block_other_callers():
+    """การสำเนาตอน hit ต้องอยู่นอก lock — ของก้อนใหญ่ไม่ควรทำให้ผู้เรียกอื่นรอตามกัน."""
+    armed = threading.Event()  # ติดอาวุธหลัง miss เสร็จ → บล็อกเฉพาะสำเนาของเส้นทาง hit
+    in_copy = threading.Event()
+    release = threading.Event()
+
+    class _SlowToCopy:
+        def __deepcopy__(self, memo):
+            if armed.is_set() and not in_copy.is_set():
+                in_copy.set()
+                assert release.wait(timeout=10), "เทสต์ค้าง: ไม่มีใครปล่อย gate"
+            return _SlowToCopy()
+
+    cached = cache_data_1h(lambda: _SlowToCopy())
+    cached()  # miss — เก็บสำเนาเข้าคลัง
+    armed.set()
+
+    slow = threading.Thread(target=cached, daemon=True)  # hit ที่สำเนาช้า
+    slow.start()
+    other = None
+    try:
+        assert in_copy.wait(timeout=10), "cache hit ไม่ได้สำเนาค่าออกมาเลย"
+        other = threading.Thread(target=cached, daemon=True)  # hit ของผู้เรียกอีกคน
+        other.start()
+        other.join(timeout=5)
+        blocked = other.is_alive()
+    finally:
+        release.set()
+        slow.join(timeout=10)
+        if other is not None:
+            other.join(timeout=10)
+
+    assert not blocked, "ผู้เรียกอีกคนถูกบล็อกระหว่างสำเนาของ cache hit (สำเนาอยู่ใต้ lock)"
 
 
 def test_unkeyable_argument_calls_through():

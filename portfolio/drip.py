@@ -32,11 +32,16 @@ def simulate_drip(dividends: pd.DataFrame, closes: pd.Series) -> dict[str, Any]:
     cash_usd = 0.0
     extra_shares = 0.0
     for _, row in dividends.iterrows():
-        amount = float(pd.to_numeric(row.get("amount_usd"), errors="coerce") or 0.0)
+        # ``or 0.0`` ดัก NaN ไม่ได้ (``bool(float('nan')) is True``) และ ``NaN <= 0``
+        # ก็เป็น False → งวดที่จำนวนเงินอ่านไม่ออกเคยเล็ดลอดผ่านด่านนี้ แล้วทำให้
+        # cash_usd/extra_shares/advantage_usd เป็น NaN ทั้งก้อนโดยไม่นับเป็น skipped
+        # (บั๊กชนิดเดียวกับ ``xirr()``/``shadow_benchmark()`` ใน FIX_PLAN ข้อ 1.6)
+        amount_raw = pd.to_numeric(row.get("amount_usd"), errors="coerce")
         date = pd.to_datetime(row.get("date"), errors="coerce")
-        if amount <= 0 or pd.isna(date):
+        if pd.isna(amount_raw) or pd.isna(date) or float(amount_raw) <= 0:
             skipped += 1
             continue
+        amount = float(amount_raw)
         cash_usd += amount
         price_at_receipt = closes.asof(date)
         if pd.isna(price_at_receipt) or float(price_at_receipt) <= 0:

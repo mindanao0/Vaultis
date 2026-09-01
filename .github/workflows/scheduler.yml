@@ -7,9 +7,12 @@ on:
     - cron: '0 15 * * 1-5' # จันทร์-ศุกร์ 22:00 Thailand (หลัง US market เปิด 30 นาที)
   workflow_dispatch:
 
-# ต้องเขียน repo ได้เพื่อบันทึกสถานะ alert ที่ trigger แล้ว (กันแจ้งเตือนซ้ำ)
+# อ่านอย่างเดียวพอ — step "Persist triggered alerts" ที่เคยต้องเขียน repo ถูกถอดออกไปแล้ว
+# (มติผู้ใช้ 2026-07-28: ห้าม commit ticker/ราคาเป้าหมายกลับเข้า public repo)
+# repo เป็น public และ workflow ไม่ pin action ด้วย hash — GITHUB_TOKEN ที่ถือสิทธิ์เขียน
+# โดยไม่มีอะไรต้องใช้คือความเสี่ยงเปล่า ๆ (AUDIT_2026-08-06 ข้อ L-CI-1)
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   run-scheduler:
@@ -23,16 +26,45 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements.txt
-      # Secrets ที่ต้องมี: GROQ_API_KEY, ANTHROPIC_API_KEY (Haiku 4.5 สำหรับ AI Advisor),
+      # Secrets ที่ต้องมี: ANTHROPIC_API_KEY (Claude Sonnet 5 สำหรับ AI Advisor),
       # DISCORD_WEBHOOK_URL, FRED_API_KEY, NEWSAPI_KEY, DATABASE_URL
-      - name: Run Sentiment Analysis
-        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
-        run: python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
+      #
+      # งาน sentiment เป็นงานอัตโนมัติ "ที่จ่ายเงินจริง" (LLM ชุดละข่าว × 5 สัญลักษณ์ต่อรอบ)
+      # CLAUDE.md จึงบังคับให้ปิดโดยดีฟอลต์ — `run_sentiment_job()` เช็ค `auto_enabled()`
+      # เป็นบรรทัดแรกและ return ทันทีถ้าไม่ได้ตั้ง VAULTIS_LLM_AUTO
+      # เดิม step นี้ส่ง secrets 5 ตัวเข้าไปทุกวันจันทร์ แต่ **ไม่เคยตั้ง VAULTIS_LLM_AUTO**
+      # ⇒ ทุกรอบพิมพ์ "ข้ามการวิเคราะห์ sentiment" แล้วจบ ตาราง sentiment_results/
+      # sentiment_summary จึงว่างเปล่าถาวรใน production, `/api/sentiment/{symbol}` ตอบ 404
+      # ตลอดกาล และกล่องบริบทในหน้า AI Advisor สัญญาว่า "รอ scheduled job รอบถัดไป"
+      # ที่ไม่มีวันมาถึง (AUDIT_ROUND2_2026-08-07)
+      #
+      # แก้แบบไม่แอบใช้เงินของผู้ใช้: สวิตช์อยู่ที่เดียวและมองเห็นได้ —
+      # ตั้ง repository variable `VAULTIS_SENTIMENT_ENABLED=1` (Settings → Secrets and
+      # variables → Actions → Variables) เท่านั้น step นี้ถึงจะรัน และ "รัน" = จ่ายจริง
+      # ทุกสัปดาห์ ถ้าไม่ตั้ง step ถูกข้ามทั้ง step (secrets ไม่ถูกส่งเข้า runner ด้วยซ้ำ)
+      # แทนพฤติกรรมเดิมที่ "รันแล้วเงียบ" ซึ่งแยกไม่ออกจากงานที่ทำงานได้
+      - name: Run Sentiment Analysis (ต้องเปิดเอง — มีค่าใช้จ่าย LLM ทุกรอบ)
+        if: ${{ vars.VAULTIS_SENTIMENT_ENABLED == '1' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1')) }}
+        # เปิดแล้วต้องทำงานจริงหรือแดง — ห้ามเงียบ: ไม่มี DATABASE_URL แปลว่าผลวิเคราะห์
+        # ที่จ่ายเงินไปแล้วไม่มีที่เก็บ และไม่มี ANTHROPIC_API_KEY แปลว่าวิเคราะห์ไม่ได้เลย
+        # (`run_sentiment_job()` พิมพ์ "DATABASE_URL not set; aborting." แล้ว exit 0 —
+        #  เป็นความล้มเหลวที่หน้า Actions ขึ้นสีเขียว จึงต้องดักก่อนด้วย exit 1)
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::VAULTIS_SENTIMENT_ENABLED=1 แต่ไม่ได้ตั้ง secret DATABASE_URL — งาน sentiment ไม่มีที่เก็บผล"
+            exit 1
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::VAULTIS_SENTIMENT_ENABLED=1 แต่ไม่ได้ตั้ง secret ANTHROPIC_API_KEY — วิเคราะห์ sentiment ไม่ได้"
+            exit 1
+          fi
+          python -c "from analysis.sentiment_analyzer import run_sentiment_job; run_sentiment_job()"
         env:
-          # llm.py เลือก Claude Haiku 4.5 ก่อนเสมอ แล้วค่อยตกไป Groq — step นี้เคยส่งแค่ Groq
+          # งานอัตโนมัติต้องประกาศเจตนาจ่ายเงินตรงนี้ — ไม่มีบรรทัดนี้ job ข้ามตัวเองเงียบ ๆ
+          VAULTIS_LLM_AUTO: '1'
+          # llm.py ใช้ Claude อย่างเดียว (ถอด Groq ออกแล้ว 2026-08-02)
           # ทำให้ job เดียวในระบบที่วิ่งคนละโมเดลกับที่อื่นโดยไม่มีใครตั้งใจ
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
@@ -42,7 +74,6 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job weekly_summary
@@ -50,31 +81,23 @@ jobs:
         if: github.event.schedule == '0 1 1 * *'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job monthly_advice
-      - name: Daily price summary (ทุกวันทำการ)
-        # `check_alerts()` ส่งสรุปราคา 5 ETF เข้า Discord ทุกครั้งที่รัน — ส่วนนี้ยังทำงานปกติ
-        #
-        # **แต่ CI มองไม่เห็น price alert ที่ผู้ใช้ตั้งไว้** เพราะ
-        # `alerts/data/price_alerts.json` เป็นข้อมูลส่วนตัวและถูก gitignore
-        # (repo นี้เป็น public — ข้อจำกัดเดียวกับ ledger ที่ AUDIT.md บันทึกไว้)
-        # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
-        #   ที่เห็นไฟล์จริงผ่าน volume
-        #
-        # เดิมมี step "Persist triggered alerts" commit ไฟล์นี้กลับเข้า repo เพื่อกัน
-        # alert เด้งซ้ำ — ถอดออกแล้วเพราะการทำแบบนั้นคือการเผยแพร่ ticker + ราคาเป้าหมาย
-        # ของผู้ใช้ลง public repo (มติผู้ใช้ 2026-07-28: ความเป็นส่วนตัวมาก่อน)
-        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python main.py --job price_alert
+      # เดิมมี step "Daily price summary" (`python main.py --job price_alert`) อยู่ตรงนี้
+      # เงื่อนไข `if:` เดียวกันเป๊ะกับ step ข้างล่าง และยิงเว็บฮุคเดียวกัน
+      # ⇒ ผู้ใช้ได้ข้อความพาดหัว "Daily Price Check" **2 ใบต่อวัน** ที่เลขขัดกันเอง
+      #   (`check_alerts()` คิด % จากแท่งปิด 2 แท่ง ส่วน daily_check เดิมใช้
+      #    `fast_info['previous_close']` — วันที่วัดพลิกเครื่องหมาย 3 จาก 5 ตัว)
+      # ถอด step นั้นออกเพราะ **CI มองไม่เห็น price alert ที่ผู้ใช้ตั้งไว้อยู่แล้ว**:
+      # `alerts/data/price_alerts.json` เป็นข้อมูลส่วนตัวและถูก gitignore (repo เป็น public)
+      # → `--job price_alert` ที่นี่จึงไม่ได้ตรวจ alert อะไรเลย เหลือแต่สรุปราคาใบซ้ำ
+      # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
+      #   ที่เห็นไฟล์จริงผ่าน volume  (AUDIT_2026-08-06 ข้อ H12)
       - name: Run Daily Price Check (ทุกวันทำการ)
         if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           BACKEND_URL: ${{ secrets.BACKEND_URL }}

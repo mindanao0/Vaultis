@@ -1,4 +1,4 @@
-"""AI summary generator for backtest results (Claude Haiku 4.5 → Groq fallback)."""
+"""AI summary generator for backtest results (Claude Sonnet 5 ผ่าน analysis/llm.py)."""
 
 from __future__ import annotations
 
@@ -14,21 +14,38 @@ _STRATEGY_TH = {
     "rsi_only_fallback": "RSI อย่างเดียว (fallback เพราะเงื่อนไขรวมไม่เกิดสัญญาณเลย)",
 }
 
+_NO_DATA_TH = "ไม่มีข้อมูล (กลยุทธ์ไม่เคยเข้าเทรดจึงไม่นิยาม)"
+
+# ``None`` = ไม่นิยาม ห้ามแปลงเป็น "ไม่ใช่" เพราะ "ไม่ชนะดัชนี" กับ "เทียบไม่ได้"
+# เป็นคนละข้อสรุปกัน (AUDIT_2026-08-06 B3.1)
+_OUTPERFORMED_TH = {True: "ใช่", False: "ไม่ใช่", None: "เทียบไม่ได้ (ไม่มีเทรด)"}
+
+
+def _fmt(value: float | None, digits: int, suffix: str = "") -> str:
+    """เลขที่ไม่นิยามต้องอ่านออกว่าไม่มีข้อมูล — ห้ามให้ LLM เห็นเป็น 0.00%."""
+    if value is None:
+        return _NO_DATA_TH
+    return f"{value:.{digits}f}{suffix}"
+
 
 def generate_summary(result: dict, symbol: str, user_initiated: bool = False) -> str:
     strategy_used = str(result.get("strategy_used", "unknown"))
     strategy_th = _STRATEGY_TH.get(strategy_used, strategy_used)
+    detail = result.get("detail")
+    detail_line = f"\n- หมายเหตุจากระบบ: {detail}" if detail else ""
 
     user_msg = f"""สรุปผลการ Backtest สำหรับ {symbol}:
 
 - กลยุทธ์ที่ใช้จริง: {strategy_th}
-- Total Return (Strategy): {result['total_return']:.2f}%
-- Benchmark Return (Buy & Hold): {result['benchmark_return']:.2f}%
-- Sharpe Ratio: {result['sharpe_ratio']:.4f}
-- Max Drawdown: {result['max_drawdown']:.2f}%
-- Win Rate: {result['win_rate']:.2f}%
+- Total Return (Strategy): {_fmt(result['total_return'], 2, '%')}
+- Benchmark Return (Buy & Hold): {_fmt(result['benchmark_return'], 2, '%')}
+- Sharpe Ratio: {_fmt(result['sharpe_ratio'], 4)}
+- Max Drawdown: {_fmt(result['max_drawdown'], 2, '%')}
+- Win Rate: {_fmt(result['win_rate'], 2, '%')}
 - จำนวน Trades: {result['num_trades']}
-- ชนะ Benchmark: {'ใช่' if result['outperformed'] else 'ไม่ใช่'}
+- ชนะ Benchmark: {_OUTPERFORMED_TH[result['outperformed']]}{detail_line}
+
+ช่องที่เขียนว่า "{_NO_DATA_TH}" คือไม่มีตัวเลข ห้ามอ่านเป็น 0 และห้ามเดาค่าแทน
 
 โปรดอธิบาย:
 1. strategy ให้ผลตอบแทนเป็นยังไง (อ้างกลยุทธ์ที่ใช้จริงตามด้านบน)

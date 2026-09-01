@@ -43,7 +43,12 @@ class PriceForecaster:
         model = self.build_model()
         model.fit(df[["ds", "y"]])
 
-        future = model.make_future_dataframe(periods=days)
+        # freq="B": ตลาดหุ้นสหรัฐไม่มีราคาวันเสาร์-อาทิตย์ ค่าดีฟอลต์ freq="D"
+        # ทำให้ 8-9 แถวจาก 30 เป็นวันที่ไม่มีอยู่จริง และ "วันสุดท้าย" ที่ใช้คิด
+        # trend เลื่อนไปตกวันหยุดจนป้ายแนวโน้มพลิกได้ (AUDIT_2026-08-06 D3.6)
+        # หมายเหตุ: ยังไม่ตัดวันหยุดตลาด (Thanksgiving ฯลฯ) — แก้เรื่องเสาร์อาทิตย์
+        # ซึ่งเป็นก้อนใหญ่และแน่นอน ส่วนวันหยุดต้องมีปฏิทินตลาดซึ่งเป็นงานคนละก้อน
+        future = model.make_future_dataframe(periods=days, freq="B")
         raw_forecast = model.predict(future)
 
         # Store for external callers (e.g. chart generator)

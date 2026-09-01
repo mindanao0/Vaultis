@@ -3,11 +3,55 @@
 
 นโยบายราคา (AUDIT.md C1): ราคาที่ดึงไม่ได้ = NaN + ธง "Price OK" = False
 ห้ามเติม 0 เด็ดขาด (เดิมทำให้พอร์ตโชว์ขาดทุน -100% ปลอมและหลอก AI advisor)
+
+นโยบายอัตราแลกเปลี่ยน (FIX_PLAN ข้อ 1.2 + รอบเก็บกวาด C1): แถวที่ **ไม่มี**
+``fx_rate_thb`` หรือมีแต่ **ใช้ไม่ได้** (0 / ติดลบ / นอกช่วง ``utils.fx.MIN_RATE``–
+``MAX_RATE``) จะ **คำนวณย้อนจากยอดบาทที่จ่ายจริง**
+(``(amount_thb - fee_thb) / (shares * price_usd)``) ก่อน
+ถ้าคำนวณไม่ได้ให้ตัดแถวทิ้ง **พร้อมรายงานออกไปทาง ``skipped_rows``**
+(เหตุผลบอกด้วยว่าค่าเดิมที่บันทึกไว้คืออะไร)
+ห้ามเติมค่า default ทับ (เดิม ``fillna(DEFAULT_USDTHB)`` = กุตัวเลขบนเส้นทางเงินตรง ๆ
+และทำให้ ``dropna`` บรรทัดถัดไปไม่มีวันทำงาน) และห้ามปล่อยค่าที่ผิดรูปผ่านไปคิดเงิน
+(fx=0 เคยทำให้เงินลงทุนกลายเป็น 0, fx ติดลบทำให้ติดลบ, ปันผลได้ยอด USD = inf)
+
+ข้อจำกัดที่ยังเหลือ: การหักค่าธรรมเนียมก่อนหารใช้ **ค่าที่บันทึกไว้จริง** ในคอลัมน์
+``fee_thb`` เท่านั้น แถวที่ไม่ได้บันทึกค่าธรรมเนียมจะหารตรง ๆ ตามยอดที่มี
+(ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง — จะเป็นการกุตัวเลขซ้อนตัวเลข) **แต่ต้องติดหมายเหตุ
+ไปกับแถวนั้นเสมอ** ว่าอัตราคิดบนสมมติฐาน "ค่าธรรมเนียม = 0" จึงสูงกว่าที่จ่ายจริงได้ราว
+``fees.DIME_FEE_RATE`` (AUDIT_ROUND2_2026-08-07 — เดิมหน้าจอบอกแค่ว่า "คำนวณย้อน"
+ไม่เคยบอกว่าคำนวณบนสมมติฐานอะไร)  ส่วนแถวที่บันทึกค่าธรรมเนียมเป็น **ค่าติดลบ** คือ
+ข้อมูลผิด **ไม่ใช่** ช่องว่าง ห้ามกลืนเป็น 0 (สองกรณีนี้เคยถูกยุบเป็นค่าเดียวกันด้วย
+``fee.where(fee >= 0).fillna(0.0)`` แถวที่กรอกติดลบจึงเงียบสนิททั้งที่ผิดชัด ๆ)
+
+รายงานที่แนบไปกับทุก DataFrame/สรุป (``.attrs`` และคีย์ใน dict) — AUDIT_2026-08-06 C1:
+
+===================== ===================================================
+``skipped_rows``      แถวที่ข้อมูลไม่ครบจน **ถูกตัดออก** จากทุกตัวเลข
+``derived_fx_rows``   แถวที่อัตราแลกเปลี่ยนถูก **คำนวณย้อนมาแทน** ค่าที่บันทึก
+                      (ยังอยู่ในตัวเลข — C1.3 เดิมมีแค่ ``logger.warning``)
+``inconsistent_rows`` แถวที่ยอดบาทที่จ่ายจริง **ขัดกับ** จำนวนหุ้น × ราคา ×
+                      อัตรา + ค่าธรรมเนียม เกิน 1% (ยังอยู่ในตัวเลข — C1.2)
+===================== ===================================================
+
+ทั้งสามชุดคือ "เตือน" คนละความหมายกัน ห้ามยุบรวมกัน: ``skipped_rows`` = ตัวเลข
+**ขาดไป**, อีกสองชุด = ตัวเลข **อยู่ครบแต่น่าสงสัย**
+
+อัตราแลกเปลี่ยน "วันนี้" ที่ใช้แปลงมูลค่าปัจจุบันเป็นบาทต้องไปพร้อมที่มาเสมอ
+(``fx_rate_thb`` / ``fx_is_live`` — AUDIT_2026-08-06 B9/C1.5): ``utils/fx`` บอกอยู่แล้ว
+ว่าเป็นค่าสดหรือค่าสำรอง แต่เดิมที่นี่รับมาเฉพาะตัวเลขแล้วทิ้งธงทิ้ง ผู้ใช้จึงไม่มีทางรู้
+ว่ามูลค่า/กำไรเป็นบาทกำลังคิดจากค่าสำรองใน config (คลาดเคลื่อนวัดได้ −1.39% ณ วันตรวจ)
+
+ฐานเงินลงทุนมีสองฐานและต้องติดป้ายเสมอ (H9): ``invested_thb_all`` = เงินที่จ่ายไป
+จริงทั้งหมด · ``invested_thb_priced`` = เฉพาะกองที่มีราคาปัจจุบัน ซึ่งเป็นฐานเดียว
+ที่ใช้คิด P&L / % ผลตอบแทนได้ — เดิมใช้ชื่อกลาง ๆ ตัวเดียว (``total_invested_thb``)
+คู่กับกำไรที่คิดจากอีกฐานหนึ่ง ผู้ใช้จึงเห็นเลข 3 ตัวบนจอเดียวกันที่บวกลบไม่ลงตัว
+และ % ผลตอบแทน **สูงขึ้น** เมื่อดึงราคาไม่ได้
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -15,9 +59,8 @@ import pandas as pd
 import yfinance as yf
 
 from data.fetcher import normalize_close_series
-from portfolio.fees import dime_fee_thb
+from portfolio.fees import DIME_FEE_RATE, dime_fee_thb
 from utils import fx
-from utils.config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +82,58 @@ CSV_COLUMNS = [
 TX_BUY = "buy"
 TX_DIVIDEND = "dividend"
 TRACKER_DIR = Path(__file__).resolve().parent
-DATA_DIR = TRACKER_DIR / "data"
-TRANSACTIONS_FILE = DATA_DIR / "transactions.csv"
-DEFAULT_USDTHB = float(load_config()["display"]["default_fx_rate"])
+DEFAULT_TRANSACTIONS_FILE = TRACKER_DIR / "data" / "transactions.csv"
+
+
+def _ledger_path_from_env() -> Path:
+    """path ของสมุดบัญชี — ตั้งทับได้ด้วย ``VAULTIS_LEDGER_PATH``.
+
+    เหตุผลและข้อห้ามเดียวกับ ``alerts.price_alert._alerts_path_from_env``:
+    คำสั่งรันเทสต์ mount repo ทับ ``/app`` ค่าดีฟอลต์จึงเป็นสมุดบัญชีจริงของผู้ใช้บน host
+    และค่านี้ต้องถูกอ่าน **ตอน import** เท่านั้น เพราะเทสต์ควบคุมด้วยการ monkeypatch
+    ``tracker.TRANSACTIONS_FILE`` / ``tracker.DATA_DIR``
+    """
+    raw = os.environ.get("VAULTIS_LEDGER_PATH", "").strip()
+    return Path(raw).expanduser() if raw else DEFAULT_TRANSACTIONS_FILE
+
+
+TRANSACTIONS_FILE = _ledger_path_from_env()
+# ต้องเดินตาม TRANSACTIONS_FILE เสมอ — `_ensure_storage()` mkdir จากตัวนี้
+DATA_DIR = TRANSACTIONS_FILE.parent
+
+# คอลัมน์ที่ต้องมีค่าจริงถึงจะเอาแถวนั้นไปคิดเงินได้ (ชื่อไทยไว้แสดงในรายงาน)
+# ค่าที่ขาดต้องเป็น NaN แล้วถูกตัดออก + รายงาน ห้ามเดาค่าแทน
+REQUIRED_FIELDS_TH: dict[str, str] = {
+    "date": "วันที่",
+    "ticker": "ticker",
+    "shares": "จำนวนหุ้น",
+    "price_usd": "ราคา (USD)",
+    "fx_rate_thb": "อัตราแลกเปลี่ยน",
+    "amount_thb": "ยอดเงิน (THB)",
+}
+_SKIPPED_ROWS_ATTR = "skipped_rows"
+_DERIVED_FX_ROWS_ATTR = "derived_fx_rows"
+_INCONSISTENT_ROWS_ATTR = "inconsistent_rows"
+_REPORT_ATTRS = (_SKIPPED_ROWS_ATTR, _DERIVED_FX_ROWS_ATTR, _INCONSISTENT_ROWS_ATTR)
+# อัตราแลกเปลี่ยน "วันนี้" ที่ใช้แปลงมูลค่าปัจจุบันเป็นบาท + ที่มาของมัน (B9/C1.5)
+_FX_SOURCE_ATTR = "fx_source"
+_MAX_SKIPPED_IN_MESSAGE = 5
+
+# ยอดเงินบาทที่จ่ายจริง (``amount_thb``) กับ จำนวนหุ้น × ราคา × อัตรา + ค่าธรรมเนียม
+# ต่างกันได้ไม่เกินเท่านี้ถึงจะถือว่า "สอดคล้องกัน" (C1.2)
+# 1% กว้างพอให้ค่าธรรมเนียมที่ไม่ได้บันทึก (0.15% ตาม portfolio/fees.py) และการปัดเศษ
+# ผ่านได้ แต่แคบพอจะจับการกรอกอัตราของ "วันนี้" ทับอัตราของวันที่ซื้อจริง
+FX_CONSISTENCY_TOLERANCE = 0.01
+
+# หมายเหตุที่ต้องติดไปกับอัตราที่คำนวณย้อนของแถวที่ **ไม่ได้บันทึก** ค่าธรรมเนียม
+# (AUDIT_ROUND2_2026-08-07): ``amount_thb`` คือเงินที่จ่ายจริงซึ่งรวมค่าธรรมเนียมไว้แล้ว
+# การหารทั้งก้อนจึงได้อัตราสูงกว่าที่จ่ายจริงราว ``DIME_FEE_RATE`` — ตัวเลขนั้นไหลต่อไป
+# ทุกช่องฐานบาท (ต้นทุน / มูลค่า / P&L / XIRR) ผู้ใช้จึงต้องเห็นสมมติฐาน ไม่ใช่เห็นแค่
+# คำว่า "คำนวณย้อน"  อัตราส่วนต้องมาจาก ``portfolio/fees.py`` ที่เดียว ห้ามพิมพ์ 0.15% เอง
+_FEE_ASSUMED_ZERO_NOTE = (
+    " (แถวนี้ไม่ได้บันทึกค่าธรรมเนียม จึงคิดโดยสมมติว่าเป็น 0 "
+    f"— อัตราที่ได้อาจสูงกว่าที่จ่ายจริงราว {DIME_FEE_RATE * 100:.2f}%)"
+)
 
 
 def _ensure_storage() -> None:
@@ -136,12 +228,553 @@ def _empty_transactions() -> pd.DataFrame:
     return empty
 
 
+def _fee_column(df: pd.DataFrame) -> pd.Series | None:
+    """คอลัมน์ ``fee_thb`` แบบตัวเลขดิบ — ``None`` เมื่อสมุดไม่มีคอลัมน์นี้เลย.
+
+    ค่าที่อ่านเป็นตัวเลขไม่ได้กลายเป็น ``NaN`` (= ไม่ได้บันทึก) ตามกฎเดียวกับคอลัมน์อื่น
+    """
+    if "fee_thb" not in df.columns:
+        return None
+    return pd.to_numeric(df["fee_thb"], errors="coerce")
+
+
+def _fee_is_negative(df: pd.DataFrame) -> pd.Series:
+    """แถวที่ **บันทึก** ค่าธรรมเนียมไว้เป็นค่าติดลบ = ข้อมูลผิดชัด ๆ (ไม่ใช่ช่องว่าง)."""
+    fee = _fee_column(df)
+    if fee is None:
+        return pd.Series(False, index=df.index)
+    return fee.lt(0)
+
+
+def _fee_not_recorded(df: pd.DataFrame) -> pd.Series:
+    """แถวที่ **ไม่ได้บันทึก** ค่าธรรมเนียม (ช่องว่าง / อ่านเป็นตัวเลขไม่ได้)."""
+    fee = _fee_column(df)
+    if fee is None:
+        return pd.Series(True, index=df.index)
+    return fee.isna()
+
+
+def _recorded_fee_thb(df: pd.DataFrame) -> pd.Series | float:
+    """ค่าธรรมเนียมที่ **บันทึกไว้จริง** — แยก "ไม่ได้บันทึก" ออกจาก "บันทึกผิด".
+
+    ใช้เฉพาะตอนคำนวณอัตราแลกเปลี่ยนย้อนกลับ: ``amount_thb`` คือเงินที่จ่ายจริง
+    ซึ่งรวมค่าธรรมเนียมไว้แล้ว จึงต้องหักออกก่อนหาร ไม่งั้นอัตราที่ได้สูงเกินจริง
+    ราว ``fees.DIME_FEE_RATE``
+
+    * **ช่องว่าง = ไม่ได้บันทึก** → คิดเป็น 0 แล้วหารตรง ๆ ตามยอดที่มี
+      **ไม่ประมาณค่าธรรมเนียมขึ้นมาหักเอง** เพราะยังไม่รู้อัตราแลกเปลี่ยนของแถวนั้น
+      การเดาจะกลายเป็นการกุตัวเลขซ้อนตัวเลข — แต่แถวนั้นต้องติดหมายเหตุ
+      :data:`_FEE_ASSUMED_ZERO_NOTE` ไปทาง ``derived_fx_rows`` เสมอ
+    * **ค่าติดลบ = ข้อมูลผิด** → คืน ``NaN`` **ห้ามกลืนเป็น 0**
+      (AUDIT_ROUND2_2026-08-07: ``fee.where(fee >= 0).fillna(0.0)`` ยุบสองกรณีนี้เป็น
+      ค่าเดียวกัน แถวที่กรอกค่าธรรมเนียมติดลบจึงให้อัตราย้อน "สวย ๆ" เท่ากับแถวที่
+      ไม่ได้กรอกเลย และไม่เข้าทั้ง ``skipped_rows`` และ ``inconsistent_rows``)
+      ผลของ ``NaN`` คือแถวนั้นคำนวณอัตราย้อนไม่ได้ ⇒ ถ้าไม่มีอัตราที่ใช้ได้ในสมุด
+      ก็ถูกตัด + รายงานทาง ``skipped_rows``  ถ้ามีอัตราที่ใช้ได้ ตัวเลขยังอยู่
+      แต่ถูกรายงานทาง ``inconsistent_rows`` — ทางเดียวกับที่ ``unusable_fx``
+      ทำกับอัตรานอกช่วง 20–50
+
+    (การเติมค่าประมาณให้คอลัมน์ ``fee_thb`` เป็นหน้าที่ของ ``_calculate_dime_fee_info``
+    ซึ่งทำหลังจากได้อัตราจริงแล้ว)
+    """
+    fee = _fee_column(df)
+    if fee is None:
+        return 0.0
+    return fee.fillna(0.0).mask(fee.lt(0))
+
+
+def _derive_fx_from_amount(df: pd.DataFrame) -> pd.Series:
+    """อัตราแลกเปลี่ยนที่ "จ่ายจริง" ของแต่ละแถว คำนวณย้อนจากยอดบาทที่บันทึกไว้.
+
+    นี่คือ**ค่าจริง** ไม่ใช่ค่าเดา: ``(amount_thb - fee_thb) / (shares * price_usd)``
+    (ค่าธรรมเนียมที่บันทึกไว้ต้องหักออกก่อน เพราะ ``amount_thb`` = เงินที่จ่ายจริง
+    ซึ่งรวมค่าธรรมเนียมตามสูตรเดียวของระบบใน ``portfolio/fees.py`` ไว้แล้ว)
+
+    คืน NaN เมื่อคำนวณไม่ได้ (ตัวหาร ≤ 0 หรือว่าง เช่นแถวปันผลที่ shares=0
+    หรือค่าธรรมเนียมที่บันทึกไว้ติดลบ ดู :func:`_recorded_fee_thb`)
+    หรือได้ค่านอกช่วงสมเหตุสมผลของ ``utils/fx.py`` — ค่าที่ไม่น่าเชื่อถือ
+    ถือว่า "ไม่มีข้อมูล" ห้ามเอาไปคิดเงินต่อ
+    """
+    trade_value_usd = df["shares"] * df["price_usd"]
+    denominator = trade_value_usd.where(trade_value_usd > 0)
+    derived = (df["amount_thb"] - _recorded_fee_thb(df)) / denominator
+    return derived.where(derived.between(fx.MIN_RATE, fx.MAX_RATE))
+
+
+def _collect_skipped_rows(
+    df: pd.DataFrame,
+    unusable_fx: pd.Series | None = None,
+) -> list[dict[str, object]]:
+    """รายการแถวที่ข้อมูลไม่ครบจนเอาไปคิดเงินไม่ได้ พร้อมเหตุผลรายแถว.
+
+    ตัดแถวเงียบ ๆ ไม่ได้ (แค่ย้ายจากกุตัวเลขไปเป็นซ่อนข้อมูล ผิดกฎ fail-loud เหมือนกัน)
+    ผู้เรียกต้องเอาไปแสดงให้ผู้ใช้เห็นเสมอ
+
+    ``unusable_fx`` = อัตราแลกเปลี่ยน**ที่บันทึกไว้จริงแต่ใช้ไม่ได้** (NaN = ไม่ได้บันทึก)
+    ใส่ลงในเหตุผลด้วย เพื่อให้ผู้ใช้รู้ว่าต้องไปแก้เลขอะไรในสมุด
+
+    ค่าธรรมเนียมที่บันทึกไว้ติดลบทำให้คำนวณอัตราย้อนไม่ได้เช่นกัน — ต้องบอกตรง ๆ ว่า
+    ตัวไหนพัง ไม่งั้นผู้ใช้ไปนั่งแก้อัตราแลกเปลี่ยนที่ไม่ได้ผิด (AUDIT_ROUND2_2026-08-07)
+    """
+    missing_mask = df[list(REQUIRED_FIELDS_TH)].isna()
+    incomplete = missing_mask.any(axis=1)
+    if not bool(incomplete.any()):
+        return []
+
+    negative_fee = _fee_is_negative(df)
+    raw_fee = _fee_column(df)
+    skipped: list[dict[str, object]] = []
+    for idx in df.index[incomplete]:
+        fields = [col for col in REQUIRED_FIELDS_TH if bool(missing_mask.at[idx, col])]
+        reason = "ข้อมูลไม่ครบ: " + ", ".join(REQUIRED_FIELDS_TH[col] for col in fields)
+        if "fx_rate_thb" in fields:
+            recorded_fx = None if unusable_fx is None else unusable_fx.at[idx]
+            band = f"{fx.MIN_RATE:.0f}–{fx.MAX_RATE:.0f}"
+            if recorded_fx is not None and pd.notna(recorded_fx):
+                reason += (
+                    f" (ค่าที่บันทึกไว้ {float(recorded_fx):g} ใช้ไม่ได้ ต้องอยู่ในช่วง {band}"
+                    " และคำนวณอัตราย้อนจากยอดบาทไม่ได้)"
+                )
+            else:
+                reason += f" (คำนวณอัตราย้อนจากยอดบาทไม่ได้ หรือได้ค่านอกช่วง {band})"
+            if raw_fee is not None and bool(negative_fee.at[idx]):
+                reason += _negative_fee_note(float(raw_fee.at[idx]))
+        skipped.append(
+            {
+                **_row_identity(df, idx),
+                "missing_fields": fields,
+                "reason": reason,
+            }
+        )
+    return skipped
+
+
+def _row_identity(df: pd.DataFrame, idx: object) -> dict[str, object]:
+    """คีย์ประจำตัวของแถวที่ต้องมีในทุกรายงาน (``tx_id``/``date``/``ticker``/``tx_type``).
+
+    ``tx_type`` จำเป็นเพราะรายงานถูกกรองตามประเภทธุรกรรม — สรุปปันผลต้องไม่แสดง
+    ไม้ซื้อที่ถูกตัด ไม่งั้นผู้ใช้อ่านว่า "ปันผลหายไป" (C1.4)
+    """
+    date_value = df.at[idx, "date"]
+    ticker_value = df.at[idx, "ticker"]
+    tx_type = df.at[idx, "tx_type"] if "tx_type" in df.columns else TX_BUY
+    return {
+        "tx_id": str(df.at[idx, "tx_id"]) if "tx_id" in df.columns else "",
+        "date": "" if pd.isna(date_value) else pd.Timestamp(date_value).strftime("%Y-%m-%d"),
+        "ticker": "" if pd.isna(ticker_value) else str(ticker_value),
+        "tx_type": TX_BUY if pd.isna(tx_type) else str(tx_type),
+    }
+
+
+def _complete_rows_mask(df: pd.DataFrame) -> pd.Series:
+    """แถวที่ข้อมูลครบพอจะคิดเงินได้ (= แถวที่จะรอดจาก ``dropna`` ข้างล่าง)."""
+    return ~df[list(REQUIRED_FIELDS_TH)].isna().any(axis=1)
+
+
+def _collect_derived_fx_rows(
+    df: pd.DataFrame,
+    usable_fx: pd.Series,
+    recorded_fx: pd.Series,
+) -> list[dict[str, object]]:
+    """แถวที่อัตราแลกเปลี่ยน **ถูกคำนวณย้อนมาแทน** ค่าที่บันทึกไว้ (C1.3).
+
+    แถวเหล่านี้ *ยังอยู่* ในทุกตัวเลข — ต่างจาก ``skipped_rows`` ที่ถูกตัดออก
+    เดิมมีแค่ ``logger.warning`` ผู้ใช้จึงไม่มีทางรู้ว่าเงินที่เห็นคำนวณจากอัตรา
+    ที่ระบบหาเอง ต้องรายงานออกไปให้เห็นเหมือน ``skipped_rows``
+
+    ``usable_fx`` = อัตราที่บันทึกไว้ **หลังผ่านด่านช่วง 20–50** (NaN = ใช้ไม่ได้/ไม่มี)
+    ``recorded_fx`` = ค่าดิบที่อยู่ในสมุดจริง ๆ (NaN = ช่องว่าง)
+    ต้องเรียก **หลัง** เติมค่า derive ลง ``df['fx_rate_thb']`` แล้ว
+
+    แถวที่ **ไม่ได้บันทึกค่าธรรมเนียม** ต้องบอก**สมมติฐาน**ที่ใช้คำนวณด้วย
+    (``fee = 0`` ⇒ อัตราสูงกว่าจริงได้ราว ``fees.DIME_FEE_RATE``) — เดิมบอกแค่ว่า
+    "คำนวณย้อน" ผู้ใช้จึงอ่านอัตรานั้นเป็นค่าที่จ่ายจริงเป๊ะ ๆ (AUDIT_ROUND2_2026-08-07)
+    ``fee_assumed_zero`` เป็นธงให้ผู้เรียกกรองได้โดยไม่ต้องแกะข้อความ
+    """
+    if df.empty:
+        return []
+    derived_mask = _complete_rows_mask(df) & usable_fx.isna() & df["fx_rate_thb"].notna()
+    if not bool(derived_mask.any()):
+        return []
+
+    band = f"{fx.MIN_RATE:.0f}–{fx.MAX_RATE:.0f}"
+    fee_missing = _fee_not_recorded(df)
+    rows: list[dict[str, object]] = []
+    for idx in df.index[derived_mask]:
+        recorded = recorded_fx.at[idx]
+        used = float(df.at[idx, "fx_rate_thb"])
+        if recorded is not None and pd.notna(recorded):
+            reason = (
+                f"อัตราที่บันทึกไว้ {float(recorded):g} ใช้ไม่ได้ (ต้องอยู่ในช่วง {band}) "
+                f"— ใช้อัตราที่คำนวณย้อนจากยอดเงินบาท {used:.4f} แทน"
+            )
+            recorded_value: float | None = float(recorded)
+        else:
+            reason = f"ไม่ได้บันทึกอัตราแลกเปลี่ยน — ใช้อัตราที่คำนวณย้อนจากยอดเงินบาท {used:.4f}"
+            recorded_value = None
+        fee_assumed_zero = bool(fee_missing.at[idx])
+        if fee_assumed_zero:
+            reason += _FEE_ASSUMED_ZERO_NOTE
+        rows.append(
+            {
+                **_row_identity(df, idx),
+                "recorded_fx": recorded_value,
+                "used_fx": used,
+                "fee_assumed_zero": fee_assumed_zero,
+                "reason": reason,
+            }
+        )
+    return rows
+
+
+def _collect_inconsistent_rows(df: pd.DataFrame) -> list[dict[str, object]]:
+    """แถวที่ยอดเงินบาทที่จ่ายจริง **ขัดกับ** ตัวเลขอื่นในแถวเดียวกัน (C1.2).
+
+    ทุกไม้ซื้อมีข้อมูลพอจะตรวจตัวเองได้อยู่แล้ว:
+    ``amount_thb ≈ shares × price_usd × fx_rate_thb + fee_thb``
+    เดิมไม่มีชั้นไหนเทียบเลย อัตราที่ "ผิดแต่อยู่ในช่วง 20–50" จึงรอดทุกด่าน
+    (ตัวจุดชนวนคือฟอร์มบันทึกย้อนหลังที่ตั้งค่าเริ่มต้นเป็น **อัตราวันนี้**)
+
+    **เตือนอย่างเดียว ไม่ตัดทิ้ง** — ข้อมูลครบและระบบบันทึกตามที่ผู้ใช้บอก
+    สิ่งที่ผิดคือ "ไม่ตรวจข้อมูลที่ขัดกันเอง" ไม่ใช่ "ข้อมูลไม่ครบ"
+
+    ข้ามแถวปันผล (shares/price = 0 ไม่มีอะไรให้เทียบ)
+
+    **"เทียบไม่ได้" ไม่เท่ากับ "ผ่าน" (K4).** การเทียบใช้สัดส่วนโดยมี ``amount_thb``
+    เป็นตัวหาร ยอดเงินที่เป็น 0 / ติดลบ / ±inf ทำให้สัดส่วนเป็น ``NaN`` และ
+    ``NaN > threshold`` เป็น ``False`` เสมอ ⇒ แถวที่ขัดกันชัด ๆ (จ่าย 0 บาท
+    ทั้งที่มี จำนวนหุ้น × ราคา ให้เทียบ) เคยเดินผ่านด่านนี้เงียบ ๆ
+    แถวเหล่านั้นต้องถูกรายงาน โดย ``diff_pct``/``implied_fx`` เป็น ``None``
+    (= ไม่ทราบ) ห้ามเป็น ``nan`` หรือตัวเลขที่หารด้วยศูนย์แล้วเดาขึ้นมา
+
+    **ตัวเศษก็เล็ดลอดได้ด้วยกลไกเดียวกัน (K4 รอบสอง).** ``gap`` เป็น ``NaN`` ได้เอง
+    เมื่อ ``implied`` คำนวณไม่ออก (``0 × inf``) หรือทั้งสองฝั่งเป็น ``inf``
+    (``inf − inf``) — ตอนนั้น **ทั้ง** ``ratio > tol`` และ ``gap > 0`` เป็น ``False``
+    พร้อมกัน ด่านจึงกลับไปเงียบอีกครั้ง ส่วนต่างที่ไม่ใช่ตัวเลขจริงคือ "เทียบไม่ได้เลย"
+    ซึ่งต้องเตือน ไม่ใช่ผ่าน (ทุกด่านในไฟล์นี้ต้องกรองด้วย :func:`_is_real_number`
+    ก่อนใช้ ``>``/``<`` เสมอ ห้ามเทียบดิบ ๆ)
+
+    ยอดเงิน 0 ที่ implied ก็เป็น 0 ด้วย (หุ้นแถมราคา 0) ไม่ถือว่าขัดกัน — ไม่มีตัวเลข
+    ไหนขัดกับตัวเลขไหน การเตือนตรงนั้นคือเสียงรบกวน ไม่ใช่ข้อมูล
+
+    **ค่าธรรมเนียมติดลบก็คือตัวเลขที่ขัดกับตัวเองในแถวเดียวกัน (AUDIT_ROUND2_2026-08-07).**
+    :func:`_recorded_fee_thb` คืน ``NaN`` ให้แถวเหล่านั้น (เดิมกลืนเป็น 0 เงียบ ๆ)
+    ด่านนี้จึงต้องธงมันขึ้นมาแบบตั้งใจ ไม่ใช่รอให้หลุดมาทาง ``gap`` ที่เป็น ``NaN``
+    และ **เหตุผลต้องชี้ที่ค่าธรรมเนียม** ไม่ใช่พูดลอย ๆ ว่า "คำนวณเป็นตัวเลขจริงไม่ได้"
+    """
+    if df.empty:
+        return []
+    is_trade = (
+        df["tx_type"] != TX_DIVIDEND
+        if "tx_type" in df.columns
+        else pd.Series(True, index=df.index)
+    )
+    amount = df["amount_thb"]
+    fee = _recorded_fee_thb(df)
+    if not isinstance(fee, pd.Series):
+        fee = pd.Series(float(fee), index=df.index)
+    negative_fee = _fee_is_negative(df)
+    raw_fee = _fee_column(df)
+    implied = df["shares"] * df["price_usd"] * df["fx_rate_thb"] + fee
+    gap = (amount - implied).abs()
+    # ตัวหารต้องเป็นจำนวนเงินบวกที่มีค่าจริงเท่านั้น (inf ผ่าน ``> 0`` ได้ แต่ inf/inf = NaN)
+    comparable_amount = _is_real_number(amount) & (amount > 0)
+    comparable = comparable_amount & _is_real_number(implied)
+    ratio = gap / amount.where(comparable_amount)
+    flagged = (
+        _complete_rows_mask(df)
+        & is_trade
+        & (
+            ratio.gt(FX_CONSISTENCY_TOLERANCE)  # เส้นทางปกติ: ต่างกันเกินเกณฑ์
+            # เทียบสัดส่วนไม่ได้ แต่ยังมีส่วนต่างจริงให้เห็น → ต่างกันบาทเดียวก็ผิด
+            | (~comparable & gap.gt(0))
+            # ส่วนต่างเองก็ไม่ใช่ตัวเลขจริง (implied = 0 × inf, หรือ inf − inf)
+            # → เทียบไม่ได้เลยสักทาง ซึ่งไม่ใช่ "ผ่าน": ทั้งสองเงื่อนไขข้างบนเป็น
+            # False พร้อมกันเพราะ NaN ไม่ใช่เพราะตัวเลขตรงกัน
+            | ~_is_real_number(gap)
+            # ยอดเงินที่จ่ายติดลบไม่มีทางถูก แม้ implied จะติดลบตามไปด้วย
+            | amount.lt(0)
+            # ค่าธรรมเนียมติดลบไม่มีทางถูกเช่นกัน — ธงตรง ๆ ไม่ใช่รอให้หลุดมาทาง NaN
+            | negative_fee
+        )
+    )
+    if not bool(flagged.any()):
+        return []
+
+    rows: list[dict[str, object]] = []
+    for idx in df.index[flagged]:
+        paid = float(amount.at[idx])
+        expected = float(implied.at[idx])
+        recorded_rate = float(df.at[idx, "fx_rate_thb"])
+        recorded_fee = float(raw_fee.at[idx]) if raw_fee is not None else float("nan")
+        # % ที่หารด้วยตัวหารที่ใช้ไม่ได้ = ตัวเลขที่ระบบแต่งเอง — ต้องเป็น None (ไม่ทราบ)
+        diff_pct = float(ratio.at[idx]) * 100.0 if bool(comparable.at[idx]) else None
+        trade_value_usd = float(df.at[idx, "shares"]) * float(df.at[idx, "price_usd"])
+        implied_rate, rate_txt = _implied_rate_note(
+            paid=paid,
+            fee=float(fee.at[idx]),
+            trade_value_usd=trade_value_usd,
+            recorded_rate=recorded_rate,
+            recorded_fee=recorded_fee,
+        )
+        if diff_pct is None:
+            head = (
+                f"ยอดเงินที่บันทึกไว้ {_fmt_thb(paid)} บาท เทียบสัดส่วนกับ "
+                f"จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน + ค่าธรรมเนียม = {_fmt_thb(expected)} บาท ไม่ได้ "
+                f"({_uncomparable_cause(paid, recorded_fee)}) "
+            )
+        else:
+            head = (
+                f"ยอดเงินที่บันทึกไว้ {_fmt_thb(paid)} บาท ไม่ตรงกับ "
+                f"จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน + ค่าธรรมเนียม = {_fmt_thb(expected)} บาท "
+                f"(ต่างกัน {diff_pct:.2f}%) "
+            )
+        rows.append(
+            {
+                **_row_identity(df, idx),
+                # ตัวเลขที่ไม่ใช่ตัวเลขจริงต้องออกไปเป็น None (= ไม่ทราบ) เหมือน ``diff_pct``
+                # — ``nan``/``inf`` แปลงเป็น JSON ที่ถูกต้องไม่ได้ และไปโผล่บนตารางหน้าจอ
+                # ส่วนที่อธิบายว่าเกิดอะไรขึ้นอยู่ใน ``reason`` ซึ่งพูดว่า "คำนวณไม่ได้" ตรง ๆ
+                "amount_thb": _real_or_none(paid),
+                "implied_amount_thb": _real_or_none(expected),
+                # ค่าธรรมเนียมดิบที่อยู่ในสมุด (``None`` = ไม่ได้บันทึก) — ต้องออกไปด้วย
+                # เพราะแถวที่ติดลบคือแถวที่ผู้ใช้ต้องไปแก้ตัวเลขนี้โดยเฉพาะ
+                "recorded_fee_thb": _real_or_none(recorded_fee),
+                "recorded_fx": _real_or_none(recorded_rate),
+                "implied_fx": implied_rate,
+                "diff_pct": diff_pct,
+                "reason": f"{head}{rate_txt}ตัวเลขยังถูกนับอยู่ ให้ตรวจสอบแถวนี้ในสมุด",
+            }
+        )
+    return rows
+
+
+def _is_real_number(values: pd.Series) -> pd.Series:
+    """True เฉพาะค่าที่เป็นตัวเลขจริง — ``NaN``/``±inf`` เป็น False.
+
+    ใช้คุมด่านที่เทียบด้วยเครื่องหมาย ``>``/``<``: ค่าที่ไม่ใช่ตัวเลขจริงทำให้
+    การเปรียบเทียบเป็น ``False`` เสมอ ซึ่งอ่านได้ว่า "ผ่าน" ทั้งที่จริงคือ "เทียบไม่ได้"
+    """
+    return values.notna() & values.abs().ne(float("inf"))
+
+
+def _is_real_scalar(value: float) -> bool:
+    """คู่สเกลาร์ของ :func:`_is_real_number` — นิยาม "ตัวเลขจริง" ต้องมีที่เดียว."""
+    return bool(pd.notna(value)) and abs(float(value)) != float("inf")
+
+
+def _real_or_none(value: float) -> float | None:
+    """ตัวเลขจริงเท่านั้นที่ออกไปเป็นตัวเลข — ``NaN``/``±inf`` ออกไปเป็น ``None`` (ไม่ทราบ)."""
+    return float(value) if _is_real_scalar(value) else None
+
+
+def _uncomparable_cause(paid: float, recorded_fee: float = float("nan")) -> str:
+    """เหตุผลว่า **ทำไม** ถึงเทียบสัดส่วนไม่ได้ — ต้องชี้ฝั่งที่พังจริง.
+
+    เหตุผลที่ชี้ผิดฝั่งคือการกุคำอธิบาย: แถวที่ยอดเงินปกติดีแต่ ``implied``
+    คำนวณไม่ออก (จำนวนหุ้น/ราคาเป็น ``inf``) เคยขึ้นข้อความว่า "ยอดเงินต้องเป็น
+    จำนวนบวก" ซึ่งส่งผู้ใช้ไปนั่งแก้เลขที่ถูกอยู่แล้ว
+
+    ``recorded_fee`` ติดลบเป็นสาเหตุลำดับที่สาม: :func:`_recorded_fee_thb` คืน
+    ``NaN`` ให้แถวนั้น ``implied`` จึงคำนวณไม่ออกทั้งที่ยอดเงินและจำนวนหุ้นถูกต้องดี
+    ถ้าไม่ชี้ที่ค่าธรรมเนียม ผู้ใช้จะได้ข้อความเหมารวมว่า "คำนวณเป็นตัวเลขจริงไม่ได้"
+    แล้วไล่หาว่าเลขไหนผิดเอาเอง (AUDIT_ROUND2_2026-08-07)
+    """
+    if not (_is_real_scalar(paid) and paid > 0):
+        return "ยอดเงินต้องเป็นจำนวนบวก"
+    if _is_real_scalar(recorded_fee) and recorded_fee < 0:
+        return f"ค่าธรรมเนียมที่บันทึกไว้ติดลบ {_fmt_thb(recorded_fee)} บาท"
+    return "จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน + ค่าธรรมเนียม คำนวณเป็นตัวเลขจริงไม่ได้"
+
+
+def _fmt_thb(value: float) -> str:
+    """จำนวนเงินสำหรับข้อความเตือน — ค่าที่ไม่ใช่ตัวเลขจริงต้องพูดตรง ๆ ห้ามพิมพ์ ``nan``."""
+    if not _is_real_scalar(value):
+        return "คำนวณไม่ได้"
+    return f"{value:,.2f}"
+
+
+def _negative_fee_note(fee: float) -> str:
+    """หมายเหตุต่อท้ายเหตุผล เมื่อค่าธรรมเนียมที่บันทึกไว้ **ติดลบ**.
+
+    ค่าธรรมเนียมติดลบแปลว่า "ซื้อแล้วได้เงินคืน" ซึ่งไม่มีอยู่จริง จึงเป็นตัวเลขที่
+    ผู้ใช้ต้องไปแก้ในสมุด ไม่ใช่ค่าที่ระบบจะกลืนเป็น 0 แล้วคำนวณต่อ
+    (AUDIT_ROUND2_2026-08-07: ``fee.where(fee >= 0).fillna(0.0)`` ทำให้แถวแบบนี้
+    ให้อัตราย้อน "สวย ๆ" เท่ากับแถวที่ไม่ได้กรอกค่าธรรมเนียมเลย)
+
+    ต้องพิมพ์ **ค่าจริง** ที่กรอกไว้เสมอ — "ค่าธรรมเนียมผิด" ลอย ๆ ผู้ใช้แก้ตามไม่ได้
+    """
+    return f" (ค่าธรรมเนียมที่บันทึกไว้ติดลบ {_fmt_thb(fee)} บาท จึงหักออกจากยอดเงินไม่ได้)"
+
+
+def _implied_rate_note(
+    *,
+    paid: float,
+    fee: float,
+    trade_value_usd: float,
+    recorded_rate: float,
+    recorded_fee: float = float("nan"),
+) -> tuple[float | None, str]:
+    """อัตราแลกเปลี่ยนที่คำนวณย้อนจากยอดเงินของแถวนั้น + ข้อความอธิบายเมื่อคำนวณไม่ได้.
+
+    คืน ``None`` เมื่อผลลัพธ์ไม่ใช่อัตราแลกเปลี่ยนที่เป็นไปได้ (ตัวหาร ≤ 0 จาก
+    หุ้นแถมราคา 0 / จำนวนหุ้นติดลบ หรือยอดเงินหลังหักค่าธรรมเนียม ≤ 0)
+    — ตัวเลขที่หารด้วยศูนย์/ติดลบแล้วเดาขึ้นมาคือการกุตัวเลขบนเส้นทางเงิน
+
+    เหตุผลต้องบอก **ค่าจริง** ของตัวที่ทำให้คำนวณไม่ได้ ห้ามเขียนเหมารวมว่า "= 0"
+    (ผู้ใช้จะไปตามหาราคา 0 ที่ไม่มีอยู่จริง แทนที่จะเห็นว่าจำนวนหุ้นติดลบ)
+    """
+    if not (_is_real_scalar(trade_value_usd) and trade_value_usd > 0):
+        return None, (
+            f"— คำนวณอัตราย้อนจากยอดเงินบาทไม่ได้ (จำนวนหุ้น × ราคา = {_fmt_thb(trade_value_usd)}) "
+        )
+    # ค่าธรรมเนียมติดลบต้องถูกชี้ชื่อก่อนถึงกิ่ง "ยอดเงินหลังหักค่าธรรมเนียม = คำนวณไม่ได้"
+    # ข้างล่าง — กิ่งนั้นพูดถูกแต่ชี้ปลายทาง ผู้ใช้ต้องรู้ว่าต้นเหตุคือช่อง ``fee_thb``
+    if _is_real_scalar(recorded_fee) and recorded_fee < 0:
+        return None, (
+            "— คำนวณอัตราย้อนจากยอดเงินบาทไม่ได้"
+            f"{_negative_fee_note(recorded_fee)} "
+        )
+    net_paid = paid - fee
+    rate = net_paid / trade_value_usd
+    if not (_is_real_scalar(rate) and rate > 0):
+        return None, (
+            "— คำนวณอัตราย้อนจากยอดเงินบาทไม่ได้ "
+            f"(ยอดเงินหลังหักค่าธรรมเนียม = {_fmt_thb(net_paid)}) "
+        )
+    return rate, (
+        f"— อัตราที่คำนวณย้อนจากยอดเงินบาทคือ {rate:.4f} "
+        f"แต่ในสมุดบันทึกไว้ {recorded_rate:.4f} "
+    )
+
+
+def describe_skipped_rows(skipped: list[dict[str, object]]) -> str:
+    """ข้อความไทยบรรทัดเดียวสำหรับแสดงเตือนผู้ใช้; คืน "" เมื่อไม่มีแถวถูกข้าม."""
+    return _describe_rows(
+        skipped,
+        head="ข้ามธุรกรรม {n} แถวเพราะข้อมูลไม่ครบ ตัวเลขสรุปไม่รวมแถวเหล่านี้: ",
+    )
+
+
+def describe_derived_fx_rows(rows: list[dict[str, object]]) -> str:
+    """ข้อความไทยบรรทัดเดียวสำหรับแถวที่อัตราถูกคำนวณย้อนมาแทน (C1.3)."""
+    return _describe_rows(
+        rows,
+        head=(
+            "อัตราแลกเปลี่ยน {n} แถวถูกคำนวณย้อนจากยอดเงินบาทเพราะค่าที่บันทึกไว้ใช้ไม่ได้ "
+            "(ตัวเลขด้านล่างรวมแถวเหล่านี้อยู่): "
+        ),
+    )
+
+
+def describe_inconsistent_rows(rows: list[dict[str, object]]) -> str:
+    """ข้อความไทยบรรทัดเดียวสำหรับแถวที่ยอดเงินขัดกับอัตราที่บันทึก (C1.2)."""
+    return _describe_rows(
+        rows,
+        head=(
+            "ยอดเงินบาทของ {n} แถวไม่ตรงกับ จำนวนหุ้น × ราคา × อัตราแลกเปลี่ยน "
+            "(ตัวเลขด้านล่างยังนับแถวเหล่านี้อยู่ ให้ตรวจสอบอัตราที่บันทึกไว้): "
+        ),
+    )
+
+
+def _describe_rows(rows: list[dict[str, object]], *, head: str) -> str:
+    """ประกอบข้อความเตือนรายแถวแบบเดียวกับ ``describe_skipped_rows`` (ตัดที่ 5 แถว)."""
+    if not rows:
+        return ""
+    shown = rows[:_MAX_SKIPPED_IN_MESSAGE]
+    parts = [
+        f"{row.get('ticker') or 'ไม่ทราบ ticker'} "
+        f"{row.get('date') or 'ไม่ทราบวันที่'} — {row.get('reason')}"
+        for row in shown
+    ]
+    remaining = len(rows) - len(shown)
+    if remaining > 0:
+        parts.append(f"และอีก {remaining} แถว")
+    return head.format(n=len(rows)) + "; ".join(parts)
+
+
+def _empty_reports() -> dict[str, list[dict[str, object]]]:
+    return {attr: [] for attr in _REPORT_ATTRS}
+
+
+def _with_reports(df: pd.DataFrame, reports: dict[str, list[dict[str, object]]]) -> pd.DataFrame:
+    """แนบรายงานทั้งสามชุดไปกับ DataFrame (อ่านต่อด้วย ``_reports_of``)."""
+    for attr in _REPORT_ATTRS:
+        df.attrs[attr] = list(reports.get(attr) or [])
+    return df
+
+
+def _reports_of(df: pd.DataFrame) -> dict[str, list[dict[str, object]]]:
+    """อ่านรายงานทั้งสามชุดจาก DataFrame (ว่างถ้าไม่มี/ถูก monkeypatch)."""
+    attrs = getattr(df, "attrs", {})
+    return {attr: list(attrs.get(attr) or []) for attr in _REPORT_ATTRS}
+
+
+def _report_keys(
+    reports: dict[str, list[dict[str, object]]],
+    *,
+    tx_type: str | None = None,
+) -> dict[str, object]:
+    """แปลงรายงานเป็นคีย์ dict พร้อมข้อความไทย — รูปแบบเดียวกันทุก summary.
+
+    ``tx_type`` กรองเฉพาะแถวของประเภทธุรกรรมนั้น (C1.4 — สรุปปันผลต้องไม่แสดง
+    ไม้ซื้อที่ถูกตัด ผู้ใช้จะเข้าใจว่าปันผลที่บันทึกไว้หายไป)
+    """
+
+    def _filtered(attr: str) -> list[dict[str, object]]:
+        rows = reports.get(attr) or []
+        if tx_type is None:
+            return list(rows)
+        return [row for row in rows if str(row.get("tx_type") or TX_BUY) == tx_type]
+
+    skipped = _filtered(_SKIPPED_ROWS_ATTR)
+    derived = _filtered(_DERIVED_FX_ROWS_ATTR)
+    inconsistent = _filtered(_INCONSISTENT_ROWS_ATTR)
+    return {
+        "skipped_rows": skipped,
+        "skipped_reason": describe_skipped_rows(skipped),
+        "derived_fx_rows": derived,
+        "derived_fx_reason": describe_derived_fx_rows(derived),
+        "inconsistent_rows": inconsistent,
+        "inconsistent_reason": describe_inconsistent_rows(inconsistent),
+    }
+
+
+def _with_fx_source(df: pd.DataFrame, quote: tuple[float, bool | None]) -> pd.DataFrame:
+    """แนบอัตราแลกเปลี่ยนที่ใช้จริง + ที่มา ไปกับ DataFrame (อ่านต่อด้วย ``_fx_source_of``)."""
+    df.attrs[_FX_SOURCE_ATTR] = {"fx_rate_thb": quote[0], "fx_is_live": quote[1]}
+    return df
+
+
+def _fx_source_of(df: pd.DataFrame) -> dict[str, object]:
+    """คีย์อัตราแลกเปลี่ยนของ summary — ไม่มีข้อมูล = ``None`` (ไม่ทราบ) ห้ามเดา."""
+    source = getattr(df, "attrs", {}).get(_FX_SOURCE_ATTR) or {}
+    return {
+        "fx_rate_thb": source.get("fx_rate_thb"),
+        "fx_is_live": source.get("fx_is_live"),
+    }
+
+
+def reports_of(df: pd.DataFrame) -> dict[str, object]:
+    """คีย์รายงานพร้อมข้อความไทย สำหรับผู้เรียกที่แปลง DataFrame เป็น dict.
+
+    ``DataFrame.to_dict()`` ทิ้ง ``.attrs`` ทั้งหมด — ต้องเรียกฟังก์ชันนี้ **ก่อน**
+    แปลง ไม่งั้นคำเตือนหายทั้งชุด (ผิดกฎ fail-loud พอ ๆ กับการกุตัวเลข)
+    """
+    return _report_keys(_reports_of(df))
+
+
 def _load_transactions() -> pd.DataFrame:
-    """อ่านธุรกรรมจาก CSV และ normalize ชนิดข้อมูล."""
+    """อ่านธุรกรรมจาก CSV และ normalize ชนิดข้อมูล.
+
+    แถวที่ข้อมูลไม่ครบถูกตัดออกและรายงานไว้ที่ ``df.attrs['skipped_rows']``
+    แถวที่ยังอยู่แต่น่าสงสัยอยู่ที่ ``derived_fx_rows`` / ``inconsistent_rows``
+    """
     _ensure_storage()
     df = pd.read_csv(TRANSACTIONS_FILE)
     if df.empty:
-        return _empty_transactions()
+        return _with_reports(_empty_transactions(), _empty_reports())
 
     for col in CSV_COLUMNS:
         if col not in df.columns:
@@ -150,20 +783,55 @@ def _load_transactions() -> pd.DataFrame:
     df = df[CSV_COLUMNS].copy()
     df["tx_id"] = df["tx_id"].astype(str).str.strip()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    ticker = df["ticker"].astype(str).str.strip().str.upper()
+    # ค่าว่าง/NaN ที่ astype(str) แปลงเป็นข้อความ ต้องกลับไปเป็น "ไม่มีข้อมูล"
+    # ไม่ใช่กลายเป็น ticker ชื่อ "NAN" ที่โผล่ในพอร์ตเป็นสินทรัพย์ผี
+    df["ticker"] = ticker.where(~ticker.isin(["", "NAN", "NONE"]))
     df["shares"] = pd.to_numeric(df["shares"], errors="coerce")
     df["price_usd"] = pd.to_numeric(df["price_usd"], errors="coerce")
-    df["fx_rate_thb"] = pd.to_numeric(df["fx_rate_thb"], errors="coerce").fillna(DEFAULT_USDTHB)
+    df["fx_rate_thb"] = pd.to_numeric(df["fx_rate_thb"], errors="coerce")
     df["amount_thb"] = pd.to_numeric(df["amount_thb"], errors="coerce")
     df["fee_thb"] = pd.to_numeric(df["fee_thb"], errors="coerce")
     df["note"] = df["note"].fillna("").astype(str)
     # ค่าว่าง/ไม่รู้จัก = buy เสมอ — ห้ามทิ้งแถวเก่าเงียบ ๆ เพราะ schema เพิ่มทีหลัง
     tx_type = df["tx_type"].fillna("").astype(str).str.strip().str.lower()
     df["tx_type"] = tx_type.where(tx_type.isin([TX_BUY, TX_DIVIDEND]), TX_BUY)
-    df = df.dropna(subset=["date", "ticker", "shares", "price_usd", "fx_rate_thb", "amount_thb"])
+
+    # ชั้นที่ 0 — อัตราที่บันทึกไว้แต่ "มีค่าแต่ใช้ไม่ได้" (0 / ติดลบ / นอกช่วง 20–50)
+    # คือข้อมูลผิด ไม่ใช่ค่าจริง ต้องเดินเส้นทางเดียวกับค่าว่าง ห้ามไหลเข้าไปคิดเงิน
+    recorded_fx = df["fx_rate_thb"]
+    usable_fx = recorded_fx.where(recorded_fx.between(fx.MIN_RATE, fx.MAX_RATE))
+    unusable_fx = recorded_fx.where(recorded_fx.notna() & usable_fx.isna())
+    df["fx_rate_thb"] = usable_fx
+    # ชั้นที่ 1 — หาค่าจริงก่อนเดา: อัตราที่จ่ายจริงย้อนจากยอดบาทของแถวนั้นเอง
+    df["fx_rate_thb"] = df["fx_rate_thb"].fillna(_derive_fx_from_amount(df))
+    recovered = unusable_fx.notna() & df["fx_rate_thb"].notna()
+    if bool(recovered.any()):
+        logger.warning(
+            "อัตราแลกเปลี่ยนที่บันทึกไว้ใช้ไม่ได้ %d แถวใน %s — ใช้อัตราที่คำนวณย้อนจากยอดบาทแทน: %s",
+            int(recovered.sum()),
+            TRANSACTIONS_FILE,
+            df.loc[recovered, "tx_id"].tolist(),
+        )
+    # ชั้นที่ 2 — ที่เหลือปล่อยเป็น NaN ให้ dropna ทำงานจริง แล้วรายงานออกไป
+    skipped = _collect_skipped_rows(df, unusable_fx)
+    if skipped:
+        logger.warning(
+            "ข้ามธุรกรรม %d แถวใน %s เพราะข้อมูลไม่ครบ: %s",
+            len(skipped),
+            TRANSACTIONS_FILE,
+            [row["tx_id"] for row in skipped],
+        )
+    # ชั้นที่ 3 — แถวที่ "ยังอยู่แต่น่าสงสัย" ต้องถึงหน้าจอด้วย ไม่ใช่ค้างอยู่ใน log
+    reports = {
+        _SKIPPED_ROWS_ATTR: skipped,
+        _DERIVED_FX_ROWS_ATTR: _collect_derived_fx_rows(df, usable_fx, recorded_fx),
+        _INCONSISTENT_ROWS_ATTR: _collect_inconsistent_rows(df),
+    }
+    df = df.dropna(subset=list(REQUIRED_FIELDS_TH))
     if df.empty:
-        return _empty_transactions()
-    return _calculate_dime_fee_info(df)
+        return _with_reports(_empty_transactions(), reports)
+    return _with_reports(_calculate_dime_fee_info(df), reports)
 
 
 def _get_latest_prices(tickers: list[str]) -> dict[str, float]:
@@ -208,6 +876,21 @@ def _get_latest_prices(tickers: list[str]) -> dict[str, float]:
 def _get_usdthb_rate() -> float:
     """อัตราแลกเปลี่ยน THB/USD จากแหล่งกลางเดียวของระบบ (utils/fx.py)."""
     return fx.get_usdthb_rate()
+
+
+def _get_fx_quote() -> tuple[float, bool | None]:
+    """อัตราที่ใช้แปลงมูลค่าวันนี้เป็นบาท **พร้อมที่มา** (AUDIT_2026-08-06 B9/C1.5).
+
+    ยังดึงตัวเลขผ่าน :func:`_get_usdthb_rate` เพื่อให้ทั้งไฟล์เหลือทางเข้าเดียวเหมือนเดิม
+    แล้วถาม ``utils.fx`` ว่าอัตราตัวนี้เป็นค่าสดหรือค่าสำรอง (``source_of`` อ่านจากแคช
+    ไม่ยิงเน็ตซ้ำ) — ที่มาต้องเดินทางไปถึงหน้าจอ/API เพราะค่าสำรองทำให้ตัวเลขบาททั้งก้อน
+    (``Current Value (THB)`` / ``P&L (THB)``) คลาดเคลื่อนโดยไม่มีอะไรบอก
+
+    ``None`` = **ไม่ทราบที่มา** เกิดเมื่อผู้เรียกจัดหาอัตรามาเอง (เช่นเทสต์ที่แทน
+    :func:`_get_usdthb_rate`) — คนละความหมายกับ ``False`` ที่แปลว่ารู้ว่าเป็นค่าสำรอง
+    """
+    rate = float(_get_usdthb_rate())
+    return rate, fx.source_of(rate)
 
 
 def get_today_fx_rate_thb() -> float:
@@ -322,18 +1005,32 @@ def add_dividend(
 def get_dividends(ticker: str | None = None) -> pd.DataFrame:
     """แถวปันผลจาก ledger (ใหม่→เก่า); เพิ่มคอลัมน์ ``amount_usd`` (สุทธิ ณ วันรับ)."""
     transactions = _load_transactions()
+    reports = _reports_of(transactions)
     dividends = transactions[transactions["tx_type"] == TX_DIVIDEND].copy()
     if ticker:
         dividends = dividends[dividends["ticker"] == ticker.strip().upper()]
     if dividends.empty:
-        return dividends
+        return _with_reports(dividends, reports)
     dividends["amount_usd"] = dividends["amount_thb"] / dividends["fx_rate_thb"]
-    return dividends.sort_values("date", ascending=False).reset_index(drop=True)
+    result = dividends.sort_values("date", ascending=False).reset_index(drop=True)
+    return _with_reports(result, reports)
 
 
 def get_dividend_summary() -> dict[str, object]:
-    """สรุปปันผลสุทธิที่รับจริงทั้งหมด (THB/USD) รวมและรายปีปัจจุบัน."""
+    """สรุปปันผลสุทธิที่รับจริงทั้งหมด (THB/USD) รวมและรายปีปัจจุบัน.
+
+    ถ้าธุรกรรมบางแถวข้อมูลไม่ครบจนคิดเงินไม่ได้ แถวนั้นไม่อยู่ในยอดรวมข้างบน
+    และอยู่ใน ``skipped_rows`` + ``skipped_reason`` **คีย์ชุดเดียวกับ**
+    ``get_total_summary()`` — ยอดปันผลที่น้อยกว่าจริงต้องมีคำเตือนกำกับเสมอ
+    ห้ามตัดแถวเงียบ ๆ (รอบเก็บกวาด C1)
+
+    รายงานถูกกรองเหลือ **เฉพาะแถวปันผล** (C1.4) — เดิมยกรายงานของทั้งสมุดมาวาง
+    ใต้หัวข้อ "ปันผลรับจริง" ไม้ซื้อที่ถูกตัดจึงถูกอ่านว่า "ปันผลที่บันทึกไว้หายไป"
+    และคำเตือนเดียวกันโผล่ซ้ำสองที่ในหน้าเดียว · แถวที่ถูกตัดของประเภทอื่นยังอยู่ครบ
+    ที่ ``get_total_summary()`` ตามเดิม (กรอง ไม่ใช่กลืน)
+    """
     dividends = get_dividends()
+    report = _report_keys(_reports_of(dividends), tx_type=TX_DIVIDEND)
     if dividends.empty:
         return {
             "total_thb": 0.0,
@@ -341,6 +1038,7 @@ def get_dividend_summary() -> dict[str, object]:
             "count": 0,
             "this_year_thb": 0.0,
             "by_ticker_thb": {},
+            **report,
         }
     this_year = dividends[dividends["date"].dt.year == pd.Timestamp.today().year]
     return {
@@ -349,6 +1047,7 @@ def get_dividend_summary() -> dict[str, object]:
         "count": int(len(dividends)),
         "this_year_thb": float(this_year["amount_thb"].sum()),
         "by_ticker_thb": dividends.groupby("ticker")["amount_thb"].sum().to_dict(),
+        **report,
     }
 
 
@@ -378,26 +1077,31 @@ def get_portfolio_summary() -> pd.DataFrame:
     (P&L ที่ได้จึงเป็นกำไรจากราคาล้วน; รายรับปันผลดูจาก ``get_dividend_summary``)
     """
     transactions = _load_transactions()
+    reports = _reports_of(transactions)
     if "tx_type" in transactions.columns:
         transactions = transactions[transactions["tx_type"] != TX_DIVIDEND]
     if transactions.empty:
-        return pd.DataFrame(
-            columns=[
-                "Ticker",
-                "Shares",
-                "Avg Cost (USD)",
-                "Current Price (USD)",
-                "Invested (USD)",
-                "Invested (THB)",
-                "Current Value (USD)",
-                "Current Value (THB)",
-                "FX Rate (Buy)",
-                "Fee (THB)",
-                "P&L (USD)",
-                "P&L (THB)",
-                "Return (%)",
-                "Price OK",
-            ]
+        return _with_reports(
+            pd.DataFrame(
+                columns=[
+                    "Ticker",
+                    "Shares",
+                    "Avg Cost (USD)",
+                    "Current Price (USD)",
+                    "Invested (USD)",
+                    "Invested (THB)",
+                    "Current Value (USD)",
+                    "Current Value (THB)",
+                    "FX Rate (Buy)",
+                    "Fee (THB)",
+                    "P&L (USD)",
+                    "P&L (THB)",
+                    "Return (%)",
+                    "Return USD (%)",
+                    "Price OK",
+                ]
+            ),
+            reports,
         )
 
     transactions["cost_usd"] = transactions["shares"] * transactions["price_usd"]
@@ -419,7 +1123,9 @@ def get_portfolio_summary() -> pd.DataFrame:
 
     tickers = grouped["ticker"].tolist()
     latest_prices = _get_latest_prices(tickers)
-    fx_rate = _get_usdthb_rate()
+    # อัตราเดียวกับที่รายงานออกไป — ห้ามดึงซ้ำคนละครั้งกับที่คูณเข้ามูลค่าจริง (B9)
+    fx_quote = _get_fx_quote()
+    fx_rate = fx_quote[0]
 
     # ราคาที่ดึงไม่ได้ต้องเป็น NaN — เดิม fillna(0) ทำให้ P&L โชว์ -100% ปลอม (AUDIT.md C1)
     grouped["current_price_usd"] = grouped["ticker"].map(latest_prices)
@@ -428,7 +1134,19 @@ def get_portfolio_summary() -> pd.DataFrame:
     grouped["current_value_thb"] = grouped["current_value_usd"] * fx_rate
     grouped["pnl_usd"] = grouped["current_value_usd"] - grouped["invested_usd"]
     grouped["pnl_thb"] = grouped["current_value_thb"] - grouped["invested_thb"]
-    grouped["return_pct"] = grouped["pnl_usd"] / grouped["invested_usd"] * 100.0
+    # ``Return (%)`` = **ฐานเงินบาท** — สกุลที่ผู้ใช้จ่ายจริงและวัดผลจริง (FIX_PLAN ข้อ 3.3)
+    #
+    # เดิมเป็น ``pnl_usd / invested_usd`` ซึ่งเป็นฐานดอลลาร์ แล้วถูกวางไว้ในตารางเดียวกับ
+    # ``P&L (THB)`` และไม่ตรงกับ ``get_total_summary()["total_return_pct"]`` ที่ใช้ฐานบาท
+    # ⇒ หน้าจอเดียวโชว์ได้ว่า "ขาดทุน 1,072 บาท" คู่กับ "+14.44%" และ %รายกองบวกกันไม่เท่ากับ
+    # %รวม  เพราะสองฐานต่างกันด้วยผลของอัตราแลกเปลี่ยน: ตัวหารเป็นอัตรา**วันซื้อ** ส่วน
+    # ตัวตั้งเป็นอัตรา**วันนี้** — ช่วงบาทอ่อน/แข็งพอ ตัวเลขพลิกเครื่องหมายกันได้เลย
+    # ไหลออกสี่ทางพร้อมกัน: ตาราง holdings, ``/api/portfolio/*``, AI advisor (top_holdings)
+    # และ PDF รายเดือน — ทั้งสี่ที่วางมันคู่กับตัวเลขฐานบาท
+    grouped["return_pct"] = grouped["pnl_thb"] / grouped["invested_thb"] * 100.0
+    # ฐานดอลลาร์ยังมีประโยชน์ (แยกผลของหุ้นออกจากผลของค่าเงิน) แต่ต้องมี **ป้ายของตัวเอง**
+    # ห้ามใช้ชื่อกลาง ๆ ว่า "Return" ปนกับตัวเลขฐานบาทอีก
+    grouped["return_pct_usd"] = grouped["pnl_usd"] / grouped["invested_usd"] * 100.0
 
     return grouped.rename(
         columns={
@@ -445,6 +1163,7 @@ def get_portfolio_summary() -> pd.DataFrame:
             "pnl_usd": "P&L (USD)",
             "pnl_thb": "P&L (THB)",
             "return_pct": "Return (%)",
+            "return_pct_usd": "Return USD (%)",
             "price_ok": "Price OK",
         }
     )[
@@ -462,51 +1181,115 @@ def get_portfolio_summary() -> pd.DataFrame:
             "P&L (USD)",
             "P&L (THB)",
             "Return (%)",
+            "Return USD (%)",
             "Price OK",
         ]
-    ]
+    ].pipe(_with_reports, reports).pipe(_with_fx_source, fx_quote)
 
 
-def get_total_summary() -> dict[str, object]:
+def get_total_summary(holdings: pd.DataFrame | None = None) -> dict[str, object]:
     """สรุปภาพรวมพอร์ตทั้งหมดในหน่วย THB.
 
-    ถ้าดึงราคาบาง ticker ไม่ได้: มูลค่า/กำไรคิดเฉพาะตัวที่มีราคา และรายชื่อตัวที่ขาด
-    อยู่ใน ``missing_prices`` — ผู้เรียกต้องแสดงคำเตือนนี้เสมอ (AUDIT.md C1)
+    ``holdings`` = ผลของ :func:`get_portfolio_summary` ที่ผู้เรียก **คำนวณไว้แล้ว**
+    (AUDIT_ROUND2 G2) — ผู้เรียกที่ต้องแสดงทั้งรายสินทรัพย์และยอดรวมในคำขอเดียว
+    ต้องส่ง DataFrame ชุดเดียวกันเข้ามา ห้ามปล่อยให้ฟังก์ชันนี้ไปดึงราคาเองรอบสอง:
+    ราคา/อัตราแลกเปลี่ยนของสอง snapshot ต่างกันได้จริง (yfinance ติด rate limit
+    คั่นกลาง) แล้ว payload เดียวจะขัดกันเอง — มูลค่า USD ที่ดูสมบูรณ์ คู่กับ
+    ``missing_prices`` ที่บอกว่าไม่มีราคาของกองนั้น ปล่อยว่างไว้ = ดึงเอง 1 รอบ
+    (เข้ากันได้กับผู้เรียกเดิม)
+
+    **เงินลงทุนมีสองฐาน และต้องอ่านคู่กับป้ายของมันเสมอ** (AUDIT_2026-08-06 H9)
+
+    - ``invested_thb_all`` — เงินที่จ่ายไปจริงทั้งหมด (ทุกแถวที่ใช้ได้)
+    - ``invested_thb_priced`` — เฉพาะกองที่ดึงราคาปัจจุบันได้ = **ฐานเดียว**
+      ที่ ``total_pnl_thb`` และ ``total_return_pct`` คิดมาจาก
+
+    เดิมคืน ``total_invested_thb`` (ฐานแรก) คู่กับกำไรที่คิดจากฐานที่สอง ผู้ใช้จึงเห็น
+    เลข 3 ตัวบนจอเดียวกันที่บวกลบกันไม่ลงตัว และ % ผลตอบแทน **สูงขึ้น** เมื่อดึงราคา
+    ไม่ได้ (ราคาที่หายทำให้กองที่ขาดทุนหลุดออกจากตัวหาร) — ``total_invested_thb``
+    ยังอยู่เป็นชื่อเดิมของ ``invested_thb_all`` เพื่อไม่ให้ผู้เรียกเดิมพัง
+    แต่โค้ดใหม่ควรใช้ชื่อที่ติดป้ายชัด
+
+    ``current_value_thb`` / ``total_pnl_thb`` / ``total_return_pct`` เป็น **NaN**
+    เมื่อดึงราคาไม่ได้เลยสักกอง — "ไม่รู้มูลค่า" ห้ามกลายเป็น ``0.00`` ซึ่งอ่านได้ว่า
+    "เท่าทุนพอดี" (``portfolio_service`` แปลงต่อเป็น ``None`` ให้ฝั่ง JSON)
+
+    รายชื่อกองที่ดึงราคาไม่ได้อยู่ใน ``missing_prices``; ธุรกรรมที่ถูกตัด/ถูกซ่อม/
+    ขัดกันเองอยู่ใน ``skipped_rows`` / ``derived_fx_rows`` / ``inconsistent_rows``
+    พร้อมข้อความไทยคู่กัน — ผู้เรียกต้องแสดงทั้งหมด ห้ามตัดเงียบ ๆ
+
+    ``fx_rate_thb`` / ``fx_is_live`` คืออัตราแลกเปลี่ยนที่ใช้แปลงมูลค่าวันนี้เป็นบาท
+    และที่มาของมัน (AUDIT_2026-08-06 B9/C1.5) — ``False`` = ใช้ค่าสำรองจาก config
+    (ตัวเลขบาททั้งก้อนคลาดเคลื่อน ต้องเตือนผู้ใช้แบบเดียวกับ ``missing_prices``)
+    · ``None`` = ไม่ทราบที่มา/ไม่มีการแปลงค่าเงิน (สมุดว่าง)
     """
-    holdings = get_portfolio_summary()
+    if holdings is None:
+        holdings = get_portfolio_summary()
+    elif not isinstance(holdings, pd.DataFrame):
+        # ของผิดชนิดต้องดังทันที — ห้ามเงียบแล้วไปดึงราคาเองจนได้เลขคนละชุดกับผู้เรียก
+        raise TypeError(
+            "get_total_summary() รับได้เฉพาะผลของ get_portfolio_summary() "
+            f"(DataFrame) แต่ได้ {type(holdings).__name__}"
+        )
+    report = _report_keys(_reports_of(holdings))
+    fx_source = _fx_source_of(holdings)
     if holdings.empty:
+        # สมุดว่าง = 0 คือคำตอบจริง (คนละเรื่องกับ "ดึงราคาไม่ได้")
+        # ไม่มีการแปลงค่าเงินเกิดขึ้นเลย → fx_rate_thb/fx_is_live เป็น None (ไม่ใช่ 0/False)
         return {
+            "invested_thb_all": 0.0,
+            "invested_thb_priced": 0.0,
             "total_invested_thb": 0.0,
             "current_value_thb": 0.0,
             "total_pnl_thb": 0.0,
             "total_return_pct": 0.0,
             "total_fee_thb": 0.0,
             "missing_prices": [],
+            **fx_source,
+            **report,
         }
 
     ok = holdings[holdings["Price OK"]]
     missing_prices = holdings.loc[~holdings["Price OK"], "Ticker"].astype(str).tolist()
 
-    total_invested = float(holdings["Invested (THB)"].sum())
-    invested_ok = float(ok["Invested (THB)"].sum())
-    current_value = float(ok["Current Value (THB)"].sum())
-    total_pnl = current_value - invested_ok
-    total_return_pct = (total_pnl / invested_ok * 100.0) if invested_ok else 0.0
+    invested_all = float(holdings["Invested (THB)"].sum())
+    invested_priced = float(ok["Invested (THB)"].sum())
+    if ok.empty:
+        # ไม่มีราคาเลยสักกอง → มูลค่า/กำไร/% "ไม่รู้" ห้ามเป็น 0.0
+        current_value = float("nan")
+        total_pnl = float("nan")
+        total_return_pct = float("nan")
+    else:
+        current_value = float(ok["Current Value (THB)"].sum())
+        total_pnl = current_value - invested_priced
+        total_return_pct = (
+            total_pnl / invested_priced * 100.0 if invested_priced else float("nan")
+        )
     total_fee_thb = float(holdings["Fee (THB)"].sum())
     return {
-        "total_invested_thb": total_invested,
+        "invested_thb_all": invested_all,
+        "invested_thb_priced": invested_priced,
+        # ชื่อเดิม = invested_thb_all (ยอดที่จ่ายไปจริงทั้งหมด) — ผู้เรียกเก่ายังอ่านได้
+        "total_invested_thb": invested_all,
         "current_value_thb": current_value,
         "total_pnl_thb": total_pnl,
         "total_return_pct": total_return_pct,
         "total_fee_thb": total_fee_thb,
         "missing_prices": missing_prices,
+        **fx_source,
+        **report,
     }
 
 
 def get_transactions(ticker: str | None = None) -> pd.DataFrame:
-    """ดึงประวัติการซื้อขายทั้งหมด หรือกรองตาม ticker."""
+    """ดึงประวัติการซื้อขายทั้งหมด หรือกรองตาม ticker.
+
+    แถวที่ข้อมูลไม่ครบไม่อยู่ในผลลัพธ์ แต่รายงานไว้ที่ ``.attrs['skipped_rows']``
+    """
     transactions = _load_transactions()
+    reports = _reports_of(transactions)
     if ticker:
         ticker_upper = ticker.strip().upper()
         transactions = transactions[transactions["ticker"] == ticker_upper]
-    return transactions.sort_values("date", ascending=False).reset_index(drop=True)
+    result = transactions.sort_values("date", ascending=False).reset_index(drop=True)
+    return _with_reports(result, reports)

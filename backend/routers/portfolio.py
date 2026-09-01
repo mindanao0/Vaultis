@@ -6,6 +6,10 @@ from ..services import portfolio_service
 
 router = APIRouter(prefix="/api/portfolio", tags=["Portfolio"])
 
+# ``data`` ของทุก endpoint ในไฟล์นี้เป็น object ที่พก ``skipped_rows`` /
+# ``skipped_reason`` มาด้วย (FIX_PLAN ข้อ 1.2 + C2) — ธุรกรรมที่ข้อมูลไม่ครบ
+# ถูกตัดออกจากตัวเลขทุกตัว ผู้เรียกต้องแสดงคำเตือนนี้เสมอ ห้ามตัดเงียบ ๆ
+
 
 @router.get("")
 def get_portfolio():

@@ -75,7 +75,8 @@ def inverse_vol_tilts(history: pd.DataFrame, tickers: list[str]) -> dict[str, fl
         closes = _closes(history, ticker)
         if len(closes) < MIN_HISTORY_VOL:
             continue
-        vol = float(closes.pct_change().dropna().tail(63).std())
+        # fill_method=None (B11): ห้าม ffill ราคาก่อนคำนวณผลตอบแทน
+        vol = float(closes.pct_change(fill_method=None).dropna().tail(63).std())
         if vol > 0:
             vols[ticker] = vol
     if len(vols) < 2:
@@ -96,7 +97,7 @@ def rel_strength_tilts(history: pd.DataFrame, tickers: list[str]) -> dict[str, f
             continue
         window = closes.tail(127)
         total_return = float(window.iloc[-1] / window.iloc[0] - 1.0)
-        vol = float(window.pct_change().dropna().std())
+        vol = float(window.pct_change(fill_method=None).dropna().std())  # B11
         if vol > 0:
             scores[ticker] = total_return / vol
     if len(scores) < 3:

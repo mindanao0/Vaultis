@@ -42,6 +42,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
+# fonts-tlwg-garuda (328 KB): ฟอนต์ไทยของรายงาน PDF — **จำเป็น ไม่ใช่ของตกแต่ง**
+# reportlab ที่ไม่มีฟอนต์ไทยจะ *ไม่* error แต่สลับไป ZapfDingbats แล้ววาด ■ หนึ่งตัว
+# ต่ออักษรไทยหนึ่งตัว (AUDIT_2026-08-06 ข้อ H6) utils/pdf_export.py จึงยอมพิมพ์ไทย
+# เฉพาะเมื่อหาฟอนต์เจอ — ไม่มีฟอนต์ = แทนด้วยหมายเหตุอังกฤษ แปลว่าผู้ใช้จ่ายค่า AI
+# แล้วอ่านบทวิเคราะห์ที่ซื้อมาไม่ได้ทั้งหน้า
+# ลงเฉพาะตระกูล Garuda (ให้ Garuda.ttf + Garuda-Bold.ttf ตรงกับที่ _SYSTEM_FONT_GLOBS
+# มองหาเป็นอันดับแรก) ไม่ใช่ metapackage fonts-thai-tlwg ทั้งชุดที่ใหญ่กว่าโดยไม่ได้ใช้
+#
+# **วางไว้หลัง pip โดยตั้งใจ**: ฟอนต์เป็นเลเยอร์ 328 KB ที่แทบไม่เปลี่ยน ถ้าเอาไปรวมกับ
+# apt ด้านบนจะทำให้ cache ของ `pip install -r requirements.txt` (prophet/vectorbt/numba)
+# ตายทั้งชั้น = rebuild ครั้งถัดไปลง deps ใหม่หมดเพื่อฟอนต์ตัวเดียว
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        fonts-tlwg-garuda \
+    && rm -rf /var/lib/apt/lists/*
+
 
 # --- ภาพสำหรับใช้งานจริง ---
 FROM base AS runtime

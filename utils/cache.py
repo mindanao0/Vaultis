@@ -7,7 +7,11 @@
 - exception ไม่ถูก cache — เรียกครั้งถัดไปได้ลองใหม่เสมอ
 - ค่าที่แปลว่า "ไม่มีข้อมูล" ไม่ถูก cache: ``None``, dict/list/DataFrame/Series ว่าง,
   และ dict ที่ ``data_ok=False`` (สถานะ NO DATA กลางของระบบ)
-- คืน "สำเนา" เสมอ — ผู้เรียกแก้ผลลัพธ์ได้โดยไม่ทำ cache สกปรกข้าม caller
+- คืน "สำเนาลึก" เสมอ ทั้งเส้นทาง hit และ miss — ผู้เรียกแก้ผลลัพธ์ได้โดยไม่ทำ cache
+  สกปรกข้าม caller (เส้นทาง hit เคยไม่มีเทสต์คุ้มกันเลย: ถอด deepcopy ออกแล้วทั้งชุด
+  ยังเขียว 1297 ตัว — AUDIT_ROUND2_2026-08-07; ตาข่ายตอนนี้อยู่ที่
+  ``tests/test_cache.py::test_mutating_value_from_cache_hit_does_not_poison_store``
+  และเพื่อน ๆ ในบล็อก "สำเนาฝั่ง cache hit")
 - key คิดจากเนื้อหา argument (DataFrame/Series ใช้ hash ของค่า ไม่ใช่ identity)
   แบบเดียวกับ ``st.cache_data``; argument ที่แปลงเป็น key ไม่ได้ = เรียกตรงไม่ cache
 """
@@ -34,6 +38,22 @@ _registry: list[Callable[[], None]] = []
 
 class _Unkeyable(Exception):
     """argument แปลงเป็น cache key ไม่ได้ — ผู้เรียกต้อง fallback เป็นเรียกตรง."""
+
+
+_MISS = object()  # sentinel: แยก "ไม่มีใน cache" ออกจากค่า ``None`` ที่ฟังก์ชันคืนได้จริง
+
+
+def _copy_out(value: Any) -> Any:
+    """สำเนาลึกของค่าที่จะข้ามเส้นเข้า/ออกคลัง — จุดเดียวของกติกา "คืนสำเนาเสมอ".
+
+    ต้อง **ลึก** ไม่ใช่ ``dict(...)`` หรือ ``df.copy()`` เพราะผลลัพธ์จริงของระบบเป็น
+    dict ที่มี DataFrame/dict/list ซ้อนอยู่ข้างใน (เช่นผลคะแนนที่พ่วงตารางราคา)
+    shallow copy จะปล่อยให้ผู้เรียกแก้ของข้างในแล้วเลอะถึงคลัง
+    ข้อจำกัดที่รู้ตัว: ``deepcopy`` ของ DataFrame/Series เรียก ``copy(deep=True)``
+    ซึ่ง **ไม่** สำเนาค่าข้างในเซลล์ dtype=object (ทุกฟังก์ชันที่ถูกครอบวันนี้คืนตาราง
+    ตัวเลขล้วน จึงยังไม่กระทบ — ถ้าจะแคชตารางที่เก็บ list/dict ในเซลล์ ต้องแก้ตรงนี้)
+    """
+    return copy.deepcopy(value)
 
 
 def _freeze(value: Any) -> Any:
@@ -70,6 +90,11 @@ def _is_cacheable(value: Any) -> bool:
     return True
 
 
+# ชื่อสาธารณะของตัวกรองเดียวกัน — ``backend/services/cache_service.py`` ใช้ตัวนี้ร่วม
+# (นิยาม "ผลลัพธ์ที่แคชได้" ต้องมีที่เดียวทั้งระบบ ห้ามเขียนตัวที่สอง)
+is_cacheable = _is_cacheable
+
+
 def ttl_cache(ttl_seconds: float, maxsize: int = 64) -> Callable[[F], F]:
     """Decorator factory: memoize ผลสำเร็จของฟังก์ชันไว้ ``ttl_seconds`` วินาที."""
 
@@ -87,14 +112,24 @@ def ttl_cache(ttl_seconds: float, maxsize: int = 64) -> Callable[[F], F]:
             now = _now()
             with lock:
                 hit = store.get(key)
-                if hit is not None and now - hit[1] < ttl_seconds:
-                    return copy.deepcopy(hit[0])
+                fresh = hit is not None and now - hit[1] < ttl_seconds
+                cached_value = hit[0] if fresh else _MISS
+
+            if cached_value is not _MISS:
+                # สำเนา **นอก lock** โดยตั้งใจ: ของในคลังไม่เคยถูกแก้ในที่ (มีแต่ถูกแทน
+                # ทั้งก้อนหรือถูกลบ) เราถือ reference ไว้แล้วจึงปลอดภัย ถ้าสำเนาใต้ lock
+                # ผู้เรียกทุกคนของฟังก์ชันเดียวกันจะรอตามกันเป็นแถวตามขนาดของก้อนข้อมูล
+                # (วัดจริง: dict คะแนน/ตาราง 5 ETF ≈ 0.015 ms, ตาราง 25,000 แถว ≈ 0.05 ms,
+                #  dict ที่มี 50 ตาราง ≈ 0.6 ms — ตาข่าย: test_hit_copy_does_not_block_other_callers)
+                return _copy_out(cached_value)
 
             value = func(*args, **kwargs)  # นอก lock: อย่าบล็อกคำขออื่นระหว่างดึงข้อมูล
 
             if _is_cacheable(value):
                 with lock:
-                    store[key] = (copy.deepcopy(value), _now())
+                    # เก็บ "สำเนา" ไว้ในคลัง แล้วคืน ``value`` ตัวจริงให้ผู้เรียกที่เป็นคน
+                    # คำนวณ — ผู้เรียกแก้ของตัวเองได้โดยไม่แตะคลัง (1 สำเนาต่อ 1 call)
+                    store[key] = (_copy_out(value), _now())
                     if len(store) > maxsize:
                         cutoff = _now()
                         for k in [k for k, (_, ts) in store.items() if cutoff - ts >= ttl_seconds]:

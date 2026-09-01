@@ -238,8 +238,13 @@ class TestIndicators:
         return pd.Series(np.linspace(100.0, 200.0, n), index=idx)
 
     def test_rsi_warmup_is_nan_not_a_signal(self):
+        # ขอบเขตเดิมคือ ``iloc[:13]`` ซึ่งหยุดก่อนแท่งที่มีปัญหาพอดี 1 index:
+        # RSI(14) ต้องใช้ 14 การเปลี่ยนแปลง = ราคา 15 จุด แท่งที่ index 13 จึงยัง
+        # ไม่ควรมีค่า แต่ implementation เดิม (library `ta`) คืน 100.0 ที่แท่งนั้น
+        # บนซีรีส์ขาขึ้นล้วน = สัญญาณ overbought ปลอม (AUDIT_2026-08-06 D3.8)
         rsi = ta.rsi(self._rising_series(), length=14)
-        assert rsi.iloc[:13].isna().all(), "ช่วง warmup ของ RSI ต้องเป็น NaN"
+        assert rsi.iloc[:14].isna().all(), "ช่วง warmup ของ RSI ต้องเป็น NaN"
+        assert rsi.first_valid_index() == rsi.index[14]
 
     def test_rsi_stays_in_range(self):
         rsi = ta.rsi(self._rising_series(), length=14).dropna()
@@ -300,6 +305,164 @@ class TestPortfolioMissingPrice:
         # กำไรคิดจากตัวที่มีราคาเท่านั้น: (520-500) * 1 share * 34 = 680 บาท
         assert summary["total_pnl_thb"] == pytest.approx(680.0)
         assert summary["total_return_pct"] > 0  # ไม่ใช่ค่าติดลบมหาศาลจากราคา 0
+
+
+class TestDcaWeightNormalization:
+    """น้ำหนักของ DCA Simulator ต้อง normalize เสมอ (AUDIT_2026-08-06 ข้อ 0-D).
+
+    mutation รอบ R9 ถอดขั้น normalize ออกแล้วชุดเทสต์ผ่านหมด — ผลคือน้ำหนักที่ผู้ใช้กรอก
+    เป็นเปอร์เซ็นต์ (35/25/20/10/10) จะถูกคูณกับงบรายเดือนตรง ๆ = ซื้อเกินงบ 100 เท่า
+    """
+
+    def test_percent_input_is_scaled_to_one(self):
+        from portfolio.dca import _normalize_weights
+
+        normalized = _normalize_weights({"VOO": 35.0, "SCHD": 25.0, "QQQM": 20.0, "XLV": 10.0, "GLDM": 10.0})
+        assert float(normalized.sum()) == pytest.approx(1.0)
+        assert float(normalized["VOO"]) == pytest.approx(0.35)
+        assert float(normalized["GLDM"]) == pytest.approx(0.10)
+
+    def test_already_normalized_input_is_unchanged(self):
+        from portfolio.dca import _normalize_weights
+
+        normalized = _normalize_weights({"A": 0.6, "B": 0.4})
+        assert float(normalized["A"]) == pytest.approx(0.6)
+        assert float(normalized["B"]) == pytest.approx(0.4)
+
+    def test_relative_proportions_are_preserved(self):
+        from portfolio.dca import _normalize_weights
+
+        normalized = _normalize_weights({"A": 3.0, "B": 1.0})
+        assert float(normalized["A"]) == pytest.approx(0.75)
+        assert float(normalized["A"] / normalized["B"]) == pytest.approx(3.0)
+
+    @pytest.mark.parametrize("bad", [{}, {"A": -1.0, "B": 2.0}, {"A": 0.0}])
+    def test_unusable_weights_fail_loud(self, bad):
+        from portfolio.dca import _normalize_weights
+
+        with pytest.raises(ValueError):
+            _normalize_weights(bad)
+
+
+class TestPerTickerPnl:
+    """P&L รายกองที่โชว์บนตาราง Portfolio + invariant กับยอดรวม (AUDIT_2026-08-06 ข้อ 0-D).
+
+    mutation รอบ R9 เปลี่ยน ``pnl_thb = current_value_thb − invested_thb`` เป็น
+    ``− invested_thb × 1.01`` แล้วชุดเทสต์ผ่านหมด — ยอดรวมถูกตรึงไว้ (TestPortfolioMissingPrice)
+    แต่ตัวเลขรายแถวที่ผู้ใช้อ่านจริงไม่มีใครตรวจสักตัว
+    """
+
+    # VOO  2 หุ้น @500 (fx 34) → ลงทุน 1,000 USD / 34,000 THB · ราคาวันนี้ 550
+    # GLDM 10 หุ้น @60 (fx 34) → ลงทุน   600 USD / 20,400 THB · ราคาวันนี้ 54
+    # อัตราแลกเปลี่ยนวันนี้ = 35
+    FX_NOW = 35.0
+
+    @staticmethod
+    def _ledger() -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "ticker": ["VOO", "GLDM"],
+                "shares": [2.0, 10.0],
+                "price_usd": [500.0, 60.0],
+                "fx_rate_thb": [34.0, 34.0],
+                "amount_thb": [34000.0, 20400.0],
+                "fee_thb": [0.0, 0.0],
+                "note": ["", ""],
+            }
+        )
+
+    @pytest.fixture
+    def holdings(self, monkeypatch):
+        import portfolio.tracker as tracker
+
+        monkeypatch.setattr(tracker, "_load_transactions", self._ledger)
+        monkeypatch.setattr(tracker, "_get_latest_prices", lambda tickers: {"VOO": 550.0, "GLDM": 54.0})
+        monkeypatch.setattr(tracker, "_get_usdthb_rate", lambda: self.FX_NOW)
+        return tracker
+
+    def test_pnl_thb_per_ticker_is_value_minus_cost(self, holdings):
+        rows = holdings.get_portfolio_summary().set_index("Ticker")
+
+        # VOO: 2 × 550 × 35 = 38,500 THB − 34,000 THB = +4,500 THB
+        assert rows.loc["VOO", "Invested (THB)"] == pytest.approx(34_000.0)
+        assert rows.loc["VOO", "Current Value (THB)"] == pytest.approx(38_500.0)
+        assert rows.loc["VOO", "P&L (THB)"] == pytest.approx(4_500.0)
+
+        # GLDM: 10 × 54 × 35 = 18,900 THB − 20,400 THB = −1,500 THB
+        assert rows.loc["GLDM", "Invested (THB)"] == pytest.approx(20_400.0)
+        assert rows.loc["GLDM", "Current Value (THB)"] == pytest.approx(18_900.0)
+        assert rows.loc["GLDM", "P&L (THB)"] == pytest.approx(-1_500.0)
+
+    def test_pnl_usd_and_return_pct_per_ticker(self, holdings):
+        """``Return (%)`` = **ฐานบาท** · ``Return USD (%)`` = ฐานดอลลาร์ (FIX_PLAN ข้อ 3.3).
+
+        เดิมมีช่องเดียวชื่อ ``Return (%)`` ที่เป็นฐานดอลลาร์ วางไว้ในตารางเดียวกับ
+        ``P&L (THB)`` และไม่ตรงกับ ``total_return_pct`` (ฐานบาท) ของสรุปรวม —
+        ฉากนี้แสดงส่วนต่างชัด ๆ เพราะ FX วันซื้อ (34) ต่างจากวันนี้ (35):
+        VOO ฐานบาท +13.24% แต่ฐานดอลลาร์ +10.00% · GLDM −7.35% กับ −10.00%
+        """
+        rows = holdings.get_portfolio_summary().set_index("Ticker")
+
+        assert rows.loc["VOO", "P&L (USD)"] == pytest.approx(100.0)
+        assert rows.loc["GLDM", "P&L (USD)"] == pytest.approx(-60.0)
+
+        # ฐานบาท = P&L (THB) / Invested (THB) — สกุลที่ผู้ใช้จ่ายจริง รวมผลอัตราแลกเปลี่ยน
+        assert rows.loc["VOO", "Return (%)"] == pytest.approx(4_500.0 / 34_000.0 * 100.0)
+        assert rows.loc["GLDM", "Return (%)"] == pytest.approx(-1_500.0 / 20_400.0 * 100.0)
+        # ฐานดอลลาร์ยังอยู่ แต่มีป้ายของตัวเอง — แยกผลของหุ้นออกจากผลของค่าเงิน
+        assert rows.loc["VOO", "Return USD (%)"] == pytest.approx(10.0)
+        assert rows.loc["GLDM", "Return USD (%)"] == pytest.approx(-10.0)
+        # สองฐานต้องไม่เท่ากันในฉากนี้ ไม่งั้นเทสต์จะผ่านได้แม้โค้ดกลับไปใช้ฐานเดียว
+        for ticker in ("VOO", "GLDM"):
+            assert rows.loc[ticker, "Return (%)"] != pytest.approx(
+                rows.loc[ticker, "Return USD (%)"]
+            )
+
+    def test_per_ticker_return_pct_reconciles_with_total(self, holdings):
+        """%รายกองต้องอยู่ฐานเดียวกับ %รวม — ไม่งั้นตัวเลขบนจอเดียวขัดกันเอง.
+
+        ค่าเฉลี่ยถ่วงน้ำหนักด้วยเงินลงทุน (บาท) ของ %รายกอง ต้องเท่ากับ
+        ``total_return_pct`` เป๊ะ — ฐานดอลลาร์ทำอย่างนี้ไม่ได้เพราะตัวหารคนละสกุล
+        """
+        rows = holdings.get_portfolio_summary()
+        summary = holdings.get_total_summary(rows)
+
+        priced = rows[rows["Price OK"]]
+        weighted = float(
+            (priced["Return (%)"] * priced["Invested (THB)"]).sum()
+            / priced["Invested (THB)"].sum()
+        )
+        assert weighted == pytest.approx(float(summary["total_return_pct"]))
+
+    def test_sum_of_priced_rows_equals_total_pnl(self, holdings):
+        """invariant: ผลรวม P&L ของแถวที่มีราคา ต้องเท่ากับ ``total_pnl_thb`` เป๊ะ."""
+        rows = holdings.get_portfolio_summary()
+        summary = holdings.get_total_summary()
+
+        priced = rows[rows["Price OK"]]
+        assert float(priced["P&L (THB)"].sum()) == pytest.approx(float(summary["total_pnl_thb"]))
+        assert float(summary["total_pnl_thb"]) == pytest.approx(3_000.0)
+
+    def test_invariant_holds_when_one_price_is_missing(self, monkeypatch):
+        """ราคาที่ดึงไม่ได้ต้องหลุดจากทั้งสองข้างของสมการพร้อมกัน ไม่ใช่ข้างเดียว."""
+        import portfolio.tracker as tracker
+
+        monkeypatch.setattr(tracker, "_load_transactions", self._ledger)
+        monkeypatch.setattr(tracker, "_get_latest_prices", lambda tickers: {"VOO": 550.0})
+        monkeypatch.setattr(tracker, "_get_usdthb_rate", lambda: self.FX_NOW)
+
+        rows = tracker.get_portfolio_summary()
+        summary = tracker.get_total_summary()
+
+        gldm = rows[rows["Ticker"] == "GLDM"].iloc[0]
+        assert bool(gldm["Price OK"]) is False
+        assert pd.isna(gldm["P&L (THB)"]), "ไม่มีราคา = ไม่มี P&L — ห้ามเป็น 0 ที่อ่านว่า 'เท่าทุน'"
+
+        priced = rows[rows["Price OK"]]
+        assert float(priced["P&L (THB)"].sum()) == pytest.approx(float(summary["total_pnl_thb"]))
+        assert float(summary["total_pnl_thb"]) == pytest.approx(4_500.0)
+        assert summary["missing_prices"] == ["GLDM"]
 
 
 class TestDimeFee:

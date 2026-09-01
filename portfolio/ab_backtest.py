@@ -35,12 +35,16 @@ import pandas as pd
 # import ชื่อ private ข้าม module โดยตั้งใจ — เพื่อ single-source ของ threshold
 # (Roadmap invariant: ห้าม re-implement คะแนน/ตัวคูณที่อื่น)
 from analysis.financial_model import _score_tilt, score_from_prices
+from analysis.proxy_history import PROXY_MAP as _PROXY_MAP
+from analysis.risk import paired_diff_stats
 from portfolio.targets import get_target_weights
 
 WeightsFn = Callable[[pd.Timestamp, pd.DataFrame], Mapping[str, float]]
 
 # ETF จริงที่เพิ่งเกิด → ใช้ proxy ที่ track ดัชนี/สินทรัพย์เดียวกันแต่ประวัติยาวกว่า
-PROXY_MAP: dict[str, str] = {"QQQM": "QQQ", "GLDM": "GLD"}
+# ตารางกองพี่อยู่ที่ ``analysis/proxy_history.py`` ที่เดียว — หน้า Goals ใช้ตัวเดียวกัน
+# เพื่อยืดประวัติสมมติฐาน (FIX_PLAN เฟส 4①) เลขซ้ำสองที่ไม่พัง มันแค่เพี้ยนกัน
+PROXY_MAP = _PROXY_MAP
 
 WINDOWS: dict[str, dict[str, Any]] = {
     "proxy": {
@@ -224,8 +228,12 @@ def _arm_metrics(sim: dict[str, Any]) -> dict[str, Any]:
     if not math.isnan(std):
         metrics["vol_pct"] = round(std * math.sqrt(MONTHS_PER_YEAR) * 100.0, 2)
         if std > 0:
-            sharpe = float(returns.mean()) / std * math.sqrt(MONTHS_PER_YEAR)
-            metrics["sharpe"] = round(sharpe, 2)
+            # **เก็บค่าเต็ม ไม่ปัด** — ค่านี้ถูกเอาไป **เทียบ** ระหว่างแขน (``by_sharpe``)
+            # ไม่ใช่แค่เอาไปแสดง  ส่วนต่าง Sharpe จริงระหว่างสองแขนของพอร์ตนี้เล็กกว่า
+            # ทศนิยม 2 ตำแหน่ง ⇒ ``round`` ทำให้สองค่าที่ต่างกันกลายเป็นเท่ากัน แล้ว
+            # ``sharpe_t >= sharpe_p`` ตอบ "ชนะ" ให้แขนที่แพ้ (FIX_PLAN เฟส 4②)
+            # การแสดงผลปัดเองที่ ``_fmt`` อยู่แล้ว
+            metrics["sharpe"] = float(returns.mean()) / std * math.sqrt(MONTHS_PER_YEAR)
 
     curve = pd.concat([pd.Series([1.0]), growth_index.reset_index(drop=True)])
     drawdown = curve / curve.cummax() - 1.0
@@ -237,7 +245,85 @@ def _fmt(value: Any, suffix: str = "") -> str:
     return "-" if value is None else f"{value:,.2f}{suffix}"
 
 
-def _summary_th(window_label: str, start: str, arms: dict[str, Any], verdict: dict[str, bool]) -> str:
+def _paired_test(
+    a_sim: dict[str, Any], b_sim: dict[str, Any], label_a: str, label_b: str
+) -> dict[str, Any]:
+    """paired t-test ระหว่างสองแขน — คืน ``{"stats", "error"}`` ไม่ throw.
+
+    ทดสอบไม่ได้ (ช่วงทับกันสั้นเกินไป / มีงวดที่ ≤ −100%) **ไม่ใช่** "ไม่ต่างกัน" —
+    เก็บเหตุผลไว้ใน ``error`` แล้วให้ด่าน edge **ปิดตัวเอง** (ยืนยัน edge ไม่ได้ = ไม่ผ่าน)
+    ห้ามให้ความล้มเหลวของการทดสอบกลายเป็นใบผ่าน
+    """
+    try:
+        stats = paired_diff_stats(
+            a_sim["monthly_returns"], b_sim["monthly_returns"], label_a=label_a, label_b=label_b
+        )
+    except ValueError as exc:
+        return {"stats": None, "error": str(exc)}
+    return {"stats": stats, "error": None}
+
+
+def edge_verdict(
+    by_value: bool, by_sharpe: bool, paired_tilt_vs_plain: dict[str, Any] | None
+) -> dict[str, bool]:
+    """ด่าน edge — ต้องผ่าน **ทั้งสามข้อ** จึงจะถือว่า tilt มี edge จริง.
+
+    แยกออกมาเป็นฟังก์ชันล้วน ๆ เพราะกติกาของด่านนี้คือสิ่งที่ต้องตรึงให้ครบทุกกรณี
+    (เทสต์ที่เดินผ่านฉากจำลองฉากเดียวพิสูจน์ไม่ได้ว่าเงื่อนไขข้อไหนถูกใช้จริง —
+    ตอนพิสูจน์ด้วย mutation พบว่าถอด ``by_paired_test`` ออกจาก ``overall`` แล้วยังเขียว
+    เพราะฉากนั้น ``by_sharpe`` เป็นเท็จอยู่แล้ว ทั้งสองสูตรจึงให้ผลเหมือนกัน)
+
+    สามข้อไม่ซ้ำกัน: มูลค่าปลายทางชนะไหม (จุดเดียว) · ชนะแบบปรับความเสี่ยงแล้วไหม ·
+    และส่วนต่างนั้นใหญ่กว่าเสียงรบกวนของตัวเองไหม
+
+    ``by_paired_test`` เป็นจริงเมื่อ **แยกออกจากศูนย์ได้ และไปทางบวก** เท่านั้น:
+    ส่วนต่างที่มีนัยสำคัญแต่ติดลบคือหลักฐานว่า tilt **แย่กว่า** plain ไม่ใช่ใบผ่าน ·
+    ทดสอบไม่ได้ (``stats is None``) = ยืนยัน edge ไม่ได้ = **ไม่ผ่าน** (fail closed)
+    """
+    stats = (paired_tilt_vs_plain or {}).get("stats")
+    by_paired_test = bool(
+        stats is not None
+        and stats.get("distinguishable_from_zero")
+        and float(stats.get("diff_annual_pct") or 0.0) > 0.0
+    )
+    return {
+        "by_value": bool(by_value),
+        "by_sharpe": bool(by_sharpe),
+        "by_paired_test": by_paired_test,
+        "overall": bool(by_value) and bool(by_sharpe) and by_paired_test,
+    }
+
+
+def _describe_paired(paired: dict[str, Any] | None) -> str:
+    """ประโยคไทยของผลทดสอบหนึ่งคู่ — "แยกไม่ออกจากศูนย์" ต้องพูดออกมาตรง ๆ."""
+    if paired is None:
+        return "ไม่ได้ทดสอบ"
+    if paired["error"] or not paired["stats"]:
+        return f"ทดสอบไม่ได้ ({paired['error'] or 'ไม่ทราบสาเหตุ'})"
+    s = paired["stats"]
+    head = (
+        f"{s['label_a']}−{s['label_b']} {s['diff_annual_pct']:+.3f}%/ปี "
+        f"(SE {s['se_annual_pct']:.3f} · CI95 [{s['ci95_low_pct']:+.2f},{s['ci95_high_pct']:+.2f}] · "
+        f"n={s['n_periods']} เดือน)"
+    )
+    if s["distinguishable_from_zero"]:
+        return f"{head} ⇒ ต่างจากศูนย์อย่างมีนัยสำคัญ"
+    tail = "⇒ **แยกไม่ออกจากศูนย์**"
+    if s["years_needed"] is not None:
+        tail += f" (ต้องมีข้อมูลราว {s['years_needed']:,.0f} ปีถึงจะสรุปผลขนาดนี้ได้)"
+    else:
+        tail += f" (MDE {s['mde_annual_pct']:.2f}%/ปี)"
+    return f"{head} {tail}"
+
+
+def _summary_th(
+    window_label: str,
+    start: str,
+    arms: dict[str, Any],
+    verdict: dict[str, bool],
+    paired_tilt_vs_plain: dict[str, Any] | None = None,
+    paired_plain_vs_voo: dict[str, Any] | None = None,
+) -> str:
     plain, tilt = arms["plain"], arms["tilt"]
     voo = arms.get("voo_only")
     parts = [
@@ -258,8 +344,16 @@ def _summary_th(window_label: str, start: str, arms: dict[str, Any], verdict: di
         )
     win_value = "ชนะ" if verdict["by_value"] else "ไม่ชนะ"
     win_sharpe = "ชนะ" if verdict["by_sharpe"] else "ไม่ชนะ"
+    win_test = "ผ่าน" if verdict["by_paired_test"] else "ไม่ผ่าน"
     overall = "ผ่านด่าน" if verdict["overall"] else "ไม่ผ่านด่าน — ทบทวน edge ก่อนลงมือ"
-    parts.append(f"→ tilt เทียบ plain: มูลค่า {win_value}, Sharpe {win_sharpe} ⇒ {overall}")
+    parts.append(
+        f"→ tilt เทียบ plain: มูลค่า {win_value}, Sharpe {win_sharpe}, "
+        f"paired t-test {win_test} ⇒ {overall}"
+    )
+    # ตัวเลขปลายทางจุดเดียวไม่บอกว่าส่วนต่างใหญ่กว่าเสียงรบกวนหรือเปล่า — ต้องพิมพ์คู่กันเสมอ
+    parts.append(f"| นัยสำคัญ tilt vs plain: {_describe_paired(paired_tilt_vs_plain)}")
+    if paired_plain_vs_voo is not None:
+        parts.append(f"| พอร์ตตามเป้า vs VOO: {_describe_paired(paired_plain_vs_voo)}")
     return " ".join(parts)
 
 
@@ -304,16 +398,40 @@ def run_ab_backtest(
                 neutral_counts[t] = neutral_counts.get(t, 0) + 1
         arms["tilt"]["neutral_by_ticker"] = neutral_counts
 
-        if "VOO" in prices.columns:
+        # แขน benchmark ต้องซื้อ "วันเดียวกัน" กับอีกสองแขน — ``simulate_dca_dynamic``
+        # เลือกวันซื้อจากแถวแรกของเดือนที่ **ทุกคอลัมน์ในเฟรมนั้น** มีราคา ถ้าส่ง
+        # ``prices[["VOO"]]`` เข้าไปตรง ๆ เดือนแรกจะซื้อวันที่ VOO มีราคา (เร็วกว่า)
+        # ขณะที่แขน plain/tilt รอจนครบ 5 ตัว = ได้ราคาคนละวันโดยไม่มีเหตุผลเชิงกลยุทธ์
+        # (proxy window: 2011-10-03 @77.48 vs 2011-10-20 @85.85 — AUDIT_2026-08-06 D3.11)
+        arm_rows = arm_prices.dropna(how="any")
+        if "VOO" in arm_rows.columns:
+            voo_frame = arm_rows[["VOO"]]
+        elif "VOO" in prices.columns:
+            # VOO ไม่ได้อยู่ในน้ำหนักเป้าหมาย → ยืมเฉพาะ "วัน" ของแขนอื่นมาใช้
+            voo_frame = prices.loc[prices.index.isin(arm_rows.index), ["VOO"]].dropna(how="any")
+        else:
+            voo_frame = None
+        voo_sim: dict[str, Any] | None = None
+        if voo_frame is not None and not voo_frame.empty:
             voo_sim = simulate_dca_dynamic(
-                prices[["VOO"]], monthly_amount, fixed_weights_fn({"VOO": 1.0}), start=start
+                voo_frame, monthly_amount, fixed_weights_fn({"VOO": 1.0}), start=start
             )
             arms["voo_only"] = _arm_metrics(voo_sim)
+
+        # ด่าน edge ต้องถามสามคำถามที่ไม่ซ้ำกัน: มูลค่าปลายทางชนะไหม (จุดเดียว) ·
+        # ชนะแบบปรับความเสี่ยงแล้วไหม · และ **ส่วนต่างนั้นใหญ่กว่าเสียงรบกวนของตัวเองไหม**
+        # ข้อสามเป็นข้อที่ขาดไปตลอด: เดิมด่านนี้บังเอิญตัดสินถูกด้วยเหตุผลผิด — proxy บอกว่า
+        # "มูลค่าชนะ Sharpe แพ้" ทั้งที่ความจริงคือทั้งคู่อยู่ในกำแพงเสียงรบกวน
+        # (FIX_PLAN เฟส 4②)
+        paired_tilt_vs_plain = _paired_test(tilt_sim, plain_sim, "tilt", "plain")
+        paired_plain_vs_voo = (
+            _paired_test(plain_sim, voo_sim, "พอร์ตตามเป้า", "VOO") if voo_sim else None
+        )
 
         by_value = arms["tilt"]["final_value"] > arms["plain"]["final_value"]
         sharpe_t, sharpe_p = arms["tilt"]["sharpe"], arms["plain"]["sharpe"]
         by_sharpe = sharpe_t is not None and sharpe_p is not None and sharpe_t >= sharpe_p
-        verdict = {"by_value": by_value, "by_sharpe": by_sharpe, "overall": by_value and by_sharpe}
+        verdict = edge_verdict(by_value, by_sharpe, paired_tilt_vs_plain)
 
         results[key] = {
             "window": key,
@@ -323,7 +441,11 @@ def run_ab_backtest(
             "weights_base": mapped,
             "arms": arms,
             "tilt_beats_plain": verdict,
-            "summary_th": _summary_th(spec["label"], start, arms, verdict),
+            "paired_tilt_vs_plain": paired_tilt_vs_plain,
+            "paired_plain_vs_voo": paired_plain_vs_voo,
+            "summary_th": _summary_th(
+                spec["label"], start, arms, verdict, paired_tilt_vs_plain, paired_plain_vs_voo
+            ),
         }
     return results
 

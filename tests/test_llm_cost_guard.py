@@ -23,13 +23,11 @@ from analysis import llm
 def _no_real_api(monkeypatch):
     """ถ้ามีการเรียก provider จริง = เทสต์ fail (พิสูจน์ว่าไม่มีเงินไหลออก)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake")
-    monkeypatch.setenv("GROQ_API_KEY", "gsk_fake")
 
     def _explode(*args, **kwargs):
         raise AssertionError("เรียก provider จริง! ต้องถูกบล็อกก่อนถึงตรงนี้")
 
     monkeypatch.setattr(llm, "_chat_anthropic", _explode)
-    monkeypatch.setattr(llm, "_chat_groq", _explode)
 
 
 class TestChatTextGate:
@@ -65,6 +63,25 @@ class TestChatTextGate:
     def test_auto_flag_rejects_falsy_values(self, monkeypatch, value):
         monkeypatch.setenv("VAULTIS_LLM_AUTO", value)
         assert llm.auto_enabled() is False
+
+
+class TestSingleProvider:
+    """ถอด Groq ออกแล้ว (2026-08-02) — ห้ามมีเส้นทาง fallback กลับมาเงียบ ๆ."""
+
+    def test_no_groq_path_left(self):
+        for attr in ("_chat_groq", "_groq_available", "GROQ_MODEL"):
+            assert not hasattr(llm, attr), f"{attr} ต้องถูกถอดออกแล้ว"
+
+    def test_missing_key_fails_loudly(self, monkeypatch):
+        """ไม่มีคีย์ = โยน error ที่อ่านออก ไม่ใช่คืนข้อความปลอมหรือเงียบ."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("VAULTIS_LLM_AUTO", raising=False)
+        with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+            llm.chat_text("system", "user", user_initiated=True)
+
+    def test_cost_log_price_table_covers_the_active_model(self):
+        """ตารางราคาต้องครอบคลุมโมเดลที่ตั้งไว้ ไม่งั้น log จะรายงานต้นทุนผิด."""
+        assert llm.ANTHROPIC_MODEL in llm._MODEL_PRICES_USD_PER_MTOK
 
 
 class TestAutomaticPathsAreFree:

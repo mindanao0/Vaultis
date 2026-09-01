@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Generator
-from datetime import datetime, timezone
 
 import logging
 
@@ -38,18 +37,48 @@ def get_sentiment_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _as_int(value: object) -> int | None:
+    """NULL ในฐาน = ``None`` — ห้ามใช้ ``or`` เพราะมันกลืน ``0`` ที่เป็นคำตอบจริงด้วย."""
+    return None if value is None else int(value)
+
+
+def _as_float(value: object) -> float | None:
+    """เช่นเดียวกับ ``_as_int`` — ``0.0`` ที่เป็นคำตอบจริงต้องไม่ถูกนับเป็น "ไม่รู้"."""
+    return None if value is None else float(value)
+
+
 def _summary_to_response(row: SentimentSummary) -> SentimentResponse:
+    """แปลงแถวในฐานเป็นคำตอบ — NULL ออกไปเป็น ``null`` พร้อมธง ไม่ใช่ 0 / "neutral".
+
+    เดิมทุกช่องใช้สำนวน ``or`` (``int(row.total_articles or 0)``,
+    ``str(row.overall_sentiment or "neutral")``) ⇒ แถวที่คอลัมน์เป็น NULL — ซึ่งเกิดจริง
+    เพราะ ``sentiment_aggregator`` เขียน ``None`` ลง ``score``/``avg_confidence`` เมื่อ
+    ไม่มีบทความที่จัดป้ายได้ — ออกไปเป็น sentiment ที่ดูสมบูรณ์แบบ (0 บทความ,
+    ความเชื่อมั่น 0.0, คะแนน 0.0, ทิศทาง "neutral") โดยไม่มีช่องไหนบอกว่าค่าเหล่านี้
+    ถูกเดาขึ้นมา กล่องบริบทในหน้า AI Advisor จึงแสดง "neutral, ความเชื่อมั่น 0%" เป็น
+    ข้อเท็จจริง ผู้ใช้แยก "ตลาดเฉย ๆ" ออกจาก "ยังไม่มีผลวิเคราะห์" ไม่ได้
+    (AUDIT_ROUND2_2026-08-07 · กฎ "ห้าม return 0 / return 'neutral'" ใน CLAUDE.md)
+
+    ``created_at`` ก็เช่นกัน: เดิมถอยไปใช้ "เวลาตอนนี้" ซึ่งทำให้แถวเก่าที่ไม่มีเวลา
+    ดูเหมือนเพิ่งวิเคราะห์เสร็จเมื่อครู่
+    """
+    fields: dict[str, object] = {
+        "total_articles": _as_int(row.total_articles),
+        "positive": _as_int(row.positive),
+        "negative": _as_int(row.negative),
+        "neutral": _as_int(row.neutral),
+        "avg_confidence": _as_float(row.avg_confidence),
+        "overall_sentiment": None if row.overall_sentiment is None else str(row.overall_sentiment),
+        "score": _as_float(row.score),
+        "created_at": row.created_at,
+    }
+    missing = sorted(key for key, value in fields.items() if value is None)
+
     return SentimentResponse(
-        symbol=str(row.symbol or ""),
-        total_articles=int(row.total_articles or 0),
-        positive=int(row.positive or 0),
-        negative=int(row.negative or 0),
-        neutral=int(row.neutral or 0),
-        avg_confidence=float(row.avg_confidence or 0.0),
-        overall_sentiment=str(row.overall_sentiment or "neutral"),
-        score=float(row.score or 0.0),
-        created_at=row.created_at or datetime.now(timezone.utc).replace(tzinfo=None),
+        symbol="" if row.symbol is None else str(row.symbol),
         cached=False,
+        missing_fields=missing,
+        **fields,  # type: ignore[arg-type]
     )
 
 
