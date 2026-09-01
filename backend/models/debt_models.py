@@ -2,69 +2,28 @@
 
 from __future__ import annotations
 
-import math
-from typing import Annotated, Any, Literal
+from typing import Literal
 
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     Field,
-    ValidationInfo,
     computed_field,
 )
 
+from .finite import FiniteFloat, register_field_labels
+
 # ชื่อไทยของแต่ละฟิลด์ ใช้ประกอบข้อความ error ให้ผู้ใช้อ่านออก
-_FIELD_LABELS = {
-    "balance": "ยอดหนี้คงเหลือ",
-    "interest_rate": "อัตราดอกเบี้ย",
-    "min_payment": "ยอดชำระขั้นต่ำ",
-    "monthly_budget": "งบชำระต่อเดือน",
-    "extra_payments": "เงินจ่ายเพิ่มต่อเดือน",
-}
-
-# สตริงที่ ``float()`` แปลงเป็น inf/NaN ได้ (รวมรูปที่ผู้ใช้พิมพ์มาเองด้วย)
-_NON_FINITE_TOKENS = {"inf", "-inf", "+inf", "infinity", "-infinity", "+infinity", "nan", "-nan"}
-
-
-def _to_json_safe(value: Any) -> Any:
-    """ด่านที่ 1 — แปลง inf/NaN เป็นสตริงก่อนที่ pydantic จะจดค่านี้ลง error.
-
-    FastAPI ใส่ ``input`` (ค่าที่ผู้ใช้ส่งมา) ลงใน response 422 ด้วย และ ``json.dumps``
-    ของ starlette ตั้ง ``allow_nan=False`` → ถ้าปล่อย ``inf`` ติดไปกับ error ทั้งคำขอจะ
-    กลายเป็น 500 ที่ไม่มีเนื้อความแทนที่จะเป็น 422 ที่บอกสาเหตุ
-    """
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return value  # ไม่ใช่ตัวเลข — ปล่อยให้ pydantic รายงาน type error ตามปกติ
-    if math.isfinite(number):
-        return value
-    return repr(number)  # 'inf' | '-inf' | 'nan'
-
-
-def _reject_non_finite(value: Any, info: ValidationInfo) -> Any:
-    """ด่านที่ 2 — ปฏิเสธค่าที่ด่านแรกทำเครื่องหมายไว้ พร้อมเหตุผลภาษาไทย.
-
-    K8: ``Field(gt=0)`` ปล่อย ``inf`` ผ่าน เพราะ ``inf > 0`` เป็น True เดิม ``inf`` จึงไหล
-    เข้า ``_simulate`` ไปชนเพดาน ``_MAX_MONTHS`` แล้ว raise ว่า "ดอกเบี้ยเดินเร็วกว่าเงินต้น
-    ที่จ่ายได้" — **ไม่ใช่สาเหตุจริง** ผู้ใช้จะไปเพิ่มงบทั้งที่ปัญหาอยู่ที่ตัวเลขที่กรอก
-    (``NaN`` เดิมตกที่ ``gt=0`` อยู่แล้ว แต่ข้อความเป็นอังกฤษและบอกเหตุผลผิดเช่นกัน)
-    """
-    if isinstance(value, str) and value.strip().lower() in _NON_FINITE_TOKENS:
-        label = _FIELD_LABELS.get(info.field_name or "", info.field_name or "ค่านี้")
-        raise ValueError(
-            f"{label} ต้องเป็นตัวเลขจริงที่มีค่าจำกัด (ได้รับ {value}) — "
-            "inf/NaN ไม่ใช่จำนวนเงินหรืออัตราที่คำนวณแผนชำระหนี้ได้"
-        )
-    return value
-
-
-# BeforeValidator ใน Annotated ทำงานจากขวาไปซ้าย: _to_json_safe ก่อน แล้วค่อย _reject_non_finite
-FiniteFloat = Annotated[
-    float,
-    BeforeValidator(_reject_non_finite),
-    BeforeValidator(_to_json_safe),
-]
+# นิยามของ ``FiniteFloat`` ย้ายไปอยู่ที่ ``backend/models/finite.py`` แล้ว (นิยามมีที่เดียว)
+# — ไฟล์นี้เหลือหน้าที่บอกว่าฟิลด์ของตัวเองชื่อไทยว่าอะไรเท่านั้น
+register_field_labels(
+    {
+        "balance": "ยอดหนี้คงเหลือ",
+        "interest_rate": "อัตราดอกเบี้ย",
+        "min_payment": "ยอดชำระขั้นต่ำ",
+        "monthly_budget": "งบชำระต่อเดือน",
+        "extra_payments": "เงินจ่ายเพิ่มต่อเดือน",
+    }
+)
 
 
 class Debt(BaseModel):

@@ -452,6 +452,56 @@ GET /api/analysis/dcf/VOO          -> 200
 ทำงานสองทาง: มันสร้างทั้ง "บั๊กปลอม" แบบนี้ และซ่อนบั๊กจริงที่เกิดเฉพาะตอนผ่าน
 middleware/serializer (เช่น ``Timestamp`` ที่ทำ ``/api/etf/risk`` ล่มทั้งที่ฟังก์ชันคืนค่าปกติ)
 
+## ผลตรวจโมดูลที่ยังไม่เคยตรวจ — รอบที่ 1 (2026-09-01)
+
+ตรวจ `emergency_fund_service` · `debt_service` · `networth_service` (บางส่วน) แล้ว
+`cashflow_service` / `report_service` ยังเหลือ
+
+**พบบั๊กจริง 1 ข้อ ระดับรุนแรง — และเป็นบั๊กที่โปรเจกต์เคยตั้งชื่อไว้แล้วแต่แก้ไม่ครบไฟล์**
+
+`Field(gt=0)` ของ pydantic **ไม่กัน `inf`** เพราะ `inf > 0` เป็นจริง (`NaN` ตกด่านอยู่แล้ว)
+เรื่องนี้ถูกบันทึกไว้ตั้งแต่ K8 · AUDIT_ROUND2_2026-08-07 G8 และแก้ไปแล้ว **3 ช่อง**
+(`budget_thb` / `initial_capital` / `monthly_investment`) กับ `debt_models` ที่สร้าง
+`FiniteFloat` ของตัวเอง — แต่ **โมเดลอีก 3 ไฟล์ไม่เคยได้ด่านนี้เลย**
+
+วัดจริงก่อนแก้ `POST /api/networth/snapshot` ด้วย `value_thb: Infinity`:
+
+1. ผ่าน `Field(gt=0)`
+2. **ถูก commit ลง SQLite** เป็น `total_assets_thb = inf`
+3. แล้วค่อยพังตอน serialize ⇒ ผู้ใช้เห็น HTTP 500 (ดูเหมือนบันทึกไม่สำเร็จ)
+4. หลังจากนั้น `GET /api/networth/history` **โยน exception ทุกครั้ง** เพราะแถวพิษยังอยู่
+   ⇒ **คำขอผิดครั้งเดียวทำให้ประวัติมูลค่าสุทธิพังถาวร** ผู้ใช้แก้เองจากหน้าจอไม่ได้
+   ต้องเข้าไปลบแถวใน SQLite
+
+และอีกเส้นทางที่ด่านประตูกันไม่ได้: `/api/emergency-fund/calculate` ด้วย
+`monthly_expense = 1e308` (**จำกัดค่า ผ่านทุกด่านของ schema**) แล้ว `1e308 × 3.5` ล้นเป็น
+`inf` ⇒ 500 · ถ้ามี `monthly_saving_capacity` เล็กมาก `gap/capacity` ก็ล้นแล้ว
+`math.ceil(inf)` โยน `OverflowError` ⇒ 500 เช่นกัน
+
+**สิ่งที่แก้**
+
+* `backend/models/finite.py` (ใหม่) — นิยามเดียวของทั้งระบบ เดิมแนวคิดนี้ถูกเขียนสองที่
+  ที่ไม่รู้จักกัน (`debt_models.FiniteFloat` กับ `schemas._finite_amount`)
+* แยก `ensure_finite_input` (ค่าที่ส่งมา) ออกจาก `ensure_finite_result` (ค่าที่คำนวณล้น)
+  **ห้ามยุบรวม** — คนละอาการ คนละวิธีแก้ของผู้ใช้ และสัญญาของ API ตรึงข้อความไว้คนละแบบ
+  (ยุบรวมแล้ว `tests/test_api_contract_round2.py` แดงทันที ซึ่งเป็นพฤติกรรมที่ถูก)
+* ใส่ `FiniteFloat` ให้ `emergency_fund_models` · `networth_models` · `schemas`
+  (ธุรกรรม/alert/goal) — ไม่เหลือ `x: float = Field(gt=0)` ในโมเดลอีก
+* `routers/emergency_fund.py` แปลง `ValueError` เป็น **422** ไม่ใช่ 500
+
+`tests/test_finite_money_guard.py` (14 เทสต์) พิสูจน์ด้วย mutation 3 แบบว่าแดงจริง
+รวมถึงเทสต์ที่ตรึงว่า **ไม่เหลือ `x: float = Field(gt=0)`** ในโมเดล — รูนี้จะกลับมาไม่ได้เงียบ ๆ
+
+### สิ่งที่ตรวจแล้วไม่พบปัญหา
+
+* `debt_service` — สูตร snowball/avalanche ถูกต้อง, `total_interest` นับดอกเบี้ยที่
+  **เกิดขึ้น** ไม่ใช่ที่จ่ายไหว (H4), เพดาน 50 ปีแยกสาเหตุสองแบบ (K8), งบน้อยกว่ายอด
+  ขั้นต่ำรวม raise (M10)
+* `or 0` สองจุดที่เจอ (`report_service.py:62`, `cashflow_service.py:224`) อยู่ใน
+  **sort key ล้วน** ไม่ได้กลายเป็นตัวเลขที่ผู้ใช้เห็น — ไม่ผิด C1
+* `cashflow_models.change_percent` ไม่ต้องมีด่าน finite เพราะ `ge=-100, le=1000`
+  ปิด inf/NaN ให้แล้วทั้งสองด้าน (คอมเมนต์ในไฟล์อธิบายไว้ถูกต้อง)
+
 ## ยังไม่มีใครตรวจเลย (คิวถัดไปหลังจบแผนนี้)
 
 `networth_service` · `debt_service` · `cashflow_service` · `emergency_fund_service` · `report_service` (ทั้งหมดแตะเงินจริง + SQLite) · `analysis/forecaster.py` · `analysis/sentiment_aggregator.py` · `backend/routers/transactions.py` (slip OCR — เส้นทาง LLM ที่ได้รับข้อยกเว้นจากกฎ `analysis/llm.py`) · `alerts/line_notifier.py` · `scripts/fix_goals.py` · `.github/workflows/`

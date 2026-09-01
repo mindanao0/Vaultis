@@ -25,5 +25,10 @@ def calculate(payload: EmergencyFundRequest) -> JSONResponse:
             content=result.model_dump(),
             media_type="application/json; charset=utf-8",
         )
+    except ValueError as exc:
+        # ตัวเลขที่ผู้ใช้กรอกทำให้คำนวณไม่ได้ (ล้นช่วง) — เป็นความผิดของ**คำขอ**
+        # ห้ามตอบ 500 ซึ่งอ่านว่า "เซิร์ฟเวอร์พัง" แล้วผู้ใช้ไปตามหาปัญหาผิดที่
+        # (บั๊กชนิดเดียวกับที่ D3.1 แก้ให้ /api/analysis/dcf ไปแล้ว)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

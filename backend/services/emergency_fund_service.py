@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 from ..models.emergency_fund_models import EmergencyFundResult, RiskProfile
+from ..models.finite import ensure_finite_result
 
 _JOB_STABILITY_SCORE: dict[str, int] = {
     "very_stable": 0,
@@ -103,13 +104,23 @@ def calculate(
 ) -> EmergencyFundResult:
     risk_score = calculate_risk_score(profile)
     multiplier = get_multiplier(risk_score)
-    target = round(monthly_expense * multiplier, 2)
-    gap = round(target - current_savings, 2)
+
+    # ``FiniteFloat`` ที่ประตูกัน inf/NaN ที่ **รับเข้ามา** ได้ แต่กันผลที่ **ล้น** จาก
+    # อินพุตที่จำกัดค่าดี ๆ ไม่ได้ — วัดจริง 2026-09-01: ``monthly_expense = 1e308``
+    # ผ่านทุกด่านของ schema แล้ว ``1e308 × 3.5`` ล้นเป็น ``inf`` ⇒ ตอบ HTTP 500
+    # ("Out of range float values are not JSON compliant") ซึ่งโยนความผิดของตัวเลข
+    # ที่ผู้ใช้กรอกไปให้เซิร์ฟเวอร์ ต้องดังเป็น ``ValueError`` ให้ router แปลงเป็น 4xx
+    target = ensure_finite_result(round(monthly_expense * multiplier, 2), "เป้าหมายเงินสำรอง")
+    gap = ensure_finite_result(round(target - current_savings, 2), "ส่วนที่ยังขาด")
 
     if gap <= 0 or monthly_saving_capacity <= 0:
         months_to_goal = None
     else:
-        months_to_goal = math.ceil(gap / monthly_saving_capacity)
+        # ``gap / capacity`` ล้นได้เช่นกันเมื่อ capacity เล็กมาก (เช่น 1e-300) แล้ว
+        # ``math.ceil(inf)`` โยน ``OverflowError`` ที่ไม่มีใครดัก ⇒ 500 เหมือนกัน
+        months_to_goal = math.ceil(
+            ensure_finite_result(gap / monthly_saving_capacity, "ระยะเวลาถึงเป้าหมาย")
+        )
 
     result = EmergencyFundResult(
         risk_score=risk_score,
