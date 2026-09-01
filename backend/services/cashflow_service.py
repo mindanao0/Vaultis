@@ -247,6 +247,14 @@ def detect_category_anomalies(
     last_month = complete[-1]
     prior_months = complete[:-1]
     n_prior = len(prior_months)
+    # หน้าต่างที่ตัวเลขทุกแถวถูกวัด — ต้องติดไปกับผลลัพธ์ ไม่ใช่รู้กันแค่ในฟังก์ชันนี้
+    # ``last_month`` คือเดือนที่จบแล้วและ **มีธุรกรรม** ล่าสุด อาจเก่ากว่าเดือนที่แล้วมาก
+    window = {
+        "month": last_month,
+        "baseline_months": n_prior,
+        "baseline_start": prior_months[0],
+        "baseline_end": prior_months[-1],
+    }
 
     # รายจ่ายรวมเฉลี่ยของเดือนก่อน ๆ — ใช้ตัดสินว่าหมวดใหม่ "ใหญ่พอจะเป็นเรื่อง" ไหม
     prior_total_avg = sum(
@@ -271,6 +279,7 @@ def detect_category_anomalies(
                     last_month=round(last_val, 2),
                     change_percent=None,
                     kind="new_category",
+                    **window,
                 )
             )
             continue
@@ -284,6 +293,7 @@ def detect_category_anomalies(
                     last_month=round(last_val, 2),
                     change_percent=change_pct,
                     kind="change",
+                    **window,
                 )
             )
 
