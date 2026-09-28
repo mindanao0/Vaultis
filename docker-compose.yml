@@ -19,6 +19,9 @@ x-app-env: &app-env
   # ซึ่งไม่ใช่สิ่งที่ต้องการเมื่อรันครบชุดในเครื่อง
   BACKEND_URL: http://backend:8000
   VAULTIS_DB_PATH: /data/vaultis.db
+  # scheduler จำว่าส่งแผน DCA เดือนไหนไปแล้ว (ส่งย้อนหลังเมื่อคอมปิดตอน 08:00 วันที่ 1)
+  # ต้องอยู่ใน /data ที่ bind mount จาก host — อยู่ใน image = rebuild แล้วลืม = ส่งซ้ำ
+  VAULTIS_SCHEDULER_STATE_PATH: /data/scheduler_state.json
   # ระดับ log ของ "ทางเข้า" ทั้งสองทาง (uvicorn backend.main:app และ python main.py)
   # ไม่ตั้ง = INFO ตามค่าในโค้ด · ตั้ง WARNING เพื่อหรี่, DEBUG เพื่อไล่ปัญหา
   # uvicorn --log-level ใช้แทนกันไม่ได้ มันตั้งเฉพาะ logger ชื่อ uvicorn*
@@ -182,6 +185,7 @@ services:
       # ใน tests/conftest.py · เทสต์ที่ตรวจทั้งสองชั้น: tests/test_data_file_isolation.py
       VAULTIS_LEDGER_PATH: /tmp/vaultis-test-data/transactions.csv
       VAULTIS_ALERTS_PATH: /tmp/vaultis-test-data/price_alerts.json
+      VAULTIS_SCHEDULER_STATE_PATH: /tmp/vaultis-test-data/scheduler_state.json
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
       DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"

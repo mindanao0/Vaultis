@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import argparse
 import functools
+import json
 import logging
 import math
+import os
 import time
 from calendar import monthrange
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable, Dict
 from zoneinfo import ZoneInfo
 
@@ -154,12 +157,15 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
         print(f"เกิดข้อผิดพลาดในการสร้างรายงานรายสัปดาห์: {exc}")
 
 
-def generate_monthly_ai_advisor_and_notify() -> None:
+def generate_monthly_ai_advisor_and_notify() -> bool:
     """ส่งแผน DCA รายเดือนตอนต้นเดือน.
 
     ดีฟอลต์ **ไม่เรียก AI** (ไม่มีค่าใช้จ่าย) แต่ยังส่งคะแนนและแผนจัดสรรจากโมเดล
     เข้า Discord ตามปกติ — ตั้ง ``VAULTIS_MONTHLY_AI=1`` ถ้าต้องการให้ Claude อธิบายแผน
     ด้วย (จ่ายเงิน ~1 ครั้ง/เดือน) ตัวเลขในแผนยังมาจากโค้ดเหมือนเดิมทุกตัว
+
+    คืน ``True`` เมื่อ Discord รับข้อความแล้วเท่านั้น — ตัวส่งย้อนหลังใช้ค่านี้ตัดสินว่า
+    "เดือนนี้ส่งแล้ว" (ข้ามเพราะไม่มี webhook ≠ ส่งแล้ว)
     """
     try:
         config = load_config()
@@ -170,12 +176,14 @@ def generate_monthly_ai_advisor_and_notify() -> None:
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
             print("ส่งแผน DCA รายเดือนไป Discord สำเร็จ")
-        elif discord_result.get("skipped"):
+            return True
+        if discord_result.get("skipped"):
             print("ข้ามการส่ง: ไม่ได้ตั้งค่า webhook")
         else:
             print(f"ส่งไม่สำเร็จ: {discord_result.get('error')}")
     except Exception as exc:
         print(f"เกิดข้อผิดพลาดใน Advisor รายเดือน: {exc}")
+    return False
 
 
 def generate_daily_technical_alerts(webhook_url: str) -> None:
@@ -285,12 +293,116 @@ def generate_daily_technical_alerts(webhook_url: str) -> None:
         print(f"เกิดข้อผิดพลาดใน daily technical alert: {exc}")
 
 
-def run_monthly_ai_advisor_if_first_day() -> None:
-    """รัน AI Advisor เฉพาะวันที่ 1 ของเดือน (เวลาไทย)."""
-    if _now_bangkok().day == 1:
-        generate_monthly_ai_advisor_and_notify()
+# --- แผน DCA ต้นเดือน: ส่งย้อนหลังได้ถ้าเครื่องปิดอยู่ตอน 08:00 วันที่ 1 ---
+# เดิมเช็ค "วันนี้วันที่ 1 ไหม" วันละครั้งตอน 08:00 ⇒ คอมปิดอยู่ตอนนั้น = ไม่ส่งทั้งเดือน
+# โดยไม่มีอะไรฟ้อง  ตอนนี้จำเดือนที่ส่งแล้วไว้ในไฟล์ แล้วเช็คตอนเริ่มโปรเซส + ทุกชั่วโมง
+#
+# อ่าน env **ครั้งเดียวตอน import** (เทสต์ monkeypatch ชื่อนี้ — แบบเดียวกับ
+# VAULTIS_LEDGER_PATH/VAULTIS_ALERTS_PATH) · Docker ชี้ไป /data ซึ่ง bind mount จาก
+# host ⇒ rebuild image แล้วสถานะไม่หาย ไม่งั้นทุก rebuild = ส่งแผนซ้ำ
+SCHEDULER_STATE_PATH = Path(
+    os.getenv("VAULTIS_SCHEDULER_STATE_PATH")
+    or Path(__file__).resolve().parent / ".scheduler_state.json"
+)
+MONTHLY_PLAN_HOUR = 8
+# กันจ่ายค่า AI ซ้ำไม่รู้จบเมื่อ Discord ล่ม: แต่ละครั้งที่ล้มอาจเรียก AI ไปแล้ว
+MONTHLY_PLAN_MAX_FAILED_ATTEMPTS = 3
+# สำรองในหน่วยความจำ: ส่งสำเร็จแต่เขียนไฟล์สถานะไม่ได้ ⇒ อย่าส่งซ้ำทุกชั่วโมง
+_monthly_plan_sent_in_process: set[str] = set()
+
+
+class SchedulerStateUnreadable(RuntimeError):
+    """ไฟล์สถานะมีอยู่แต่อ่านไม่ออก — ไม่รู้ว่าส่งแล้วหรือยัง ห้ามเดา."""
+
+
+def _load_scheduler_state() -> dict[str, Any] | None:
+    """คืน ``None`` เมื่อยังไม่มีไฟล์ (ติดตั้งครั้งแรก) — ต่างจากไฟล์เสียที่ต้อง raise."""
+    try:
+        raw = SCHEDULER_STATE_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SchedulerStateUnreadable(f"{SCHEDULER_STATE_PATH}: JSON เสีย ({exc})") from exc
+    if not isinstance(data, dict):
+        raise SchedulerStateUnreadable(f"{SCHEDULER_STATE_PATH}: ไม่ใช่ JSON object")
+    return data
+
+
+def _save_scheduler_state(state: dict[str, Any]) -> None:
+    SCHEDULER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SCHEDULER_STATE_PATH.with_name(SCHEDULER_STATE_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, SCHEDULER_STATE_PATH)
+
+
+def run_monthly_plan_if_due() -> str:
+    """ส่งแผน DCA ของเดือนนี้ถ้าถึงเวลาแล้วและยังไม่เคยส่ง — เรียกซ้ำได้ปลอดภัย.
+
+    ถึงเวลา = ตั้งแต่ 08:00 วันที่ 1 เป็นต้นไปจนสิ้นเดือน (เปิดคอมวันที่ 3 ก็ยังได้แผน)
+    คืนสถานะเป็นสตริงเพื่อ log/เทสต์:
+    ``not_yet`` · ``already_sent`` · ``seeded`` · ``sent`` · ``failed`` · ``gave_up`` ·
+    ``state_unreadable``
+    """
+    now = _now_bangkok()
+    month = now.strftime("%Y-%m")
+    if now.day == 1 and now.hour < MONTHLY_PLAN_HOUR:
+        return "not_yet"
+    if month in _monthly_plan_sent_in_process:
+        return "already_sent"
+
+    try:
+        state = _load_scheduler_state()
+    except SchedulerStateUnreadable as exc:
+        # ไม่รู้ว่าส่งไปแล้วหรือยัง: เดาว่า "ยัง" = อาจส่งซ้ำ+จ่าย AI ทุกชั่วโมง → ไม่ส่งแล้วฟ้องดัง ๆ
+        logger.error("ข้ามแผน DCA รายเดือน — อ่านไฟล์สถานะไม่ได้: %s (ลบ/แก้ไฟล์นี้แล้วจะกลับมาทำงาน)", exc)
+        return "state_unreadable"
+
+    if state is None:
+        # ติดตั้งครั้งแรกกลางเดือน: อย่ายิงแผนของเดือนที่ผ่านไปครึ่งทางแล้วทันทีที่ deploy
+        # เริ่มนับจากเดือนหน้า  (ติดตั้งครั้งแรกในวันที่ 1 เองก็ถือว่าเริ่มเดือนหน้าเช่นกัน)
+        state = {"monthly_plan": {"sent_month": month, "seeded_at": now.isoformat(timespec="seconds")}}
+        try:
+            _save_scheduler_state(state)
+        except OSError as exc:
+            logger.error("เขียนไฟล์สถานะ scheduler ไม่ได้: %s", exc)
+        _monthly_plan_sent_in_process.add(month)
+        logger.info("เริ่มจำสถานะแผน DCA รายเดือนที่ %s — แผนแรกจะส่งเดือนถัดไป", SCHEDULER_STATE_PATH)
+        return "seeded"
+
+    plan = dict(state.get("monthly_plan") or {})
+    if plan.get("sent_month") == month:
+        _monthly_plan_sent_in_process.add(month)
+        return "already_sent"
+
+    failed = int(plan.get("failed_attempts") or 0) if plan.get("failed_month") == month else 0
+    if failed >= MONTHLY_PLAN_MAX_FAILED_ATTEMPTS:
+        return "gave_up"
+
+    if now.day > 1 or now.hour > MONTHLY_PLAN_HOUR:
+        logger.info("ส่งแผน DCA ของเดือน %s ย้อนหลัง (เครื่องไม่ได้เปิดตอน 08:00 วันที่ 1)", month)
+
+    if generate_monthly_ai_advisor_and_notify():
+        _monthly_plan_sent_in_process.add(month)
+        plan = {"sent_month": month, "sent_at": now.isoformat(timespec="seconds")}
+        status = "sent"
     else:
-        print("Not day 1 (Asia/Bangkok) - skipping AI Advisor")
+        plan = {**plan, "failed_month": month, "failed_attempts": failed + 1}
+        status = "failed"
+        if failed + 1 >= MONTHLY_PLAN_MAX_FAILED_ATTEMPTS:
+            logger.error(
+                "ส่งแผน DCA เดือน %s ไม่สำเร็จ %d ครั้ง — หยุดลองจนถึงเดือนหน้า "
+                "(แก้ต้นเหตุแล้วลบ failed_attempts ใน %s แล้ว restart scheduler เพื่อลองใหม่)",
+                month, failed + 1, SCHEDULER_STATE_PATH,
+            )
+
+    state["monthly_plan"] = plan
+    try:
+        _save_scheduler_state(state)
+    except OSError as exc:
+        logger.error("เขียนไฟล์สถานะ scheduler ไม่ได้: %s", exc)
+    return status
 
 
 def _format_allocation_plan(advice_result: dict) -> str:
@@ -589,8 +701,11 @@ def run_scheduler() -> None:
 
         # ทุก job ห่อด้วย _safe() — งานหนึ่งพังต้องไม่ลากงานอื่นและตัว scheduler ไปด้วย
         if webhook_url:
-            # 1) วันที่ 1 ของทุกเดือน 08:00 -> AI Advisor (ผ่าน daily guard)
-            schedule.every().day.at("08:00").do(_safe(run_monthly_ai_advisor_if_first_day))
+            # 1) แผน DCA ต้นเดือน: 08:00 ตรงเวลา + ทุกชั่วโมง + ทันทีตอนเริ่ม (ส่งย้อนหลัง
+            #    เมื่อเครื่องปิดอยู่ตอน 08:00 วันที่ 1) — ตัวฟังก์ชันกันส่งซ้ำเองด้วยไฟล์สถานะ
+            schedule.every().day.at("08:00").do(_safe(run_monthly_plan_if_due))
+            schedule.every().hour.do(_safe(run_monthly_plan_if_due))
+            _safe(run_monthly_plan_if_due)()
             # 2) ทุกวัน 08:00 -> เช็คว่าพรุ่งนี้เป็นวัน DCA แล้วเตือนล่วงหน้า
             if notifications.get("dca_reminder", True):
                 schedule.every().day.at("08:00").do(_safe(check_and_send_dca_reminder), webhook_url=webhook_url)
@@ -609,7 +724,7 @@ def run_scheduler() -> None:
         print(
             "Vaultis scheduler started: "
             f"discord = {bool(webhook_url)}, "
-            f"monthly AI Advisor (day 1 08:00) = {bool(webhook_url)}, "
+            f"monthly DCA plan (day 1 08:00, catch-up hourly) = {bool(webhook_url)}, "
             f"DCA reminder check (daily 08:00, DCA day {dca_day}) = "
             f"{bool(webhook_url) and notifications.get('dca_reminder', True)}, "
             f"weekly summary (Mon 08:00) = "

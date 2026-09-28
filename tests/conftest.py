@@ -58,6 +58,16 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {},
     },
     {
+        "label": "scheduler state",
+        "module": "main",
+        "attr": "SCHEDULER_STATE_PATH",
+        "real": REPO_ROOT / ".scheduler_state.json",
+        "seed": False,
+        "mirror_parent": (),
+        # จำในหน่วยความจำว่าเดือนไหนส่งแล้ว — ต้องเริ่มว่างทุกเทสต์
+        "reset": {"_monthly_plan_sent_in_process": set()},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",

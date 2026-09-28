@@ -19,6 +19,9 @@ portfolio/data/transactions.csv
 # .bak/.lock/.tmp คือไฟล์ข้างเคียงของการบันทึกแบบ atomic ใน alerts/price_alert.py
 # (.bak มีเนื้อ alert ของผู้ใช้เต็ม ๆ — หลุดไม่ได้เท่ากับตัวไฟล์หลัก)
 alerts/data/price_alerts.json
+# scheduler: เดือนที่ส่งแผน DCA แล้ว (รันนอก Docker)
+.scheduler_state.json
+.scheduler_state.json.tmp
 alerts/data/price_alerts.json.bak
 alerts/data/price_alerts.json.lock
 alerts/data/price_alerts.json.tmp.*
