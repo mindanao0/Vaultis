@@ -70,15 +70,18 @@ jobs:
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
           REDDIT_USER_AGENT: VaultisBot/1.0
+      # สรุปรายสัปดาห์ + แผน DCA รายเดือนย้ายไปส่งจาก Docker scheduler ในเครื่องแล้ว
+      # (เห็นพอร์ตจริง + มี ANTHROPIC_API_KEY) — ปิดที่นี่เพื่อไม่ให้ Discord ได้ข้อความซ้ำ
+      # เปิดกลับ: ตั้ง repository variable VAULTIS_CI_DISCORD_JOBS=1
       - name: Run Weekly Summary (วันจันทร์)
-        if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1') }}
+        if: ${{ vars.VAULTIS_CI_DISCORD_JOBS == '1' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1')) }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py --job weekly_summary
       - name: Run Monthly AI Advisor (วันที่ 1)
-        if: github.event.schedule == '0 1 1 * *'
+        if: ${{ vars.VAULTIS_CI_DISCORD_JOBS == '1' && github.event.schedule == '0 1 1 * *' }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
