@@ -27,7 +27,7 @@ def _now_bangkok() -> datetime:
 from alerts.line_notifier import send_line_message
 from alerts.notifier import send_dca_reminder, send_discord_webhook, send_technical_alert
 from alerts.price_alert import ALERTS_PATH, check_alerts, check_result_contract_error
-from analysis.ai_advisor import get_monthly_advice
+from analysis.ai_advisor import MONTHLY_AI_ENV, get_monthly_advice, monthly_ai_enabled
 from analysis.returns import calculate_period_returns, real_bars
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
@@ -157,15 +157,16 @@ def generate_weekly_report_and_notify(webhook_url: str) -> None:
 def generate_monthly_ai_advisor_and_notify() -> None:
     """ส่งแผน DCA รายเดือนตอนต้นเดือน.
 
-    งานอัตโนมัติ → ``user_initiated=False`` → **ไม่เรียก AI** (ไม่มีค่าใช้จ่าย)
-    แต่ยังส่งคะแนนและแผนจัดสรรจากโมเดลเข้า Discord ตามปกติ
+    ดีฟอลต์ **ไม่เรียก AI** (ไม่มีค่าใช้จ่าย) แต่ยังส่งคะแนนและแผนจัดสรรจากโมเดล
+    เข้า Discord ตามปกติ — ตั้ง ``VAULTIS_MONTHLY_AI=1`` ถ้าต้องการให้ Claude อธิบายแผน
+    ด้วย (จ่ายเงิน ~1 ครั้ง/เดือน) ตัวเลขในแผนยังมาจากโค้ดเหมือนเดิมทุกตัว
     """
     try:
         config = load_config()
         budget_thb = float(config["dca"]["monthly_budget_thb"])
-        result = get_monthly_advice(budget_thb=budget_thb)
+        result = get_monthly_advice(budget_thb=budget_thb, user_initiated=monthly_ai_enabled())
         if not result.get("ai_used"):
-            print("(ไม่ได้เรียก AI — ส่งเฉพาะตัวเลขจากโมเดล ไม่มีค่าใช้จ่าย)")
+            print(f"(ไม่ได้ใช้คำอธิบาย AI รอบนี้ — ส่งเฉพาะตัวเลขจากโมเดล; เปิดด้วย {MONTHLY_AI_ENV}=1)")
         discord_result = result.get("discord_result", {})
         if discord_result.get("success"):
             print("ส่งแผน DCA รายเดือนไป Discord สำเร็จ")
@@ -342,7 +343,10 @@ def check_and_send_dca_reminder(webhook_url: str) -> None:
         # แผนจัดสรรมาจากโมเดลโดยตรง — ไม่เรียก AI (ไม่มีค่าใช้จ่าย) และไม่แกะตัวเลข
         # จากข้อความ AI อีกต่อไป (รอยเดิมของ AUDIT.md C3)
         try:
-            advice_result = get_monthly_advice(budget_thb=dca_budget_thb, send_discord=False)
+            # explain=False: ใช้แค่ allocation — ห้ามจ่ายค่า AI ให้ข้อความที่ถูกทิ้ง
+            advice_result = get_monthly_advice(
+                budget_thb=dca_budget_thb, send_discord=False, explain=False
+            )
             plan = _format_allocation_plan(advice_result)
         except Exception as exc:
             plan = f"- คำนวณแผนจัดสรรไม่สำเร็จ ({exc})"
@@ -690,7 +694,11 @@ if __name__ == "__main__":
     elif args.job == "monthly_advice":
         if _now_bangkok().day == 1:
             config = load_config()
-            get_monthly_advice(budget_thb=float(config["dca"]["monthly_budget_thb"]))
+            # เรียกตรง ไม่ผ่าน wrapper ที่กลืน exception — CI ต้องแดงเมื่องานพัง
+            get_monthly_advice(
+                budget_thb=float(config["dca"]["monthly_budget_thb"]),
+                user_initiated=monthly_ai_enabled(),
+            )
         else:
             print("Not day 1 (Asia/Bangkok) - skipping")
     elif args.job == "price_alert":

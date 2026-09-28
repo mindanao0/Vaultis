@@ -116,6 +116,7 @@ config.json       Persistent app config (tickers, DCA budget, display prefs) —
 - **Automatic jobs never pay.** Cron, GitHub Actions, the 07:00 screener, and the monthly report all run with `user_initiated=False` and degrade to the model's own numbers (scores, allocation, signals) — which is the information that actually drives decisions. They must catch `LLMDisabledError` and fall back, never crash.
 - **Only a click pays.** The dashboard's "ให้ AI อธิบายด้วย" button, `POST /api/ai/advice`, and API routes called with `?include_ai=true`.
 - `VAULTIS_LLM_AUTO=1` lifts the gate for automatic jobs (opt-in; the user pays every run).
+- `VAULTIS_MONTHLY_AI=1` is the narrow version: only the day-1 DCA plan → Discord job (`main.py`) passes `user_initiated=True`. Use it instead of `VAULTIS_LLM_AUTO` in Docker, where `.env` reaches every service and would also make the backend's screener/monthly report pay. The DCA reminder calls `get_monthly_advice(explain=False)` — it only reads the allocation, so it must never buy an explanation it throws away.
 
 When adding a new LLM call, thread `user_initiated` from the entry point. Never default it to `True`.
 
@@ -213,6 +214,7 @@ Vaultis's own switches — all optional, all read with `os.getenv`. **Every `VAU
 | `VAULTIS_API_KEY` | localhost-only (fail closed) | `backend/security.py` — see Backend Auth. **Must be set under Docker**: requests arrive from the bridge IP, so the localhost exemption never applies |
 | `VAULTIS_ALLOWED_ORIGINS` | `http://localhost:8501`, `http://127.0.0.1:8501` | CORS allow-list (comma-separated) in `backend/security.py` |
 | `VAULTIS_LLM_AUTO` | off — automatic jobs never pay | `analysis/llm.py`; `1` lets cron/CI/screener spend money every run |
+| `VAULTIS_MONTHLY_AI` | off — the day-1 DCA plan goes to Discord as numbers only | `analysis/ai_advisor.monthly_ai_enabled()`, read by `main.py`; `1` adds Claude's explanation to that one job (~1 call/month). CI passes the repository variable of the same name |
 | `VAULTIS_LOG_LEVEL` | `INFO` | Both entry points (`backend/main.py`, `main.py`) — see Scheduled Jobs |
 | `VAULTIS_WS_URL` | derived from `BACKEND_URL`, with an on-screen note when it had to guess | Dashboard real-time price ticker. This URL is dialled by the **user's browser**, so it is a different network view from `BACKEND_URL` (used from inside the container) — never copy one into the other: `ws://backend:8000` is unresolvable outside the compose network. Compose sets it to `ws://127.0.0.1:8000/ws/prices` for the dashboard service only |
 | `VAULTIS_DB_PATH` | `./vaultis.db` | `backend/database.py` — SQLite location. Compose points it at `/data/vaultis.db`; the `tests` service at `/tmp` so a suite run can never touch the real goals/net-worth DB |

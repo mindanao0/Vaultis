@@ -164,3 +164,76 @@ class TestAutomaticPathsAreFree:
 
         run_sentiment_job(["VOO"])
         assert "ข้าม" in capsys.readouterr().out
+
+
+class TestMonthlyAiSwitch:
+    """VAULTIS_MONTHLY_AI เปิด AI ให้แผน DCA ต้นเดือนงานเดียว — ดีฟอลต์ต้องไม่จ่าย."""
+
+    def _spy_advice(self, monkeypatch):
+        import main
+
+        calls: list[dict] = []
+
+        def fake(**kwargs):
+            calls.append(kwargs)
+            return {"ai_used": False, "allocation": {}, "discord_result": {"skipped": True}}
+
+        monkeypatch.setattr(main, "get_monthly_advice", fake)
+        monkeypatch.setattr(main, "load_config", lambda: {"dca": {"monthly_budget_thb": 5000, "day_of_month": 1}})
+        return main, calls
+
+    def test_monthly_job_does_not_pay_by_default(self, monkeypatch):
+        monkeypatch.delenv("VAULTIS_MONTHLY_AI", raising=False)
+        main, calls = self._spy_advice(monkeypatch)
+        main.generate_monthly_ai_advisor_and_notify()
+        assert calls and calls[0]["user_initiated"] is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "on"])
+    def test_monthly_job_pays_when_switched_on(self, monkeypatch, value):
+        monkeypatch.setenv("VAULTIS_MONTHLY_AI", value)
+        main, calls = self._spy_advice(monkeypatch)
+        main.generate_monthly_ai_advisor_and_notify()
+        assert calls and calls[0]["user_initiated"] is True
+
+    @pytest.mark.parametrize("value", ["", "0", "no"])
+    def test_switch_off_values(self, monkeypatch, value):
+        from analysis import ai_advisor
+
+        monkeypatch.setenv("VAULTIS_MONTHLY_AI", value)
+        assert ai_advisor.monthly_ai_enabled() is False
+
+    def test_dca_reminder_never_requests_explanation(self, monkeypatch):
+        """reminder ใช้แค่ allocation — เปิด AI ทุกสวิตช์แล้วก็ต้องไม่ขอคำอธิบาย."""
+        monkeypatch.setenv("VAULTIS_MONTHLY_AI", "1")
+        monkeypatch.setenv("VAULTIS_LLM_AUTO", "1")
+        main, calls = self._spy_advice(monkeypatch)
+        from datetime import datetime
+
+        monkeypatch.setattr(main, "_now_bangkok", lambda: datetime(2026, 9, 30, 8, 0, tzinfo=main.BANGKOK_TZ))
+        monkeypatch.setattr(main, "get_today_fx_rate_thb", lambda: 33.0)
+        monkeypatch.setattr(main, "send_dca_reminder", lambda **k: {"success": True})
+        main.check_and_send_dca_reminder("https://discord.invalid/webhook")
+        assert calls and calls[0]["explain"] is False
+
+    def test_explain_false_skips_llm_even_with_auto_flag(self, monkeypatch):
+        monkeypatch.setenv("VAULTIS_LLM_AUTO", "1")
+
+        from analysis import ai_advisor
+
+        scores = [{"ticker": "VOO", "data_ok": True, "total_pct": 70.0, "price": 690.0,
+                   "ma50": 680.0, "ma200": 650.0, "rsi": 55.0, "signal": "Strong Buy"}]
+        monkeypatch.setattr(ai_advisor, "get_tickers", lambda: ["VOO"])
+        monkeypatch.setattr("analysis.financial_model.build_etf_scores", lambda t: scores)
+        monkeypatch.setattr("analysis.macro.get_macro_snapshot", lambda: {})
+        import pandas as pd
+
+        monkeypatch.setattr("portfolio.tracker.get_portfolio_summary", lambda: pd.DataFrame())
+        monkeypatch.setattr(ai_advisor, "load_config", lambda: {"notifications": {"discord_webhook_url": ""}})
+
+        def _boom(*a, **k):
+            raise AssertionError("explain=False ต้องไม่เรียก LLM")
+
+        monkeypatch.setattr(ai_advisor, "chat_text", _boom)
+        result = ai_advisor.get_monthly_advice(budget_thb=5000, send_discord=False, explain=False)
+        assert result["ai_used"] is False
+        assert result["allocation"]
