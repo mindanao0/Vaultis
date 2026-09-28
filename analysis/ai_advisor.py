@@ -11,6 +11,7 @@ ETF ที่ข้อมูลไม่พร้อมจะถูกส่ง�
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,17 @@ load_dotenv(dotenv_path=ROOT_DIR / ".env", override=False)
 # (ห้ามใช้ปรับคะแนน/allocation ที่ financial_model คำนวณแล้ว — invariant ของระบบ)
 SENTIMENT_WARNING_SCORE = -0.4
 SENTIMENT_WARNING_MIN_ARTICLES = 3
+
+# สวิตช์ "ยอมจ่าย" ของงานแผน DCA ต้นเดือน **งานเดียว** — แคบกว่า VAULTIS_LLM_AUTO
+# ซึ่งปลดทุกงานอัตโนมัติในโปรเซส (Docker ส่ง .env ให้ทุก service: ตั้ง VAULTIS_LLM_AUTO
+# ที่นั่น = screener 07:00 และรายงานรายเดือนของ backend จ่ายเงินไปด้วย)
+# ตั้ง = ผู้ใช้สั่งล่วงหน้าแล้ว ⇒ ถือเป็น user_initiated ของงานนี้ ~1 ครั้ง/เดือน
+MONTHLY_AI_ENV = "VAULTIS_MONTHLY_AI"
+
+
+def monthly_ai_enabled() -> bool:
+    """ผู้ใช้เปิดคำอธิบาย AI ให้แผน DCA ต้นเดือนหรือไม่ (ดีฟอลต์: ไม่)."""
+    return os.getenv(MONTHLY_AI_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 VAULTIS_ADVISOR_SYSTEM_PROMPT = """
 You are Vaultis AI, a long-term ETF investment advisor for Thai retail investors.
@@ -450,8 +462,12 @@ def get_monthly_advice(
     budget_thb: float = 5000,
     send_discord: bool = True,
     user_initiated: bool = False,
+    explain: bool = True,
 ) -> dict[str, Any]:
     """คำนวณคะแนน + แผนจัดสรรในโค้ด (ฟรี) แล้วให้ LLM อธิบาย (มีค่าใช้จ่าย).
+
+    ``explain=False`` = ผู้เรียกใช้แค่ตัวเลข (เช่น DCA reminder) → ไม่แตะ LLM เลย
+    แม้ ``VAULTIS_LLM_AUTO=1`` — ไม่งั้นจ่ายเงินซื้อคำอธิบายที่ถูกทิ้ง
 
     ตัวเลขใน Discord มาจากโมเดลโดยตรง (ไม่ตัดจากข้อความ AI) — AUDIT.md C3
 
@@ -497,28 +513,31 @@ def get_monthly_advice(
         # ตัวเลขทั้งหมดข้างบนคำนวณเสร็จแล้วโดยไม่มีค่าใช้จ่าย
         # ส่วนคำอธิบายจาก AI เป็นส่วนที่เสียเงิน → เรียกเฉพาะเมื่อผู้ใช้กดปุ่มเอง
         ai_used = False
-        try:
-            advice_text = get_ai_advice(
-                etf_scores,
-                macro,
-                portfolio,
-                allocation=allocation,
-                unallocated_thb=unallocated_thb,
-                user_initiated=user_initiated,
-                sentiment=sentiment,
-            )
-            ai_used = True
-        except LLMDisabledError as exc:
-            advice_text = str(exc)
-        except RuntimeError as exc:
-            # LLM ล้มเหลวจริง (คีย์หาย / provider ล่ม / ตอบว่างเปล่า) — ต่างจาก
-            # LLMDisabledError ที่เป็นการปิดไว้ตั้งใจ  ห้ามให้ทั้งงานพัง เพราะตัวเลข
-            # ทุกตัว (คะแนน/แผนจัดสรร) คำนวณเสร็จแล้วใน Python ไม่ได้พึ่ง LLM
-            # แต่ต้องบอกให้ชัดว่าคำอธิบายหายไปเพราะอะไร ห้ามเงียบ (C1)
-            advice_text = (
-                f"⚠️ เรียก AI ไม่สำเร็จ: {exc}\n"
-                "ตัวเลขและสัญญาณทั้งหมดด้านบนคำนวณจากโมเดลในระบบตามปกติ (ไม่ได้พึ่ง AI)"
-            )
+        if not explain:
+            advice_text = "(ไม่ได้ขอคำอธิบายจาก AI ในรอบนี้ — ใช้เฉพาะตัวเลข)"
+        else:
+            try:
+                advice_text = get_ai_advice(
+                    etf_scores,
+                    macro,
+                    portfolio,
+                    allocation=allocation,
+                    unallocated_thb=unallocated_thb,
+                    user_initiated=user_initiated,
+                    sentiment=sentiment,
+                )
+                ai_used = True
+            except LLMDisabledError as exc:
+                advice_text = str(exc)
+            except RuntimeError as exc:
+                # LLM ล้มเหลวจริง (คีย์หาย / provider ล่ม / ตอบว่างเปล่า) — ต่างจาก
+                # LLMDisabledError ที่เป็นการปิดไว้ตั้งใจ  ห้ามให้ทั้งงานพัง เพราะตัวเลข
+                # ทุกตัว (คะแนน/แผนจัดสรร) คำนวณเสร็จแล้วใน Python ไม่ได้พึ่ง LLM
+                # แต่ต้องบอกให้ชัดว่าคำอธิบายหายไปเพราะอะไร ห้ามเงียบ (C1)
+                advice_text = (
+                    f"⚠️ เรียก AI ไม่สำเร็จ: {exc}\n"
+                    "ตัวเลขและสัญญาณทั้งหมดด้านบนคำนวณจากโมเดลในระบบตามปกติ (ไม่ได้พึ่ง AI)"
+                )
 
         print("\n========== Vaultis Advisor (Monthly DCA) ==========")
         print(advice_text)

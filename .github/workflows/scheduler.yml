@@ -83,6 +83,10 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          # เปิดคำอธิบายจาก Claude: ตั้ง repository variable VAULTIS_MONTHLY_AI=1
+          # (Settings → Secrets and variables → Actions → Variables) — จ่าย ~1 ครั้ง/เดือน
+          # ไม่ตั้ง = ส่งแผนเป็นตัวเลขล้วน ฟรี (CI มองไม่เห็นพอร์ตจริง: AI อธิบายโดยไม่มี holdings)
+          VAULTIS_MONTHLY_AI: ${{ vars.VAULTIS_MONTHLY_AI }}
         run: python main.py --job monthly_advice
       # เดิมมี step "Daily price summary" (`python main.py --job price_alert`) อยู่ตรงนี้
       # เงื่อนไข `if:` เดียวกันเป๊ะกับ step ข้างล่าง และยิงเว็บฮุคเดียวกัน
