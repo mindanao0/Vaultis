@@ -33,6 +33,8 @@ import pytest
 
 from analysis.llm import LLMDisabledError
 from backend.services import rebalance_service
+from portfolio import targets as targets_module
+from portfolio.targets import RISK_PROFILES
 from portfolio.cashflow_rebalance import UNIT_THB, rebalance_with_new_money
 from portfolio.fees import dime_fee_thb
 
@@ -159,7 +161,15 @@ class TestHoldBandWiring:
 # ชั้นที่ 4 — ปลายทางที่ผู้ใช้เห็นจริง (compute_rebalance)
 # ---------------------------------------------------------------------------
 # สัดส่วนเป้าหมายอ่านจากแหล่งเดียวของระบบเสมอ (portfolio/targets.py)
-TARGET = rebalance_service.resolve_target_weights("moderate")
+# ไฟล์นี้ตรวจกลไก rebalance บนสัดส่วน preset ที่รู้คำตอบ — ไม่เรียก resolve_target_weights()
+# ระดับโมดูลอีกแล้ว: ตั้งแต่ ERC เป็นค่าเริ่มต้น (2026-09-30) บรรทัดนั้นดึงราคาจริงตอน collect
+TARGET = dict(RISK_PROFILES["moderate"])
+
+
+@pytest.fixture(autouse=True)
+def _preset_weighting(monkeypatch):
+    """compute_rebalance() อ่านเป้าหมายจาก targets.py — บังคับโหมด preset ให้ตรงกับ TARGET."""
+    monkeypatch.setattr(targets_module, "get_weighting_method", lambda: "preset")
 PRICES_FULL = {"VOO": 500.0, "SCHD": 25.0, "QQQM": 200.0, "XLV": 150.0, "GLDM": 64.0}
 
 

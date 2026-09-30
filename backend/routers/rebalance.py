@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from portfolio.targets import InvalidTargetWeights, RiskWeightsUnavailable
+
 from ..schemas import RebalanceRequest
 from ..services import rebalance_service
 
@@ -41,5 +43,10 @@ def rebalance_portfolio(
     except rebalance_service.RiskProfileMismatch as exc:
         # คำขอของผู้เรียกขัดกับค่าที่ระบบตั้งไว้ = ความผิดของคำขอ ไม่ใช่ 500
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RiskWeightsUnavailable as exc:
+        # เป้าหมายแบบ ERC คำนวณไม่ได้เพราะดึงราคาไม่สำเร็จ = ชั่วคราว (ไม่ใช่คอนฟิกผิด ไม่ใช่เซิร์ฟเวอร์พัง)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except InvalidTargetWeights as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

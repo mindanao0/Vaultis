@@ -365,7 +365,7 @@ class TestRealTargetsModuleAgreesWithTheScreen:
         monkeypatch.setattr(
             targets_module,
             "load_config",
-            lambda: {"portfolio": {"risk_profile": "moderate", "target_weights": {}}},
+            lambda: {"portfolio": {"weighting_method": "preset", "risk_profile": "moderate", "target_weights": {}}},
         )
         monkeypatch.setattr(app, "get_target_weights", targets_module.get_target_weights)
         monkeypatch.setattr(app, "get_tickers", lambda: list(TRACKED_TICKERS))
@@ -399,7 +399,7 @@ class TestRealTargetsModuleAgreesWithTheScreen:
             targets_module,
             "load_config",
             lambda: {
-                "portfolio": {"risk_profile": "moderate", "target_weights": {"GLDM": 0.0}}
+                "portfolio": {"weighting_method": "preset", "risk_profile": "moderate", "target_weights": {"GLDM": 0.0}}
             },
         )
         monkeypatch.setattr(app, "get_target_weights", targets_module.get_target_weights)
@@ -421,7 +421,7 @@ class TestRealTargetsModuleAgreesWithTheScreen:
             targets_module,
             "load_config",
             lambda: {
-                "portfolio": {"risk_profile": "moderate", "target_weights": {"VOO": 0.0}}
+                "portfolio": {"weighting_method": "preset", "risk_profile": "moderate", "target_weights": {"VOO": 0.0}}
             },
         )
         monkeypatch.setattr(app, "get_target_weights", targets_module.get_target_weights)

@@ -1,6 +1,14 @@
 # -*- coding: utf-8 -*-
 """สัดส่วนพอร์ตเป้าหมาย — แหล่งเดียวของทั้งระบบ.
 
+วิธีคำนวณฐาน (``portfolio.weighting_method`` — มติผู้ใช้ 2026-09-30)
+-----------------------------------------------------------------
+* ``erc`` (ค่าเริ่มต้น) — **ไม่มีสัดส่วนตายตัว** คำนวณจากข้อมูลทุกครั้งด้วย Equal Risk
+  Contribution: ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน นับการขึ้นลงพร้อมกันด้วย
+  (ดู ``portfolio/risk_weights.py`` — ที่มา ผล backtest และข้อจำกัด) ดึงราคาไม่ได้ →
+  :class:`RiskWeightsUnavailable` **ห้ามถอยไปใช้ preset เงียบ ๆ** เพราะนั่นคือสูตรที่ผู้ใช้เลิกใช้
+* ``preset`` — สูตรเดิมทั้งหมดด้านล่าง (``risk_profile`` + ``target_weights``) เก็บไว้เป็นทางเลือก
+
 เดิมมีชุดเป้าหมาย 2 ชุดที่ไม่ตรงกัน:
 - dashboard / main.py : VOO 35 / SCHD 20 / QQQM 20 / XLV 15 / GLDM 10
 - rebalance / goals   : VOO 35 / SCHD 25 / QQQM 20 / XLV 10 / GLDM 10
@@ -81,7 +89,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from utils.config import get_tickers, load_config
+from utils.config import DEFAULT_CONFIG, get_tickers, load_config
 
 RISK_PROFILES: dict[str, dict[str, float]] = {
     "conservative": {"VOO": 0.30, "SCHD": 0.30, "QQQM": 0.10, "XLV": 0.20, "GLDM": 0.10},
@@ -127,6 +135,23 @@ class NoTargetForSubset(TargetWeightsError):
         self.missing = list(missing)
 
 
+class RiskWeightsUnavailable(TargetWeightsError):
+    """คำนวณสัดส่วนฐาน ERC ไม่ได้ — ดึงราคาไม่สำเร็จ / ประวัติไม่พอ.
+
+    **ไม่ใช่คอนฟิกผิด** (แก้ config.json ไม่ช่วย) และ **ห้ามถอยไปใช้ preset แทน** —
+    สัดส่วนตายตัวคือสูตรที่ผู้ใช้เลิกใช้แล้ว เอามาใช้เงียบ ๆ = เอาเงินจริงไปทำตามสูตรที่ไม่ได้เลือก
+    """
+
+
+WEIGHTING_ERC = "erc"
+#: ERC + เพดานเซกเตอร์ 2× ตลาดโลก — ทางเลือก (backtest ไม่ผ่านเกณฑ์ที่ล็อกไว้: ดู risk_weights.py)
+WEIGHTING_ERC_SECTOR_CAP = "erc_sector_cap"
+WEIGHTING_PRESET = "preset"
+WEIGHTING_METHODS = (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP, WEIGHTING_PRESET)
+# นิยามเดียวอยู่ที่ utils/config.DEFAULT_CONFIG — ค่าเริ่มต้นสองที่ไม่พัง มันแค่เพี้ยนออกจากกัน
+DEFAULT_WEIGHTING = str(DEFAULT_CONFIG["portfolio"]["weighting_method"])
+
+
 @dataclass(frozen=True)
 class TargetWeights:
     """น้ำหนักเป้าหมายพร้อมที่มาและคำเตือน.
@@ -150,6 +175,22 @@ class TargetWeights:
     source: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     adjusted: bool = False
+    #: ``erc`` / ``preset`` — วิธีที่ใช้คำนวณ ``weights`` รอบนี้
+    method: str = WEIGHTING_PRESET
+    #: รายละเอียดของ ERC (ช่วงข้อมูล, ความผันผวน, ส่วนแบ่งความเสี่ยง) — ว่างในโหมด preset
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def get_weighting_method() -> str:
+    """``erc`` หรือ ``preset`` จาก config — ค่าที่ไม่รู้จัก = คอนฟิกผิด ห้ามเดา."""
+    raw = load_config()["portfolio"].get("weighting_method", DEFAULT_WEIGHTING)
+    method = str(raw).strip().lower()
+    if method not in WEIGHTING_METHODS:
+        raise InvalidTargetWeights(
+            f"portfolio.weighting_method = {raw!r} ไม่รู้จัก — ต้องเป็น "
+            f"{' หรือ '.join(WEIGHTING_METHODS)} (แก้ที่ config.json หรือหน้า Settings)"
+        )
+    return method
 
 
 def get_risk_profile() -> str:
@@ -184,8 +225,13 @@ def get_target_weights_with_status(
 
     symbols = [t.strip().upper() for t in (tickers or get_tickers()) if str(t).strip()]
     symbols = list(dict.fromkeys(symbols))
+    method = get_weighting_method()
     if not symbols:
-        return TargetWeights(weights={}, profile=profile_name)
+        return TargetWeights(weights={}, profile=profile_name, method=method)
+    if method in (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
+        return _erc_status(
+            symbols, partial, profile_name, config, sector_cap=method == WEIGHTING_ERC_SECTOR_CAP
+        )
 
     notes: list[str] = []
     custom, was_percent = _read_custom_weights(config["portfolio"].get("target_weights"))
@@ -245,6 +291,70 @@ def get_target_weights_with_status(
         source=source,
         notes=notes,
         adjusted=adjusted,
+    )
+
+
+def _erc_status(
+    symbols: list[str],
+    partial: bool,
+    profile_name: str,
+    config: dict[str, Any],
+    *,
+    sector_cap: bool = False,
+) -> TargetWeights:
+    """โหมด ERC — คำนวณบน ``symbols`` ที่ส่งมาตรง ๆ.
+
+    ``partial=True`` (ชุดย่อยที่ดึงราคาสำเร็จ) ก็คิด ERC บนชุดย่อยนั้นเลย: ERC คือการแบ่ง
+    ความเสี่ยงระหว่าง "กองที่จะซื้อจริงรอบนี้" ไม่มีน้ำหนักของกองที่หายไปให้ต้องรักษาสัดส่วน
+    แบบโหมด preset — แต่ต้องบอกผู้ใช้ว่ารอบนี้คิดไม่ครบทุกกอง
+    """
+    from data.fetcher import PriceDataUnavailableError
+    from portfolio.risk_weights import compute_erc_weights
+
+    try:
+        result = compute_erc_weights(tuple(symbols), sector_cap)
+    except (PriceDataUnavailableError, ValueError) as exc:
+        raise RiskWeightsUnavailable(
+            f"คำนวณสัดส่วนฐานแบบ ERC ไม่ได้: {exc} — ระบบไม่เดาสัดส่วนแทน "
+            "และไม่ถอยไปใช้สัดส่วนตายตัว (ลองใหม่เมื่อดึงราคาได้)"
+        ) from exc
+
+    notes: list[str] = []
+    meta = result.get("meta") or {}
+    if meta.get("currency") == "USD":
+        notes.append(
+            "รอบนี้วัดความเสี่ยงเป็น USD แทนเงินบาท — ดึง USDTHB ย้อนหลังไม่ได้ "
+            f"({meta.get('fx_error') or 'ไม่ทราบสาเหตุ'}) ผลต่างจากวัดเป็นบาทปกติเล็กน้อยมาก"
+        )
+    if meta.get("binding_sectors"):
+        names = ", ".join(meta.get("binding_sectors_th") or meta["binding_sectors"])
+        notes.append(
+            f"เพดานเซกเตอร์ทำงาน: {names} ถูกจำกัดไม่ให้เกิน {meta.get('cap_multiple', 2):g} เท่าของตลาดโลก "
+            "(ในส่วนหุ้น) — ส่วนแบ่งความเสี่ยงของแต่ละกองจึงไม่เท่ากันแล้ว"
+        )
+    if partial:
+        left_out = [t for t in _full_universe(symbols) if t not in symbols]
+        if left_out:
+            notes.append(
+                f"รอบนี้คิดสัดส่วน ERC จาก {len(symbols)} กองที่มีข้อมูล — "
+                f"{', '.join(left_out)} ดึงราคาไม่สำเร็จจึงไม่อยู่ในรอบนี้"
+            )
+    if config["portfolio"].get("target_weights"):
+        notes.append(
+            "มีค่า portfolio.target_weights ตั้งไว้ใน config.json แต่ไม่ถูกใช้ "
+            "เพราะ weighting_method = erc (คำนวณจากข้อมูล ไม่ใช้สัดส่วนตายตัว)"
+        )
+    return TargetWeights(
+        weights={s: float(result["weights"][s]) for s in symbols},
+        profile=profile_name,
+        source={s: WEIGHTING_ERC for s in symbols},
+        notes=notes,
+        method=WEIGHTING_ERC_SECTOR_CAP if sector_cap else WEIGHTING_ERC,
+        details={
+            "risk_share": result["risk_share"],
+            "risk_per_pct": result.get("risk_per_pct") or {},
+            **meta,
+        },
     )
 
 

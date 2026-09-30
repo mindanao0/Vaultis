@@ -97,6 +97,7 @@ def get_networth_change(db: Session) -> dict[str, Any]:
             "previous_net_worth_thb": None,
             "change_thb": None,
             "change_pct": None,
+            "change_pct_note": "",
         }
 
     today_month = date.today().isoformat()[:7]
@@ -114,12 +115,36 @@ def get_networth_change(db: Session) -> dict[str, Any]:
             "previous_net_worth_thb": None,
             "change_thb": None,
             "change_pct": None,
+            "change_pct_note": "",
         }
 
     previous_nw = previous.net_worth_thb
     change_thb = current_nw - previous_nw
-    # ฐานเป็น 0 → เปอร์เซ็นต์ไม่มีนิยาม ห้ามรายงานเป็น 0.0%
-    change_pct = round(change_thb / previous_nw * 100, 2) if previous_nw else None
+
+    # ฐานเป็น 0 → เปอร์เซ็นต์ไม่มีนิยาม · ฐาน **ติดลบ** → เปอร์เซ็นต์มีค่าแต่
+    # **เครื่องหมายพลิก** ซึ่งอันตรายกว่าเพราะมันดูเหมือนตัวเลขที่ใช้ได้:
+    # มูลค่าสุทธิ −1,000 → −500 คือ **ดีขึ้น 500 บาท** แต่ 500/(−1000) = **−50%**
+    # อ่านว่าแย่ลง ส่วนแย่ลง 500 บาทกลายเป็น +50% (วัดจริง 2026-09-01) — มูลค่าสุทธิ
+    # ติดลบไม่ใช่เคสสมมติ: คนที่มีหนี้บ้าน/หนี้เรียนมากกว่าทรัพย์สินก็เป็นแบบนี้
+    #
+    # เลือก ``None`` แทนการหารด้วย ``abs(previous_nw)`` เพราะ "ดีขึ้น 50% ของหนี้"
+    # ไม่ใช่ประโยคที่มีความหมายทางการเงิน — ตามกฎของโปรเจกต์ เปอร์เซ็นต์ที่คำนวณ
+    # ไม่ได้ต้องเป็น ``None`` พร้อมเหตุผล ไม่ใช่ตัวเลขที่อ่านผิดได้
+    # **ยอดบาท (``change_thb``) ยังถูกต้องเสมอและต้องแสดงต่อ** — เป็นตัวเลขที่
+    # ตอบคำถามเดียวกันโดยไม่ต้องมีฐาน
+    change_pct: float | None
+    pct_note = ""
+    if previous_nw > 0:
+        change_pct = round(change_thb / previous_nw * 100, 2)
+    elif previous_nw == 0:
+        change_pct = None
+        pct_note = "มูลค่าสุทธิเดือนก่อนเป็น 0 — คิดเป็นเปอร์เซ็นต์ไม่ได้ ดูยอดบาทแทน"
+    else:
+        change_pct = None
+        pct_note = (
+            f"มูลค่าสุทธิเดือนก่อนติดลบ ({previous_nw:,.0f} บาท) — "
+            "เปอร์เซ็นต์การเปลี่ยนแปลงจะกลับเครื่องหมายจนอ่านผิด จึงไม่แสดง ดูยอดบาทแทน"
+        )
 
     return {
         "available": True,
@@ -128,6 +153,7 @@ def get_networth_change(db: Session) -> dict[str, Any]:
         "previous_net_worth_thb": previous_nw,
         "change_thb": round(change_thb, 2),
         "change_pct": change_pct,
+        "change_pct_note": pct_note,
     }
 
 
@@ -280,8 +306,12 @@ def _networth_txt(nw: dict[str, Any], *, prefix: str, unit: str) -> str:
     if change is None:
         return f"{head} (⚠️ ผลต่างจากเดือนก่อนอ่านค่าไม่ได้)"
     pct = nw.get("change_pct")
-    pct_txt = f"{pct:+.1f}%" if pct is not None else "เทียบเป็น % ไม่ได้ (ฐานเป็น 0)"
-    return f"{head} ({change:+,.0f} / {pct_txt})"
+    if pct is not None:
+        return f"{head} ({change:+,.0f} / {pct:+.1f}%)"
+    # เหตุผลต้องยกมาจากตัวคำนวณ ห้ามเขียนเองที่นี่: มีสองเหตุ (ฐานเป็น 0 กับฐานติดลบ)
+    # และเดิมบรรทัดนี้ฮาร์ดโค้ดว่า "ฐานเป็น 0" เสมอ ⇒ เดือนที่ฐานติดลบจะได้เหตุผลผิด
+    reason = str(nw.get("change_pct_note") or "เทียบเป็น % ไม่ได้")
+    return f"{head} ({change:+,.0f} — {reason})"
 
 
 def _ledger_warning_lines(pf: dict[str, Any]) -> list[str]:

@@ -119,8 +119,8 @@ STORE_ERROR = _result(
 
 def _stub(monkeypatch, result: dict[str, Any]) -> None:
     """แทน check_alerts ทั้ง 2 ที่ที่ถูกอ้างถึง (ตัวโมดูล + ชื่อที่ main.py import มาแล้ว)."""
-    monkeypatch.setattr(price_alert, "check_alerts", lambda: result)
-    monkeypatch.setattr(scheduler_main, "check_alerts", lambda: result)
+    monkeypatch.setattr(price_alert, "check_alerts", lambda **_kw: result)
+    monkeypatch.setattr(scheduler_main, "check_alerts", lambda **_kw: result)
 
 
 # ---------------------------------------------------------------- 3 สถานะ

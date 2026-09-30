@@ -206,12 +206,24 @@ def get_current_prices(tickers: list[str]) -> dict[str, float]:
         return {}
 
 
-def get_price_snapshots(tickers: list[str]) -> dict[str, dict[str, float | None]]:
+def _bar_date(value: Any) -> str | None:
+    """วันที่ของแท่ง (วันตลาดสหรัฐฯ) เป็น ``YYYY-MM-DD`` — อ่านไม่ได้คืน ``None`` ไม่เดา."""
+    try:
+        return pd.Timestamp(value).strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
+def get_price_snapshots(tickers: list[str]) -> dict[str, dict[str, Any]]:
     """Fetch latest and previous close prices for given tickers.
 
     ``previous_close`` เป็น ``None`` เมื่อมีแท่งปิดแท่งเดียว — เดิมยัดราคาตัวเองลงไป
     ทำให้ข้อความสรุปพิมพ์ ``🟡 (+0.00%)`` = "ราคาไม่เปลี่ยน" จากข้อมูลที่ไม่มีจริง
     (AUDIT_2026-08-06 ข้อ D1.2)
+
+    ``as_of`` = วันที่ของแท่งล่าสุด (``YYYY-MM-DD`` ตามวันตลาดสหรัฐฯ) — ราคาไม่ได้เป็น
+    "ของวันนี้" เสมอไป: 09:00 น. วันอาทิตย์ยังเป็นราคาปิดวันศุกร์ scheduler ใช้ค่านี้ตัดสินว่า
+    มีราคาปิดใหม่ให้สรุปหรือยัง
     """
     normalized = sorted({str(t).strip().upper() for t in tickers if str(t).strip()})
     if not normalized:
@@ -225,7 +237,7 @@ def get_price_snapshots(tickers: list[str]) -> dict[str, dict[str, float | None]
             progress=False,
             group_by="ticker",
         )
-        snapshots: dict[str, dict[str, float | None]] = {}
+        snapshots: dict[str, dict[str, Any]] = {}
         for ticker in normalized:
             if raw.empty:
                 continue
@@ -243,6 +255,7 @@ def get_price_snapshots(tickers: list[str]) -> dict[str, dict[str, float | None]
             snapshots[ticker] = {
                 "latest_price": latest_price,
                 "previous_close": previous_close,
+                "as_of": _bar_date(close_series.index[-1]),
             }
         return snapshots
     except Exception as exc:
@@ -395,17 +408,46 @@ def _build_price_alert_message(alert: dict[str, Any], current_price: float) -> s
     )
 
 
+def latest_bar_date(snapshots: dict[str, dict[str, Any]], tickers: list[str]) -> str | None:
+    """วันที่ของแท่งล่าสุดในชุด (``YYYY-MM-DD``) — ไม่มีตัวไหนมีวันที่เลยคืน ``None``."""
+    dates = [
+        str(snapshots[t]["as_of"])
+        for t in tickers
+        if isinstance(snapshots.get(t), dict) and snapshots[t].get("as_of")
+    ]
+    return max(dates) if dates else None
+
+
+def _thai_date(iso_day: str) -> str:
+    try:
+        return pd.Timestamp(iso_day).strftime("%d/%m/%Y")
+    except (TypeError, ValueError):
+        return str(iso_day)
+
+
+def _unchecked_detail(unchecked: list[dict[str, Any]]) -> str:
+    # เหตุผลไม่ได้มีชนิดเดียว (ดึงราคาไม่ได้ / แถวเสีย / เพิ่งเพิ่มระหว่างรอบ)
+    # เดิมพิมพ์ "ไม่มีราคา" ให้ทุกกรณี = บอกสาเหตุผิดชนิด
+    return ", ".join(
+        f"{row.get('ticker', '-')} ({row.get('reason', 'ไม่ทราบสาเหตุ')})" for row in unchecked
+    )
+
+
 def _build_daily_status_message(
     tracked_tickers: list[str],
-    snapshots: dict[str, dict[str, float | None]],
+    snapshots: dict[str, dict[str, Any]],
     triggered_items: list[dict[str, Any]],
     unchecked: list[dict[str, Any]] | None = None,
 ) -> str:
     date_text = datetime.now().strftime("%d/%m/%Y")
-    lines = [
-        f"📊 Daily Price Check — {date_text}",
-        "─────────────────────────────",
-    ]
+    lines = [f"📊 Daily Price Check — {date_text}"]
+    # หัวข้อความคือ "วันที่ส่ง" ส่วนราคาเป็นของแท่งล่าสุดซึ่งอาจเป็นเมื่อวานหรือวันศุกร์
+    # เดิมไม่บอกวันที่ของราคาเลย ⇒ สรุปวันอาทิตย์กับวันเสาร์เลขเหมือนกันทุกตัวแต่หัวต่างกัน
+    # อ่านแล้วดูเหมือนข้อความซ้ำ (2026-09-30)
+    common_day = latest_bar_date(snapshots, tracked_tickers)
+    if common_day:
+        lines.append(f"ราคา ณ แท่งวันที่ {_thai_date(common_day)} (วันตลาดสหรัฐฯ)")
+    lines.append("─────────────────────────────")
     for ticker in tracked_tickers:
         snapshot = snapshots.get(ticker)
         if not snapshot:
@@ -413,11 +455,16 @@ def _build_daily_status_message(
             lines.append(f"{ticker:<4}  ⚠️ ดึงราคาไม่ได้")
             continue
 
+        # ตัวที่แท่งล่าสุดเก่ากว่าเพื่อน ต้องพกวันที่ของตัวเอง — ห้ามยืมวันที่ของกระดาน
+        # (กติกาเดียวกับ jobs/daily_check — AUDIT_2026-08-06 ข้อ H10)
+        own_day = snapshot.get("as_of")
+        stale_txt = f"  (แท่ง {_thai_date(own_day)})" if own_day and own_day != common_day else ""
+
         latest_price = float(snapshot["latest_price"])
         previous_close = snapshot.get("previous_close")
         if previous_close is None or float(previous_close) <= 0:
             # มีแท่งปิดแท่งเดียว = ไม่รู้ราคาก่อนหน้า — ห้ามพิมพ์ +0.00% (AUDIT_2026-08-06 ข้อ D1.2)
-            lines.append(f"{ticker:<4}  ${latest_price:,.2f}  ⚠️ ดึง %เปลี่ยนแปลงไม่ได้")
+            lines.append(f"{ticker:<4}  ${latest_price:,.2f}  ⚠️ ดึง %เปลี่ยนแปลงไม่ได้{stale_txt}")
             continue
 
         previous_close = float(previous_close)
@@ -428,18 +475,42 @@ def _build_daily_status_message(
             status = "🔴"
         else:
             status = "🟡"
-        lines.append(f"{ticker:<4}  ${latest_price:,.2f}  {status} ({change_pct:+.2f}%)")
+        lines.append(f"{ticker:<4}  ${latest_price:,.2f}  {status} ({change_pct:+.2f}%){stale_txt}")
 
     lines.append("─────────────────────────────")
     lines.append(f"⚠️ Price Alerts: trigger {len(triggered_items)} รายการ")
     if unchecked:
-        # เหตุผลไม่ได้มีชนิดเดียว (ดึงราคาไม่ได้ / แถวเสีย / เพิ่งเพิ่มระหว่างรอบ)
-        # เดิมพิมพ์ "ไม่มีราคา" ให้ทุกกรณี = บอกสาเหตุผิดชนิด
-        detail = ", ".join(
-            f"{row.get('ticker', '-')} ({row.get('reason', 'ไม่ทราบสาเหตุ')})" for row in unchecked
-        )
-        lines.append(f"⚠️ ตรวจไม่ได้ {len(unchecked)} รายการ — {detail}")
+        lines.append(f"⚠️ ตรวจไม่ได้ {len(unchecked)} รายการ — {_unchecked_detail(unchecked)}")
     return "\n".join(lines)
+
+
+def send_daily_status(webhook_url: str, daily_summary: str, triggered_count: int) -> dict[str, Any]:
+    """ส่งสรุปราคาประจำวัน — embed เดียวกันทุกทางเข้า (``check_alerts`` และ scheduler)."""
+    return send_discord_webhook(
+        webhook_url=webhook_url,
+        title="Daily Price Check",
+        description=daily_summary,
+        is_positive=(triggered_count == 0),
+        embed_color=(0x3498DB if triggered_count == 0 else 0xE67E22),
+    )
+
+
+def send_unchecked_notice(webhook_url: str, unchecked: list[dict[str, Any]]) -> dict[str, Any]:
+    """แจ้งเฉพาะ alert ที่ตรวจไม่ได้ — ใช้กับรอบที่ไม่ส่งสรุปราคา (21:00).
+
+    สรุปราคาเคยเป็นช่องทางเดียวที่ "ตรวจไม่ได้" เดินทางไปถึง Discord — ปิดสรุปแล้ว
+    ข้อมูลนี้ต้องยังออกไป ไม่งั้น "ตรวจไม่ได้" จะเงียบเท่ากับ "ตรวจแล้วไม่ถึงเงื่อนไข"
+    """
+    return send_discord_webhook(
+        webhook_url=webhook_url,
+        title="⚠️ Price Alert — ตรวจไม่ได้บางรายการ",
+        description=(
+            f"ตรวจไม่ได้ {len(unchecked)} รายการ — {_unchecked_detail(unchecked)}\n\n"
+            "⚠️ นี่ไม่ได้แปลว่ายังไม่ถึงเงื่อนไข แต่แปลว่ารอบนี้ตรวจไม่ได้"
+        ),
+        is_positive=False,
+        embed_color=0xE67E22,
+    )
 
 
 def _store_failure_result(webhook_url: str, exc: AlertStoreUnavailable) -> dict[str, Any]:
@@ -514,8 +585,13 @@ def check_result_contract_error(result: Any) -> str | None:
     return None
 
 
-def check_alerts() -> dict[str, Any]:
-    """Check alerts and always send a daily Discord status summary.
+def check_alerts(send_daily_summary: bool = True) -> dict[str, Any]:
+    """Check alerts and (by default) send a daily Discord status summary.
+
+    ``send_daily_summary=False`` = ตรวจ + ส่ง alert ที่ trigger ตามปกติ แต่ **ไม่ส่งสรุปราคา**
+    ผู้เรียก (scheduler) ตัดสินเองว่าจะส่ง ``daily_summary`` หรือไม่ — เดิมทุกรอบส่งเสมอ
+    scheduler ตรวจวันละสองรอบ บวก CI อีกหนึ่ง ⇒ "Daily Price Check" 3 ใบต่อวันทำการ
+    และ 2 ใบต่อวันหยุดที่ราคาไม่ขยับเลย (2026-09-30)
 
     ลำดับสำคัญ 2 อย่าง:
 
@@ -650,14 +726,11 @@ def check_alerts() -> dict[str, Any]:
         unchecked=unchecked,
     )
     daily_result: dict[str, Any] = {"success": False, "skipped": True, "error": "missing webhook_url"}
-    if webhook_url:
-        daily_result = send_discord_webhook(
-            webhook_url=webhook_url,
-            title="Daily Price Check",
-            description=daily_summary,
-            is_positive=(len(triggered_items) == 0),
-            embed_color=(0x3498DB if len(triggered_items) == 0 else 0xE67E22),
-        )
+    if not send_daily_summary:
+        # ``reason`` = ตั้งใจไม่ส่ง — คนละเรื่องกับ "ไม่ได้ตั้ง webhook" (``error``)
+        daily_result = {"success": False, "skipped": True, "reason": "ผู้เรียกเป็นคนตัดสินเองว่าจะส่งสรุปหรือไม่"}
+    elif webhook_url:
+        daily_result = send_daily_status(webhook_url, daily_summary, len(triggered_items))
 
     return {
         "success": True,
@@ -668,5 +741,9 @@ def check_alerts() -> dict[str, Any]:
         "store_status": store_status,
         "daily_summary": daily_summary,
         "daily_discord_result": daily_result,
+        # วันที่ของแท่งราคาในสรุป + ตัวที่ดึงราคาไม่ได้ — scheduler ใช้ตัดสินว่าสรุปรอบนี้
+        # มีอะไรใหม่ไหม (ราคาปิดเดิม + ไม่มีอะไรต้องเตือน = ไม่ต้องส่งซ้ำ)
+        "latest_bar_date": latest_bar_date(snapshots, tracked_tickers),
+        "unpriced_tickers": [t for t in tracked_tickers if t not in snapshots],
     }
 

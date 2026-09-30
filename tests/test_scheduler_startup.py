@@ -34,6 +34,18 @@ _BASE_CONFIG = {
 
 
 @pytest.fixture(autouse=True)
+def _no_real_monthly_plan(monkeypatch, tmp_path):
+    """run_scheduler() เช็คแผนรายเดือนทันทีตอนเริ่ม — ไฟล์สถานะว่าง = seed เฉย ๆ ไม่ส่ง."""
+    monkeypatch.setattr(scheduler_main, "SCHEDULER_STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(scheduler_main, "_monthly_plan_sent_in_process", set())
+
+    def _explode():
+        raise AssertionError("เทสต์ startup ต้องไม่ส่งแผนจริง")
+
+    monkeypatch.setattr(scheduler_main, "generate_monthly_ai_advisor_and_notify", _explode)
+
+
+@pytest.fixture(autouse=True)
 def _clean_schedule():
     schedule_lib.clear()
     yield
@@ -75,7 +87,7 @@ class TestNoWebhook:
     def test_discord_jobs_are_skipped(self, monkeypatch):
         names = _names(_run(monkeypatch, ""))
         for job in (
-            "run_monthly_ai_advisor_if_first_day",
+            "run_monthly_plan_if_due",
             "check_and_send_dca_reminder",
             "generate_weekly_report_and_notify",
             "generate_daily_technical_alerts",
@@ -90,7 +102,7 @@ class TestWithWebhook:
     def test_all_jobs_registered(self, monkeypatch):
         names = _names(_run(monkeypatch, "https://discord.example/webhook"))
         assert {
-            "run_monthly_ai_advisor_if_first_day",
+            "run_monthly_plan_if_due",
             "check_and_send_dca_reminder",
             "generate_weekly_report_and_notify",
             "generate_daily_technical_alerts",
@@ -116,5 +128,5 @@ class TestWithWebhook:
         assert "generate_weekly_report_and_notify" not in names
         assert "generate_daily_technical_alerts" not in names
         # monthly advisor ไม่มี toggle แยก — ผูกกับ webhook อย่างเดียว
-        assert "run_monthly_ai_advisor_if_first_day" in names
+        assert "run_monthly_plan_if_due" in names
         assert "run_price_alert_job" in names

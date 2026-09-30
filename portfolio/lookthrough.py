@@ -13,7 +13,9 @@
 - VOO–QQQM correlation 0.94 ⇒ เงินกว่าครึ่งอยู่ในสินทรัพย์ที่แทบเป็นตัวเดียวกัน
 
 **ทุกตัวเลขในไฟล์นี้เป็นสถิติเชิงพรรณนา — ห้ามไหลเข้าเลขคะแนนหรือการจัดสรร DCA**
-(invariant เดียวกับ ``trend_channel.py`` และ ``news_fetcher.py``)
+(invariant เดียวกับ ``news_fetcher.py``) — ข้อยกเว้นเดียว: ผู้ใช้เลือกวิธี ``erc_sector_cap``
+ใน Settings เอง (ปิดโดยค่าเริ่มต้น) ``portfolio/risk_weights.sector_cap_inputs`` จึงอ่าน
+``sector_weightings`` ดิบจาก :func:`_fund_data` เป็นเพดานของการจัดสรร
 
 **เป็นขอบล่างเสมอ ไม่ใช่ตัวเลขเต็ม** yfinance ให้แค่ top-10 ของแต่ละกอง น้ำหนักหุ้นราย
 ตัวที่คำนวณได้จึงเป็น "อย่างน้อยเท่านี้" ผู้เรียกต้องพูดออกมา ห้ามนำเสนอเป็นสัดส่วนเต็ม
@@ -142,6 +144,99 @@ def describe_coverage(covered: float, unavailable: dict[str, str]) -> str:
             + ", ".join(f"{t} ({why})" for t, why in sorted(unavailable.items()))
         )
     return " · ".join(parts)
+
+
+#: ตัวแทน "ตลาดหุ้นโลก" สำหรับเทียบสัดส่วนเซกเตอร์ (Vanguard Total World — หุ้นทั่วโลกทั้งตลาด)
+WORLD_PROXY = "VT"
+#: เซกเตอร์ที่หนักเกิน "กี่เท่าของตลาดโลก" ถึงเตือน — เส้นเดียวกับเพดานของวิธี erc_sector_cap
+CONCENTRATION_MULTIPLE = 2.0
+
+SECTOR_TH = {
+    "technology": "เทคโนโลยี",
+    "healthcare": "สุขภาพ",
+    "financial_services": "การเงิน",
+    "consumer_cyclical": "สินค้าฟุ่มเฟือย",
+    "consumer_defensive": "สินค้าจำเป็น",
+    "communication_services": "สื่อสาร",
+    "industrials": "อุตสาหกรรม",
+    "energy": "พลังงาน",
+    "utilities": "สาธารณูปโภค",
+    "basic_materials": "วัตถุดิบ",
+    "realestate": "อสังหาฯ",
+}
+
+
+def sector_concentration(weights: dict[str, float]) -> dict[str, Any]:
+    """สัดส่วนเซกเตอร์ **ภายในส่วนหุ้น** ของพอร์ต เทียบกับตลาดหุ้นโลก (``WORLD_PROXY``).
+
+    วัดภายในส่วนหุ้น ไม่ใช่ทั้งพอร์ต: ทอง (GLDM) ไม่มีเซกเตอร์ ถ้านับรวมเป็นฐาน ทองที่เพิ่มขึ้น
+    จะเจือจางตัวเลขจนความกระจุกตัวของหุ้นหายไป — ตลาดโลกเองก็เป็นหุ้นล้วน
+    ที่มา (2026-09-30): หลังเปลี่ยนเป็น ERC พอร์ตถือหุ้นสุขภาพ 28.7% ของทั้งพอร์ต (≈34%
+    ของส่วนหุ้น) ขณะที่ตลาดโลกมี 8.6% — ERC ดูแค่ราคาว่าขึ้นลงพร้อมกันไหม ไม่เห็นว่า XLV กับ
+    SCHD ถือหุ้นสุขภาพตัวเดียวกันหลายตัว
+
+    คืน ``{"portfolio", "world", "flags", "unavailable", "equity_weight"}`` — ``flags`` คือ
+    เซกเตอร์ที่หนักเกิน ``CONCENTRATION_MULTIPLE`` เท่าของตลาดโลก เรียงจากหนักสุด
+    ดึงข้อมูลตลาดโลกไม่ได้ → ``ValueError`` (ห้ามคืน flags ว่างที่อ่านเหมือน "ไม่กระจุกตัว")
+    กองที่ดึงไม่ได้ถูกรายงานใน ``unavailable`` ไม่ใช่หายจากตัวหารเงียบ ๆ
+    """
+    usable = {str(t).strip().upper(): float(w) for t, w in (weights or {}).items() if float(w) > 0}
+    if not usable:
+        raise ValueError("ไม่มีน้ำหนักพอร์ตที่ใช้ได้ — วัดความกระจุกตัวไม่ได้")
+    _h, world, world_error = _fund_data(WORLD_PROXY)
+    if world_error or not world:
+        raise ValueError(f"ดึงสัดส่วนเซกเตอร์ของตลาดโลก ({WORLD_PROXY}) ไม่ได้: {world_error or 'ไม่มีข้อมูล'}")
+
+    exposure: dict[str, float] = {}
+    equity = 0.0
+    unavailable: dict[str, str] = {}
+    for ticker, weight in usable.items():
+        _h, sectors, error = _fund_data(ticker)
+        if error:
+            unavailable[ticker] = error
+            continue
+        for sector, share in (sectors or {}).items():
+            value = pd.to_numeric(share, errors="coerce")
+            if pd.isna(value) or float(value) <= 0:
+                continue
+            exposure[str(sector)] = exposure.get(str(sector), 0.0) + weight * float(value)
+            equity += weight * float(value)
+    if equity <= 0:
+        raise ValueError("ไม่มีส่วนหุ้นที่วัดเซกเตอร์ได้")
+
+    portfolio = {s: v / equity * 100.0 for s, v in exposure.items()}
+    world_pct = {str(s): float(v) * 100.0 for s, v in world.items()}
+    flags = [
+        {
+            "sector": s,
+            "sector_th": SECTOR_TH.get(s, s),
+            "portfolio_pct": round(pct, 1),
+            "world_pct": round(world_pct[s], 1),
+            "ratio": round(pct / world_pct[s], 1),
+        }
+        for s, pct in portfolio.items()
+        if world_pct.get(s, 0) > 0 and pct > CONCENTRATION_MULTIPLE * world_pct[s]
+    ]
+    flags.sort(key=lambda f: f["ratio"], reverse=True)
+    return {
+        "portfolio": {s: round(v, 1) for s, v in sorted(portfolio.items(), key=lambda kv: -kv[1])},
+        "world": {s: round(v, 1) for s, v in world_pct.items()},
+        "flags": flags,
+        "unavailable": unavailable,
+        "equity_weight": round(equity / sum(usable.values()), 4),
+    }
+
+
+def concentration_lines(result: dict[str, Any]) -> list[str]:
+    """ประโยคเตือนภาษาไทย (Discord/หน้าจอ) — ว่างเมื่อไม่มีเซกเตอร์ไหนเกินเส้น."""
+    lines = [
+        f"⚠️ หุ้นกลุ่ม{f['sector_th']} {f['portfolio_pct']:.1f}% ของส่วนหุ้น = {f['ratio']:.1f} เท่าของตลาดโลก "
+        f"({f['world_pct']:.1f}%)"
+        for f in result.get("flags") or []
+    ]
+    if result.get("unavailable"):
+        lines.append("⚠️ วัดเซกเตอร์ไม่ครบ — ดึงข้อมูลไม่ได้: " + ", ".join(sorted(result["unavailable"])))
+    return lines
 
 
 #: อัตราส่วนที่ทะลุกองแล้วรวมได้ — ``(คีย์ผลลัพธ์, ฟิลด์ของ yfinance, วิธีรวม, ป้ายไทย)``

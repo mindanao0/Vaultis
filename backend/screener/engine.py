@@ -33,6 +33,63 @@ _ALLOWED_OPERATORS: dict[str, frozenset[str]] = {
 
 _VALID_LOGIC = frozenset({"AND", "OR"})
 
+#: เขตเวลาของตลาดที่ออกแท่งราคา — ใช้ตัดสินว่าแท่งหนึ่ง "ยังไม่ถึงวันซื้อขาย" หรือไม่
+_EXCHANGE_TZ = "America/New_York"
+
+
+def _drop_unpriced_bars(symbol: str, df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """ตัดแถวที่ไม่มีราคาปิดออก ตามนิยาม "แท่งจริง" เดียวกับทั้งระบบ — ยกเว้นแท่งล่าสุด.
+
+    ต้นเหตุที่เจอ (2026-09-29/30): งาน 07:00 น. (= 00:00 UTC) ได้เฟรมที่มีแถว ``Close``
+    เป็น NaN ติดมาจาก Yahoo ทุกกองพร้อมกัน ขณะที่ดึงซ้ำตอนสาย ๆ สะอาด ⇒ ค่าเฉลี่ยเคลื่อนที่
+    (MA200, Bollinger, golden cross) เป็น NaN ทั้งหน้าต่าง ส่วน RSI/MACD ที่ใช้ ewm ไม่สะดุด
+    — ผลคือพรีเซ็ต 3 ใน 4 "ตรวจไม่ได้" 15 รายการทุกเช้า ทั้งที่ประวัติยาว ~500 แท่ง
+    (ใส่ NaN แถวเดียวในเฟรมจริงแล้วได้แพตเทิร์น error เดียวกันเป๊ะ)
+
+    ส่วนอื่นของระบบ (``analysis.returns.real_bars``, technical alert ของ ``main.py``)
+    ตัดแถวแบบนี้ทิ้งอยู่แล้ว — ห้าม ``ffill`` เพราะนั่นคือการกุราคา แต่การตัดแถวที่ไม่มีราคา
+    ไม่ได้กุอะไร มีสามกรณีและต้องแยกกัน:
+
+    * แถวลงวันที่ **หลัง** วันนี้ตามเวลานิวยอร์ก = แถวจองที่ยังไม่เปิดตลาด → ตัดทิ้ง
+    * แถว NaN **กลาง** ซีรีส์ = ผู้ให้ข้อมูลเว้นว่าง → ตัดทิ้ง (คำนวณบนแท่งจริง)
+    * แท่ง **ล่าสุด** ที่ถึงวันแล้วแต่ไม่มีราคา = ข้อมูลของวันล่าสุดยังไม่มา → ``ValueError``
+      (ตัดทิ้งแล้วคำนวณต่อ = รายงานสัญญาณของเมื่อวานว่าเป็นของวันนี้)
+
+    log WARNING ทุกครั้งที่ตัด พร้อมวันที่ — ครั้งถัดไปที่ Yahoo ส่งแถวเสียมาจะรู้ทันทีว่าเป็นแบบไหน
+    """
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    missing = close.isna()
+    if not missing.any():
+        return df
+
+    index = pd.DatetimeIndex(df.index)
+    if index.tz is not None:
+        index = index.tz_convert(_EXCHANGE_TZ).tz_localize(None)
+    days = index.normalize()
+    if today is None:
+        today = pd.Timestamp.now(tz=_EXCHANGE_TZ).tz_localize(None)
+    today = pd.Timestamp(today).normalize()
+
+    future = missing & (days > today)
+    past = missing & ~future
+    real = df[~missing]
+    logger.warning(
+        "[%s] Yahoo ส่งแถวที่ไม่มีราคาปิดมา %d แถว — ยังไม่ถึงวันซื้อขาย: %s · ถึงวันแล้ว: %s",
+        symbol,
+        int(missing.sum()),
+        ", ".join(d.strftime("%Y-%m-%d") for d in days[future]) or "-",
+        ", ".join(d.strftime("%Y-%m-%d") for d in days[past]) or "-",
+    )
+    if real.empty:
+        raise ValueError(f"ข้อมูลราคา {symbol} ไม่มีราคาปิดเลยสักแถว")
+    latest_missing = days[past].max() if past.any() else None
+    if latest_missing is not None and latest_missing > days[~missing].max():
+        raise ValueError(
+            f"แท่งล่าสุดของ {symbol} (วันที่ {latest_missing:%d/%m/%Y}) ไม่มีราคาปิด — "
+            "ผู้ให้ข้อมูลยังส่งไม่ครบ ตรวจไม่ได้รอบนี้ (ไม่ใช่ 'ไม่มีสัญญาณ')"
+        )
+    return real
+
 
 def _normalize_logic(logic: str | None) -> str:
     """คืน ``"AND"``/``"OR"`` — อย่างอื่นโยน ``ValueError`` ทันที ห้ามเดา.
@@ -119,7 +176,7 @@ class ScreenerEngine:
         df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
         if df.empty or "Close" not in df.columns:
             raise ValueError(f"ดึงข้อมูลราคา {symbol} ไม่สำเร็จ (ผลว่าง)")
-        return df
+        return _drop_unpriced_bars(symbol, df)
 
     def fetch_frames(self, symbols: list[str]) -> tuple[dict[str, pd.DataFrame], list[str]]:
         """ดึงราคา **ครั้งเดียวต่อสัญลักษณ์** แล้วให้ผู้เรียกเอาไปใช้ซ้ำทุกพรีเซ็ต.
