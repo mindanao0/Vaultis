@@ -70,8 +70,9 @@ jobs:
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
           REDDIT_USER_AGENT: VaultisBot/1.0
-      # สรุปรายสัปดาห์ + แผน DCA รายเดือนย้ายไปส่งจาก Docker scheduler ในเครื่องแล้ว
-      # (เห็นพอร์ตจริง + มี ANTHROPIC_API_KEY) — ปิดที่นี่เพื่อไม่ให้ Discord ได้ข้อความซ้ำ
+      # สรุปรายสัปดาห์ + แผน DCA รายเดือน + สรุปราคารายวัน ย้ายไปส่งจาก Docker scheduler
+      # ในเครื่องแล้ว (เห็นพอร์ตจริง + คลัง price alert + มี ANTHROPIC_API_KEY)
+      # — ปิดที่นี่เพื่อไม่ให้ Discord ได้ข้อความซ้ำ
       # เปิดกลับ: ตั้ง repository variable VAULTIS_CI_DISCORD_JOBS=1
       - name: Run Weekly Summary (วันจันทร์)
         if: ${{ vars.VAULTIS_CI_DISCORD_JOBS == '1' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 1 * * 1')) }}
@@ -101,8 +102,13 @@ jobs:
       # → `--job price_alert` ที่นี่จึงไม่ได้ตรวจ alert อะไรเลย เหลือแต่สรุปราคาใบซ้ำ
       # → alert รายตัวต้องรันจาก scheduler ในเครื่อง/Docker (`docker compose up -d`)
       #   ที่เห็นไฟล์จริงผ่าน volume  (AUDIT_2026-08-06 ข้อ H12)
+      #
+      # 2026-09-30: step นี้ถูกปิดตามด้วยเหตุผลเดียวกัน — Docker scheduler ส่ง "Daily Price
+      # Check" เองตอน 09:00 (เฉพาะวันที่มีราคาปิดใหม่) เดิม CI ส่งอีกใบตี 2–4 ทุกวันทำการ
+      # ⇒ ใบซ้ำที่ติดบรรทัดเตือนสองบรรทัดมาทุกวัน: backend บน Render ตอบไม่ทัน 120 วิ
+      # (free tier หลับ) จึงตกไปใช้ yfinance และ "มองไม่เห็นคลัง alert" เพราะไฟล์ถูก gitignore
       - name: Run Daily Price Check (ทุกวันทำการ)
-        if: github.event.schedule == '0 15 * * 1-5' || github.event_name == 'workflow_dispatch'
+        if: ${{ vars.VAULTIS_CI_DISCORD_JOBS == '1' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '0 15 * * 1-5')) }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

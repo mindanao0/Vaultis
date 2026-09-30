@@ -28,9 +28,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "etf": {
         "tickers": DEFAULT_TICKERS,
     },
-    # สัดส่วนพอร์ตเป้าหมาย — ฐานของทั้งการจัดสรร DCA และการ rebalance
-    # (ดู portfolio/targets.py; target_weights ว่าง = ใช้ preset ตาม risk_profile)
+    # สัดส่วนพอร์ตเป้าหมาย — ฐานของทั้งการจัดสรร DCA และการ rebalance (ดู portfolio/targets.py)
+    # weighting_method: "erc" = คำนวณจากความเสี่ยง+correlation ทุกครั้ง ไม่มีสัดส่วนตายตัว
+    # (มติผู้ใช้ 2026-09-30) · "preset" = สูตรเดิม risk_profile + target_weights
     "portfolio": {
+        "weighting_method": "erc",
         "risk_profile": "moderate",
         "target_weights": {},
     },

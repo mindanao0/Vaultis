@@ -430,31 +430,76 @@ def ai_suggest_alerts() -> dict[str, Any]:
     }
 
 
+def format_allocation_line(ticker: str, item: dict[str, Any]) -> str:
+    """บรรทัดแผนจัดสรรหนึ่งกอง: ``VOO: 1,700 บาท · 34% (เป้า 35%)`` — ใช้ทุกข้อความ Discord.
+
+    เดิมพิมพ์ ``[1.07× ของเป้า 35%]`` ซึ่ง 1.07 คือตัวคูณจากคะแนน **ก่อน normalize**
+    พอหลายกองได้ตัวคูณเกิน 1 พร้อมกัน สัดส่วนที่ได้จริงกลับต่ำกว่าเป้าได้ — วัด 2026-09-30:
+    VOO เขียนว่า 1.07× แต่ได้จริง 34% ต่ำกว่าเป้า 35% ส่วน XLV ตัวคูณสูงสุด 1.16× แต่ปัด
+    หลักร้อยแล้วได้ 10% เท่าเป้าพอดี คนอ่านเข้าใจว่า "เดือนนี้ซื้อ VOO เกินเป้า 7%"
+    สองตัวเลขที่ผู้ใช้ต้องการจริงคือ "ได้เท่าไร" กับ "เป้าเท่าไร" จึงพิมพ์สองตัวนั้นตรง ๆ
+    """
+    line = f"{ticker}: {float(item.get('amount_thb') or 0):,.0f} บาท"
+    percent, target = item.get("percent"), item.get("target_percent")
+    if percent is not None:
+        line += f" · {float(percent):g}%"
+    if target is not None:
+        line += f" (เป้า {float(target):g}%)"
+    return line
+
+
 def _allocation_summary_lines(
     allocation: dict[str, dict[str, Any]],
     budget_thb: float,
     unallocated_thb: float,
     no_data_tickers: list[str],
     sentiment_warnings: list[dict[str, Any]] | None = None,
+    base_lines: list[str] | None = None,
 ) -> list[str]:
     """สร้างข้อความสรุปแผนจัดสรรจากตัวเลขที่คำนวณแล้ว (ใช้ใน Discord — ไม่พึ่งข้อความ AI)."""
     lines = [f"📋 แผนจัดสรรจากโมเดล (งบ {budget_thb:,.0f} บาท):"]
     if allocation:
         for ticker, item in allocation.items():
-            tilt = item.get("tilt")
-            tilt_txt = f" [{tilt:.2f}× ของเป้า {item.get('target_percent', 0)}%]" if tilt else ""
-            lines.append(
-                f"• {ticker}: {item.get('amount_thb', 0):,.0f} บาท ({item.get('percent', 0)}%){tilt_txt}"
-            )
+            lines.append(f"• {format_allocation_line(ticker, item)}")
         if unallocated_thb > 0:
             lines.append(f"• ยังไม่จัดสรร: {unallocated_thb:,.0f} บาท")
     else:
         lines.append("• ไม่มี ETF ที่มีข้อมูลพร้อมจัดสรร (ดึงข้อมูลไม่ได้)")
     if no_data_tickers:
         lines.append(f"⚠️ ข้อมูลไม่พร้อม (ไม่ถูกนำมาคิด): {', '.join(no_data_tickers)}")
+    lines.extend(base_lines or [])
     if sentiment_warnings:
         tickers_txt = ", ".join(f"{w['ticker']} ({w['score']:+.2f})" for w in sentiment_warnings)
         lines.append(f"🗞️ Sentiment ลบรุนแรง (บริบทเท่านั้น ไม่กระทบสัดส่วนข้างบน): {tickers_txt}")
+    return lines
+
+
+_BASE_METHOD_LINE = {
+    "erc": "ℹ️ ฐานแบบ ERC — ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน วัดเป็นเงินบาท (ไม่มีสัดส่วนตายตัว)",
+    "erc_sector_cap": "ℹ️ ฐานแบบ ERC + เพดานเซกเตอร์ (ในส่วนหุ้นไม่เกิน 2 เท่าของตลาดโลก)",
+    "preset": "ℹ️ ฐานแบบ preset — สัดส่วนตายตัวตามโปรไฟล์ความเสี่ยง",
+}
+
+
+def _base_context_lines(notes: list[str]) -> list[str]:
+    """บรรทัดบริบทของฐานการจัดสรรสำหรับ Discord: วิธีที่ใช้ · หมายเหตุ · เซกเตอร์ที่หนักเกินตลาดโลก.
+
+    เป็นสถิติเชิงพรรณนา (ไม่แตะตัวเลขแผนข้างบน) — วัดไม่ได้ต้อง **บอก** ไม่ใช่ไม่พูดอะไร
+    เพราะ "ไม่มีคำเตือน" จะอ่านเป็น "ไม่กระจุกตัว" (ที่มา: ERC ทำให้หุ้นสุขภาพเป็น ~34%
+    ของส่วนหุ้น เทียบตลาดโลก 8.6% — 2026-09-30)
+    """
+    from portfolio.lookthrough import concentration_lines, sector_concentration
+    from portfolio.targets import get_target_weights_with_status
+
+    lines: list[str] = []
+    try:
+        status = get_target_weights_with_status()
+        lines.append(_BASE_METHOD_LINE.get(status.method, f"ℹ️ ฐานแบบ {status.method}"))
+        lines.extend(f"ℹ️ {note}" for note in notes)
+        lines.extend(concentration_lines(sector_concentration(status.weights)))
+    except Exception as exc:  # noqa: BLE001 — บริบทเสริม ห้ามล้มแผนที่คำนวณเสร็จแล้ว
+        lines.extend(f"ℹ️ {note}" for note in notes)
+        lines.append(f"⚠️ วัดความกระจุกตัวของเซกเตอร์ไม่ได้ ({exc}) — ไม่ได้แปลว่าไม่กระจุกตัว")
     return lines
 
 
@@ -475,7 +520,7 @@ def get_monthly_advice(
     **ยังคำนวณและส่งตัวเลขทุกอย่างตามปกติ** เพียงแต่ ``advice_text`` จะเป็นข้อความ
     แจ้งว่า AI ปิดอยู่ — ไม่มีค่าใช้จ่ายเกิดขึ้น
     """
-    from analysis.financial_model import build_etf_scores, calculate_allocation
+    from analysis.financial_model import build_etf_scores, calculate_allocation_with_status
     from analysis.macro import get_macro_snapshot
     from portfolio.tracker import get_portfolio_summary
 
@@ -490,7 +535,11 @@ def get_monthly_advice(
 
         # --- คำนวณแผนจัดสรรในโค้ด (ไม่ใช่หน้าที่ของ AI) ---
         scores_by_ticker = {row["ticker"]: row for row in etf_scores if row.get("ticker")}
-        allocation = calculate_allocation(scores_by_ticker, float(budget_thb))
+        # ``_with_status`` ไม่ใช่ตัวเปล่า: notes (เช่น "วัดเป็น USD เพราะดึงค่าเงินบาทไม่ได้",
+        # "เพดานเซกเตอร์ทำงาน") ต้องไปถึง Discord — ตัวเปล่าทิ้งมันเงียบ ๆ
+        plan = calculate_allocation_with_status(scores_by_ticker, float(budget_thb))
+        allocation = plan.allocation
+        base_lines = _base_context_lines(plan.notes)
         allocated_total = sum(item.get("amount_thb", 0) for item in allocation.values())
         unallocated_thb = max(0.0, float(budget_thb) - float(allocated_total))
         no_data_tickers = [r["ticker"] for r in etf_scores if not r.get("data_ok", True)]
@@ -547,7 +596,12 @@ def get_monthly_advice(
         discord_result: dict[str, Any] = {"success": False, "skipped": True}
         if webhook_url and send_discord:
             summary_lines = _allocation_summary_lines(
-                allocation, float(budget_thb), unallocated_thb, no_data_tickers, sentiment.warnings
+                allocation,
+                float(budget_thb),
+                unallocated_thb,
+                no_data_tickers,
+                sentiment.warnings,
+                base_lines=base_lines,
             )
             description = "\n".join(summary_lines) + "\n\n" + advice_text
             discord_result = send_discord_webhook(
@@ -562,6 +616,8 @@ def get_monthly_advice(
             "budget_thb": budget_thb,
             "etf_scores": etf_scores,
             "allocation": allocation,
+            # วิธีคำนวณฐาน + หมายเหตุ + เซกเตอร์ที่หนักเกินตลาดโลก (ข้อความเดียวกับใน Discord)
+            "base_context": base_lines,
             "unallocated_thb": unallocated_thb,
             "no_data_tickers": no_data_tickers,
             "sentiment_warnings": sentiment.warnings,

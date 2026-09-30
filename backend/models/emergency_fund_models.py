@@ -6,6 +6,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from .finite import FiniteFloat, register_field_labels
+
+register_field_labels(
+    {
+        "monthly_expense": "รายจ่ายต่อเดือน",
+        "current_savings": "เงินสำรองที่มีอยู่",
+        "monthly_saving_capacity": "เงินออมต่อเดือน",
+    }
+)
+
 JobStability = Literal["very_stable", "stable", "unstable", "freelance"]
 IncomeType = Literal["salary", "mixed", "freelance", "business"]
 Industry = Literal["government", "startup", "self_employed", "other"]
@@ -31,6 +41,9 @@ class EmergencyFundResult(BaseModel):
 
 class EmergencyFundRequest(BaseModel):
     profile: RiskProfile
-    monthly_expense: float = Field(gt=0)
-    current_savings: float = Field(ge=0)
-    monthly_saving_capacity: float = Field(ge=0)
+    # FiniteFloat ไม่ใช่ของประดับ: ``Field(gt=0)`` ปล่อย ``inf`` ผ่าน (inf > 0 เป็นจริง)
+    # แล้วไปตายที่ ``math.ceil(inf)`` เป็น HTTP 500 — ความผิดของคำขอถูกรายงานว่า
+    # เซิร์ฟเวอร์พัง (K8/G8 · วัดจริง 2026-09-01)
+    monthly_expense: FiniteFloat = Field(gt=0)
+    current_savings: FiniteFloat = Field(ge=0)
+    monthly_saving_capacity: FiniteFloat = Field(ge=0)

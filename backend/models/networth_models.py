@@ -7,6 +7,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .finite import FiniteFloat, register_field_labels
+
+register_field_labels({"value_thb": "มูลค่า (บาท)"})
+
 AssetType = Literal["cash", "etf", "fund", "bond", "อื่นๆ"]
 
 # ที่มาของมูลค่า ETF ในคำตอบหนึ่ง ๆ — ``etf_live`` ตัวเดิมเป็น bool จึงแยก
@@ -51,12 +55,16 @@ SnapshotAgeStatus = Literal["fresh", "stale", "no_snapshot", "unreadable_date", 
 class Asset(BaseModel):
     name: str
     type: AssetType
-    value_thb: float = Field(gt=0)
+    # ``inf`` เดินผ่าน ``Field(gt=0)`` ได้ แล้ว **ถูก commit ลง SQLite** ก่อนจะพังตอน
+    # serialize ⇒ ผู้ใช้เห็น 500 (เหมือนบันทึกไม่สำเร็จ) แต่แถวพิษยังอยู่ และทำให้
+    # ``GET /api/networth/history`` โยน exception ทุกครั้งหลังจากนั้น = ประวัติพังถาวร
+    # จนกว่าจะเข้าไปลบแถวในฐานเอง (วัดจริง 2026-09-01) — ต้องกันที่ประตูเท่านั้น
+    value_thb: FiniteFloat = Field(gt=0)
 
 
 class Liability(BaseModel):
     name: str
-    value_thb: float = Field(gt=0)
+    value_thb: FiniteFloat = Field(gt=0)
 
 
 class SnapshotRequest(BaseModel):

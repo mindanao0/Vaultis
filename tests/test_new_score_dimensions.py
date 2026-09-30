@@ -63,6 +63,16 @@ class TestValuationScore:
         short = self._on_trend_series()[:300]
         assert fm._valuation_score(_series_from(short, start="2022-01-03")) is None
 
+    @pytest.mark.parametrize("bars", [500, 501, 503])
+    def test_every_two_year_fetch_gets_a_valuation(self, bars):
+        """คะแนนกลางดึงราคา ``period="2y"`` ซึ่งได้ 500–507 แท่งแล้วแต่วันหยุดในช่วงนั้น.
+
+        เดิมเกณฑ์ 504 ⇒ มิตินี้ติด ~37% ของวันแล้วดับ ตัวหารคะแนนสลับ 115↔125 และแผน DCA
+        กระโดดตามปฏิทิน (วัด 2026-09-30: วันนั้นได้ 501 แท่ง มิตินี้จึงไม่ถูกนับ)
+        """
+        series = _series_from(self._on_trend_series()[:bars], start="2022-01-03")
+        assert fm._valuation_score(series) is not None
+
     def test_price_spiked_far_above_trend_scores_low(self):
         above = self._on_trend_series()
         above[-40:] *= 1.7
@@ -138,19 +148,35 @@ class TestExpenseScore:
 
 
 class TestExpenseRatioFromTicker:
-    def test_reads_annual_report_expense_ratio(self, monkeypatch):
+    # ค่าจริงที่ yfinance==0.2.61 คืนมา วัด 2026-09-30 — เป็นเปอร์เซ็นต์อยู่แล้ว
+    MEASURED_NET_EXPENSE_RATIO = {"VOO": 0.03, "SCHD": 0.06, "QQQM": 0.15, "XLV": 0.08, "GLDM": 0.1}
+
+    @pytest.mark.parametrize("ticker, raw", sorted(MEASURED_NET_EXPENSE_RATIO.items()))
+    def test_net_expense_ratio_is_already_percent(self, monkeypatch, ticker, raw):
+        """เดิมคูณ 100 → VOO 0.03% กลายเป็น 3% (0/5) ส่วนกองอื่นเกินเพดาน 5% แล้วถูกตัดทิ้ง."""
+        monkeypatch.setattr(
+            fm.yf, "Ticker", lambda _s: type("T", (), {"info": {"netExpenseRatio": raw}})()
+        )
+        assert fm._expense_ratio_pct(ticker) == pytest.approx(raw)
+
+    def test_real_funds_all_score_on_the_cheap_side(self, monkeypatch):
+        """ห้ากองนี้ค่าธรรมเนียม ≤ 0.15% ทุกตัว — ต้องได้ 4–5 ไม่ใช่ 0 หรือถูกตัดมิติ."""
+        for ticker, raw in self.MEASURED_NET_EXPENSE_RATIO.items():
+            monkeypatch.setattr(
+                fm.yf, "Ticker", lambda _s, raw=raw: type("T", (), {"info": {"netExpenseRatio": raw}})()
+            )
+            pct = fm._expense_ratio_pct(ticker)
+            assert pct is not None, ticker
+            assert fm._expense_score(pct) >= 4, (ticker, pct)
+
+    def test_unverified_annual_report_field_is_ignored(self, monkeypatch):
+        """หน่วยของ annualReportExpenseRatio ไม่เคยถูกวัด — ห้ามเข้าเลขคะแนน."""
         monkeypatch.setattr(
             fm.yf,
             "Ticker",
             lambda _s: type("T", (), {"info": {"annualReportExpenseRatio": 0.0003}})(),
         )
-        assert fm._expense_ratio_pct("VOO") == pytest.approx(0.03)
-
-    def test_falls_back_to_net_expense_ratio(self, monkeypatch):
-        monkeypatch.setattr(
-            fm.yf, "Ticker", lambda _s: type("T", (), {"info": {"netExpenseRatio": 0.0015}})()
-        )
-        assert fm._expense_ratio_pct("QQQM") == pytest.approx(0.15)
+        assert fm._expense_ratio_pct("VOO") is None
 
     def test_network_failure_returns_none(self, monkeypatch):
         def _boom(_s):
@@ -166,7 +192,7 @@ class TestExpenseRatioFromTicker:
     def test_implausible_value_returns_none_instead_of_guessing(self, monkeypatch):
         """expense ratio > 5% ไม่ใช่ ETF จริง — ตัดออกแทนการเดา (C1, เหมือน dividend M15)."""
         monkeypatch.setattr(
-            fm.yf, "Ticker", lambda _s: type("T", (), {"info": {"annualReportExpenseRatio": 0.10}})()
+            fm.yf, "Ticker", lambda _s: type("T", (), {"info": {"netExpenseRatio": 10.0}})()
         )
         assert fm._expense_ratio_pct("VOO") is None
 

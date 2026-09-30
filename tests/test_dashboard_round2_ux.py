@@ -204,6 +204,7 @@ def settings_stubs(monkeypatch, fake_st):
     monkeypatch.setattr(app, "get_tickers", lambda: ["VOO", "SCHD"])
     monkeypatch.setattr(app, "get_risk_profile", lambda: "moderate")
     monkeypatch.setattr(app, "_render_target_weights_table", lambda *a, **k: None)
+    monkeypatch.setattr(app, "_render_erc_weights_table", lambda *a, **k: None)  # ไม่ยิงเน็ต
     monkeypatch.setattr(app, "save_config", lambda cfg: saved.append(cfg))
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://example.invalid/hook")
     return saved

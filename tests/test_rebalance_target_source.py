@@ -33,6 +33,16 @@ PRICES = {
 FX_RATE = 35.0
 
 
+@pytest.fixture(autouse=True)
+def _preset_weighting(monkeypatch):
+    """ไฟล์นี้ตรวจว่า rebalance อ่านสัดส่วนที่ผู้ใช้ **ตั้งเอง** (สูตร preset) ถูกต้อง —
+    ERC ที่เป็นค่าเริ่มต้นตั้งแต่ 2026-09-30 ไม่มีตัวเลขให้ตั้ง ตรวจที่ tests/test_erc_weights.py
+    """
+    from portfolio import targets as targets_module
+
+    monkeypatch.setattr(targets_module, "get_weighting_method", lambda: "preset")
+
+
 @pytest.fixture
 def stub_env(monkeypatch):
     """ราคา/FX/LLM จำลอง — เทสต์ห้ามแตะเน็ตและห้ามจ่ายค่า LLM."""
@@ -85,6 +95,7 @@ class TestTargetWeightsComeFromOneSource:
         custom_config({
             "etf": {"tickers": ["VOO", "SCHD", "QQQM", "XLV", "GLDM", "VT"]},
             "portfolio": {
+                "weighting_method": "preset",
                 "risk_profile": "moderate",
                 "target_weights": {
                     "VOO": 0.60, "SCHD": 0.10, "QQQM": 0.10,
@@ -103,7 +114,7 @@ class TestTargetWeightsComeFromOneSource:
         """หน้า Settings เพิ่ม ticker ได้ (``add_ticker()``) — แผน rebalance ต้องเห็นด้วย."""
         custom_config({
             "etf": {"tickers": ["VOO", "SCHD", "QQQM", "XLV", "GLDM", "VT"]},
-            "portfolio": {"risk_profile": "moderate", "target_weights": {}},
+            "portfolio": {"weighting_method": "preset", "risk_profile": "moderate", "target_weights": {}},
         })
 
         result = rebalance_service.compute_rebalance([], "moderate", 350000.0)

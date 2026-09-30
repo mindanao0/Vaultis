@@ -8,15 +8,33 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from analysis.financial_model import ALLOCATION_UNIT_THB
 from portfolio.weight_rules import validate_weights
 
+from .models.finite import FiniteFloat, ensure_finite_input, register_field_labels
+
+register_field_labels(
+    {
+        "shares": "จำนวนหน่วย",
+        "price_usd": "ราคาต่อหน่วย (USD)",
+        "amount_thb": "จำนวนเงิน (บาท)",
+        "fx_rate": "อัตราแลกเปลี่ยน",
+        "fee": "ค่าธรรมเนียม",
+        "target_price": "ราคาเป้าหมาย",
+        "target_amount_thb": "เป้าหมาย (บาท)",
+        "monthly_contribution_thb": "เงินสมทบต่อเดือน (บาท)",
+        "actual_contribution_thb": "เงินที่สมทบจริง (บาท)",
+    }
+)
+
 
 class TransactionBase(BaseModel):
     date: str
     ticker: str
-    shares: float = Field(gt=0)
-    price_usd: float = Field(gt=0)
-    amount_thb: float = Field(gt=0)
-    fx_rate: float = Field(gt=0)
-    fee: float = 0.0
+    # ทุกช่องเป็น FiniteFloat: ``Field(gt=0)`` ปล่อย ``inf`` ผ่าน (K8/G8) และธุรกรรม
+    # เป็นข้อมูลที่ถูก **บันทึกถาวร** ค่าพิษหนึ่งแถวจึงเสียหายยาวกว่าคำขอเดียว
+    shares: FiniteFloat = Field(gt=0)
+    price_usd: FiniteFloat = Field(gt=0)
+    amount_thb: FiniteFloat = Field(gt=0)
+    fx_rate: FiniteFloat = Field(gt=0)
+    fee: FiniteFloat = 0.0
     note: str = ""
 
 
@@ -34,7 +52,9 @@ class TransactionRead(TransactionBase):
 class PriceAlertBase(BaseModel):
     ticker: str
     alert_type: str
-    target_price: float = Field(gt=0)
+    # ``alerts/price_alert.py`` มีด่าน ``math.isfinite`` ของตัวเองอยู่แล้ว ตรงนี้เป็น
+    # การกันชั้นนอกให้ตอบ 422 พร้อมเหตุผลไทย แทนที่จะให้ไปตกด่านในเป็น 400/500
+    target_price: FiniteFloat = Field(gt=0)
 
 
 class PriceAlertCreate(PriceAlertBase):
@@ -55,10 +75,14 @@ def _finite_amount(value: float, label: str) -> float:
 
     จำนวนเงินที่เป็น ``inf`` ทำให้ทุกช่องของผลลัพธ์กลายเป็น ``null`` (json_safe แปลง
     ``inf`` เป็น ``None``) แล้ว endpoint ยังตอบ 200 ราวกับคำนวณสำเร็จ
+
+    รูปแบบฟังก์ชันนี้มีไว้เรียกจากใน ``field_validator`` (``cashflow_models`` ใช้อยู่)
+    ส่วนฟิลด์ที่ประกาศชนิดได้ตรง ๆ ใช้ :data:`backend.models.finite.FiniteFloat`
+    — **การตัดสินว่า "จำกัดค่า" คืออะไร อยู่ที่ ``finite.py`` ที่เดียว** ตัวนี้เป็นเปลือก
+    ที่เรียกต่อ ห้ามเขียนเงื่อนไข ``isfinite`` ซ้ำที่นี่ (ต้องเป็น ``ensure_finite_input``
+    ไม่ใช่ ``ensure_finite_result`` — ค่าที่ผู้ใช้ส่งมากับค่าที่เราคำนวณล้น เป็นคนละอาการ)
     """
-    if not math.isfinite(value):
-        raise ValueError(f"{label} ต้องเป็นตัวเลขจำกัด ไม่ใช่ inf หรือ NaN (ได้ {value})")
-    return value
+    return ensure_finite_input(value, label)
 
 
 def parse_iso_date(value: str, label: str) -> _date:
@@ -226,7 +250,7 @@ class SentimentResponse(BaseModel):
 
 class HoldingInput(BaseModel):
     symbol: str
-    shares: float = Field(gt=0)
+    shares: FiniteFloat = Field(gt=0)
 
 
 class RebalanceRequest(BaseModel):
@@ -239,9 +263,9 @@ class GoalCreate(BaseModel):
     model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
 
     name: str
-    target_amount_thb: float = Field(gt=0)
+    target_amount_thb: FiniteFloat = Field(gt=0)
     current_amount_thb: float = Field(default=0.0, ge=0)
-    monthly_contribution_thb: float = Field(gt=0)
+    monthly_contribution_thb: FiniteFloat = Field(gt=0)
     target_date: datetime
     risk_profile: Literal["conservative", "moderate", "aggressive"] = "moderate"
 
@@ -254,4 +278,4 @@ class GoalRead(GoalCreate):
 
 
 class GoalContributeRequest(BaseModel):
-    actual_contribution_thb: float = Field(gt=0)
+    actual_contribution_thb: FiniteFloat = Field(gt=0)

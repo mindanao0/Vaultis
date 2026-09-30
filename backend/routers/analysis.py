@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 
 from analysis.financial_model import ALLOCATION_UNIT_THB
 from data.fetcher import PriceDataUnavailableError
-from portfolio.targets import NoTargetForSubset, TargetWeightsError
+from portfolio.targets import NoTargetForSubset, RiskWeightsUnavailable, TargetWeightsError
 
 from ..schemas import DcaSimRequest, PortfolioBacktestRequest, validate_dca_budget
 from ..services import market_analysis_service as service
@@ -133,6 +133,9 @@ def get_full_financial_analysis(
         # อันนี้แค่รอ อีกอันต้องไปแก้ config.json) เดิมหล่นไปเข้า ``except Exception``
         # แล้วออกเป็น 500 เปล่า ๆ = "เซิร์ฟเวอร์พัง" ทั้งที่ระบบรู้สาเหตุครบ
         raise HTTPException(status_code=503, detail=_no_target_for_subset_detail(exc)) from exc
+    except RiskWeightsUnavailable as exc:
+        # สัดส่วนฐาน ERC คำนวณไม่ได้เพราะข้อมูลราคา = ชั่วคราวเหมือนกัน ⇒ 503 ไม่ใช่ 422 "คอนฟิกผิด"
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except TargetWeightsError as exc:
         # เหลือแต่ ``InvalidTargetWeights`` (และชนิดใหม่ในอนาคต) = คอนฟิกผิดจริง
         # แก้ที่ config.json แล้วหาย → 422 พร้อมข้อความไทยที่ targets.py เขียนไว้

@@ -100,16 +100,28 @@ from alerts.price_alert import (
 from data.fetcher import PriceDataUnavailableError, fetch_adjusted_close_data
 from db.sentiment_models import get_latest_sentiment_summaries
 from portfolio.backtest import run_portfolio_backtest
-from portfolio.lookthrough import look_through, overlap_pairs, weighted_ratios
+from portfolio.lookthrough import (
+    concentration_lines,
+    look_through,
+    overlap_pairs,
+    sector_concentration,
+    weighted_ratios,
+)
 from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
 from portfolio.targets import (
     RISK_PROFILES,
+    WEIGHTING_ERC,
+    WEIGHTING_ERC_SECTOR_CAP,
+    WEIGHTING_METHODS,
+    WEIGHTING_PRESET,
     InvalidTargetWeights,
     NoTargetForSubset,
+    RiskWeightsUnavailable,
     TargetWeightsError,
     get_risk_profile,
     get_target_weights,
     get_target_weights_with_status,
+    get_weighting_method,
 )
 from portfolio.costs import (
     US_DIVIDEND_WITHHOLDING,
@@ -923,6 +935,9 @@ def _render_target_weights_table(current_tickers: list[str], preset: dict[str, f
             "ระบบไม่เดาค่าแทน แก้ไฟล์ให้ถูกต้องแล้วรีเฟรชหน้านี้"
         )
         return
+    except TargetWeightsError as exc:
+        _render_target_weights_problem(exc)
+        return
 
     effective_targets = status.weights
     st.dataframe(
@@ -932,7 +947,7 @@ def _render_target_weights_table(current_tickers: list[str], preset: dict[str, f
                     "ETF": t,
                     "เป้าหมายตาม preset": f"{preset.get(t, 0) * 100:.0f}%",
                     "เป้าหมายที่ใช้จริง": f"{effective_targets.get(t, 0) * 100:.1f}%",
-                    "ที่มา": {"custom": "ตั้งเอง", "preset": "preset"}.get(
+                    "ที่มา": {"custom": "ตั้งเอง", "preset": "preset", "erc": "ERC"}.get(
                         status.source.get(t, ""), "ไม่รู้จัก"
                     ),
                 }
@@ -948,6 +963,66 @@ def _render_target_weights_table(current_tickers: list[str], preset: dict[str, f
         'ถ้าต้องการกำหนดเอง ให้แก้ `portfolio.target_weights` ใน config.json '
         '(เช่น {"VOO": 0.4, "GLDM": 0.05}) — เว้นว่างไว้จะใช้ preset ด้านบน'
     )
+
+
+def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = False) -> None:
+    """ตารางสัดส่วนฐานแบบ ERC ที่คำนวณจากข้อมูลตอนนี้ — ไม่มีตัวเลขตายตัวให้ตั้ง.
+
+    แสดงคู่กับความผันผวนและส่วนแบ่งความเสี่ยง เพื่อให้เห็นว่าทำไมแต่ละกองได้เท่านั้น
+    (กองที่ขึ้นลงพร้อมกันแชร์งบความเสี่ยงก้อนเดียว) และบอกช่วงข้อมูลที่ใช้จริงเสมอ
+    """
+    from data.fetcher import PriceDataUnavailableError
+    from portfolio.risk_weights import compute_erc_weights
+
+    symbols = [str(t).strip().upper() for t in current_tickers if str(t).strip()]
+    if not symbols:
+        st.info("ยังไม่มี ETF ที่ติดตาม")
+        return
+    try:
+        result = compute_erc_weights(tuple(symbols), sector_cap)
+    except (PriceDataUnavailableError, ValueError) as exc:
+        _render_risk_weights_unavailable(RiskWeightsUnavailable(str(exc)))
+        return
+
+    meta = result["meta"]
+    vol = meta.get("vol_pct", {})
+    per_pct = result.get("risk_per_pct") or {}
+    rows = []
+    for t in symbols:
+        row = {
+            "ETF": t,
+            "สัดส่วนฐาน": f"{result['weights'][t] * 100:.1f}%",
+            "ความผันผวน 1 ปี": f"{vol[t]:.1f}%" if t in vol else "—",
+            # ตัวที่อธิบายว่า "ทำไมได้เงินไม่เท่ากัน" — ส่วนแบ่งความเสี่ยงเท่ากันหมดโดยนิยามของ ERC
+            # จึงไม่บอกอะไร (ผู้ใช้ถามว่าทำไมขึ้น 20% ทุกช่อง — 2026-09-30)
+            "ความเสี่ยงที่เพิ่มต่อเงิน 1%": f"{per_pct[t]:.1f}" if t in per_pct else "—",
+        }
+        if meta.get("binding_sectors"):
+            # มีเพดานชน = ส่วนแบ่งไม่เท่ากันแล้ว ตัวเลขนี้จึงกลับมามีความหมาย
+            row["ส่วนแบ่งความเสี่ยง"] = f"{result['risk_share'][t] * 100:.1f}%"
+        rows.append(row)
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    if meta.get("currency") == "USD":
+        st.warning(
+            "รอบนี้วัดความเสี่ยงเป็น USD — ดึง USDTHB ย้อนหลังไม่ได้ "
+            f"({meta.get('fx_error') or 'ไม่ทราบสาเหตุ'})"
+        )
+    if meta.get("binding_sectors"):
+        st.info(
+            "เพดานเซกเตอร์ทำงาน: " + ", ".join(meta.get("binding_sectors_th") or meta["binding_sectors"])
+            + " ถูกจำกัดไม่ให้เกิน 2 เท่าของตลาดโลก (ในส่วนหุ้น)"
+        )
+    corr_window = result["meta"].get("corr_window") or {}
+    vol_window = result["meta"].get("vol_window") or {}
+    if corr_window and vol_window:
+        st.caption(
+            "ไม่มีสัดส่วนตายตัว — คำนวณใหม่จากข้อมูลทุกครั้ง (วัดเป็นเงินบาท) ให้ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน "
+            f"(ความผันผวน {vol_window['start']} → {vol_window['end']} · "
+            f"การขึ้นลงพร้อมกัน {corr_window['start']} → {corr_window['end']}) "
+            "กองที่ขึ้นลงพร้อมกันจึงแชร์งบความเสี่ยงก้อนเดียว — เป็นสูตรกระจายความเสี่ยง "
+            "ไม่ได้พิสูจน์ว่าให้ผลตอบแทนสูงกว่า"
+        )
+    _render_world_sector_comparison(result["weights"])
 
 
 def _render_fallback_fx_input(stored_value: object) -> float:
@@ -1058,16 +1133,38 @@ def render_settings_page() -> None:
         "ฐานของทั้งแผน DCA และการ rebalance — คะแนนรายเดือนจะปรับน้ำหนักรอบเป้าหมายนี้ "
         f"({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) ไม่ตัดสินทรัพย์ใดออกจากพอร์ต"
     )
-    profile_options = list(RISK_PROFILES.keys())
-    profile_labels = {"conservative": "อนุรักษ์นิยม", "moderate": "สมดุล", "aggressive": "เชิงรุก"}
-    current_profile = get_risk_profile()
-    selected_profile = st.selectbox(
-        "โปรไฟล์ความเสี่ยง",
-        profile_options,
-        index=profile_options.index(current_profile),
-        format_func=lambda p: f"{profile_labels.get(p, p)} ({p})",
+    method_labels = {
+        WEIGHTING_ERC: "ERC — คำนวณจากความเสี่ยงและการขึ้นลงพร้อมกัน (ไม่มีสัดส่วนตายตัว)",
+        WEIGHTING_ERC_SECTOR_CAP: "ERC + เพดานเซกเตอร์ 2× ตลาดโลก (ทดสอบย้อนหลังแล้ว drawdown แย่ลง ~3 จุด)",
+        WEIGHTING_PRESET: "Preset — สัดส่วนตายตัวตามโปรไฟล์ความเสี่ยง",
+    }
+    try:
+        current_method = get_weighting_method()
+    except InvalidTargetWeights as exc:
+        st.warning(f"{exc} — กดบันทึกเพื่อเขียนค่าที่เลือกด้านล่างทับ")
+        current_method = WEIGHTING_ERC
+    selected_method = st.selectbox(
+        "วิธีคำนวณสัดส่วนฐาน",
+        list(WEIGHTING_METHODS),
+        index=list(WEIGHTING_METHODS).index(current_method),
+        format_func=lambda m: method_labels.get(m, m),
     )
-    _render_target_weights_table(current_tickers, RISK_PROFILES[selected_profile])
+    if selected_method != current_method:
+        st.info("ยังไม่ได้บันทึก — กด **บันทึก Settings** ด้านล่างเพื่อเปลี่ยนวิธีคำนวณจริง")
+    current_profile = get_risk_profile()
+    selected_profile = current_profile
+    if selected_method in (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
+        _render_erc_weights_table(current_tickers, sector_cap=selected_method == WEIGHTING_ERC_SECTOR_CAP)
+    else:
+        profile_options = list(RISK_PROFILES.keys())
+        profile_labels = {"conservative": "อนุรักษ์นิยม", "moderate": "สมดุล", "aggressive": "เชิงรุก"}
+        selected_profile = st.selectbox(
+            "โปรไฟล์ความเสี่ยง",
+            profile_options,
+            index=profile_options.index(current_profile),
+            format_func=lambda p: f"{profile_labels.get(p, p)} ({p})",
+        )
+        _render_target_weights_table(current_tickers, RISK_PROFILES[selected_profile])
 
     st.divider()
     st.subheader("4) Notification Settings")
@@ -1141,6 +1238,7 @@ def render_settings_page() -> None:
             },
             "etf": {"tickers": get_tickers()},
             "portfolio": {
+                "weighting_method": selected_method,
                 "risk_profile": selected_profile,
                 # เก็บค่าที่ผู้ใช้ตั้งเองไว้ (ถ้ามี) — ไม่เขียนทับด้วย preset
                 "target_weights": dict(config["portfolio"].get("target_weights") or {}),
@@ -3351,8 +3449,16 @@ def _render_target_weights_problem(exc: Exception | None) -> None:
     """
     if isinstance(exc, NoTargetForSubset):
         _render_no_target_for_subset(exc)
+    elif isinstance(exc, RiskWeightsUnavailable):
+        _render_risk_weights_unavailable(exc)
     else:
         _render_invalid_target_weights(exc)
+
+
+def _render_risk_weights_unavailable(exc: RiskWeightsUnavailable) -> None:
+    """ERC คำนวณไม่ได้เพราะ **ข้อมูลราคา** — ห้ามชี้ไปแก้ config.json และห้ามโชว์สัดส่วนตายตัวแทน."""
+    st.error(f"ยังคำนวณสัดส่วนฐาน (ERC) ไม่ได้ — {exc}")
+    st.info("ไม่ต้องแก้ config.json — รอให้ดึงราคาได้แล้วกด Refresh Data อีกครั้ง")
 
 
 def _unpriced_tickers(holdings_df: pd.DataFrame) -> list[str]:
@@ -3909,6 +4015,40 @@ def _render_rolling_correlation(prices: pd.DataFrame, base: str = "VOO") -> None
         )
 
 
+def _render_world_sector_comparison(weights: dict[str, float]) -> None:
+    """เซกเตอร์ในส่วนหุ้นเทียบตลาดหุ้นโลก (VT) — เตือนตัวที่หนักเกิน 2 เท่า.
+
+    วัดภายในส่วนหุ้น (ทองไม่มีเซกเตอร์) · เทียบไม่ได้ต้องบอก ห้ามเงียบ เพราะ "ไม่มีคำเตือน"
+    จะอ่านเป็น "ไม่กระจุกตัว"
+    """
+    try:
+        conc = sector_concentration(weights)
+    except ValueError as exc:
+        st.caption(f"เทียบกับตลาดโลกไม่ได้: {exc} — ไม่ได้แปลว่าไม่กระจุกตัว")
+        return
+    for line in concentration_lines(conc):
+        st.warning(line)
+    world = conc["world"]
+    st.caption("เซกเตอร์ในส่วนหุ้นของพอร์ต เทียบตลาดหุ้นโลก (VT) — เกิน 2 เท่าถือว่ากระจุกตัว")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "เซกเตอร์": sector,
+                    "% ของส่วนหุ้น": pct,
+                    "ตลาดโลก": world.get(sector, 0.0),
+                    "เท่าของตลาดโลก": (pct / world[sector]) if world.get(sector) else None,
+                }
+                for sector, pct in conc["portfolio"].items()
+            ]
+        ).style.format(
+            {"% ของส่วนหุ้น": "{:.1f}%", "ตลาดโลก": "{:.1f}%", "เท่าของตลาดโลก": "{:.1f}×"},
+            na_rep="—",
+        ),
+        hide_index=True,
+    )
+
+
 def _render_lookthrough() -> None:
     """ทะลุกอง ETF ลงไปดูหุ้นและเซกเตอร์ที่ถืออยู่จริง (FIX_PLAN เฟส 4③).
 
@@ -3956,6 +4096,8 @@ def _render_lookthrough() -> None:
             ).style.format({"% ของพอร์ต": "{:.2f}%"}),
             hide_index=True,
         )
+
+    _render_world_sector_comparison(weights)
 
     overlaps = overlap_pairs(result)
     if overlaps:
@@ -4848,9 +4990,9 @@ def _render_rebalance_mode(budget_thb: float, scores_by_ticker: dict) -> bool:
 
     try:
         targets = _tracked_target_weights()
-    except InvalidTargetWeights as exc:
-        # คอนฟิกผิดรูป = ไม่รู้เป้าหมายจริง ห้ามเดาแล้วเทเงินตามที่เดา
-        _render_invalid_target_weights(exc)
+    except TargetWeightsError as exc:
+        # ไม่รู้เป้าหมายจริง (คอนฟิกผิด / ERC ดึงราคาไม่ได้) ห้ามเดาแล้วเทเงินตามที่เดา
+        _render_target_weights_problem(exc)
         return False
 
     try:
@@ -5026,9 +5168,9 @@ def _render_drift_advisory() -> None:
 
     try:
         targets = _tracked_target_weights()  # สูตรเดียวกับโหมด rebalance — ห้ามมีสองสูตร
-    except InvalidTargetWeights as exc:
-        # คอนฟิกผิดรูป = ไม่รู้เป้าหมายจริง ห้ามเดาแทนแล้วสรุปว่าเอียง/ไม่เอียง
-        _render_invalid_target_weights(exc)
+    except TargetWeightsError as exc:
+        # ไม่รู้เป้าหมายจริง ห้ามเดาแทนแล้วสรุปว่าเอียง/ไม่เอียง
+        _render_target_weights_problem(exc)
         return
 
     actual_pct_by_ticker = {
@@ -5130,12 +5272,10 @@ def render_scorecard_page() -> None:
         # จะหายจากตารางเงียบ ๆ ใต้คำโปรยที่บอกว่า "ไม่ตัดตัวไหนออก" (T7)
         plan = calculate_allocation_with_status(scores_by_ticker, float(budget_thb))
         allocation = plan.allocation
-    except NoTargetForSubset as exc:
+    except TargetWeightsError as exc:
+        # แยกข้อความตามชนิด: ดึงราคาไม่สำเร็จ / ERC คำนวณไม่ได้ / คอนฟิกผิด
         allocation_error = exc
-        _render_no_target_for_subset(exc)
-    except InvalidTargetWeights as exc:
-        allocation_error = exc
-        _render_invalid_target_weights(exc)
+        _render_target_weights_problem(exc)
 
     if plan is not None:
         _render_allocation_exclusions(
