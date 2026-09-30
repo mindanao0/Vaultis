@@ -220,7 +220,7 @@ TREND_MAX, TIMING_MAX, MOMENTUM_MAX, DIVIDEND_MAX = 40, 30, 20, 10
 # มิติเพิ่มเติม (2026-08) — ทั้งหมดตัด max_score ออกเมื่อข้อมูลไม่พร้อม (ตาม pattern DIVIDEND เดิม)
 # ไม่รื้อสัดส่วนเดิม 4 มิติ เพราะ total_pct = total/max_score เสมอ จึง normalize เองอัตโนมัติ
 VOLATILITY_MAX = 10          # ผันผวนรายวัน + max drawdown 1 ปี — คำนวณจาก closes ได้เสมอ
-VALUATION_MAX = 10           # ราคาเทียบเทรนด์ log-linear หลายปี (ต้องมีข้อมูล >= 504 วันเทรด)
+VALUATION_MAX = 10           # ราคาเทียบเทรนด์ log-linear หลายปี (ต้องมีข้อมูล >= trend_channel.MIN_TREND_POINTS)
 RELATIVE_STRENGTH_MAX = 5    # ผลตอบแทน 3 เดือนเทียบ benchmark (VOO) — ตัวเองไม่เทียบกับตัวเอง
 EXPENSE_MAX = 5              # ค่าธรรมเนียมกองทุน (expense ratio) จาก yfinance
 
@@ -398,23 +398,28 @@ _MAX_PLAUSIBLE_EXPENSE_RATIO_PCT = 5.0
 def _expense_ratio_pct(ticker: str) -> float | None:
     """ค่าธรรมเนียมกองทุนเป็น % (เช่น 0.03 = 0.03%); ล้มเหลว/ไม่มี/ค่าเพี้ยนคืน None (C1).
 
-    yfinance คืน ``annualReportExpenseRatio``/``netExpenseRatio`` เป็นสัดส่วน (0.0003 = 0.03%)
-    — คูณ 100 ตรง ๆ เท่านั้น ห้ามเดาหน่วยแบบที่เคยพลาดกับ dividend yield (M15)
+    ``yfinance==0.2.61`` ที่ pin ไว้คืน ``netExpenseRatio`` เป็น **เปอร์เซ็นต์อยู่แล้ว**
+    (วัดจริง 2026-09-30: VOO=0.03, SCHD=0.06, QQQM=0.15, XLV=0.08, GLDM=0.1 — ตรงกับ
+    ค่าธรรมเนียมที่ผู้ออกกองประกาศ) ใช้ค่านั้นตรง ๆ ไม่คูณอะไรอีก
+
+    เดิมคูณ 100 ตามสมมติฐานว่าเป็นสัดส่วน ซึ่งคอมมิตที่เพิ่มมิตินี้ (0c92773) บันทึกไว้เองว่า
+    "ยังไม่ได้ตรวจหน่วยกับ yfinance จริง" แล้วไม่มีใครกลับมาตรวจ ⇒ VOO (0.03%) กลายเป็น 3%
+    ได้ 0/5 ทั้งที่ถูกที่สุด ส่วนอีก 4 กองกลายเป็น 6–15% เกินเพดานความสมเหตุผลเลยถูกตัดมิติทิ้ง
+    — มีแต่ VOO ที่ถูกหักคะแนน (คะแนน 59.1 แทน 63.5 และแผน DCA ย้าย 100 บาทจาก VOO ไป QQQM)
+
+    ``annualReportExpenseRatio`` ไม่อ่านแล้ว: เวอร์ชันที่ pin คืน ``None`` ทุกกอง และยังไม่เคย
+    มีใครวัดหน่วยของมันได้ — ช่องที่ไม่รู้หน่วยห้ามเข้าเลขคะแนน (บทเรียนเดียวกับ M15)
+    ถ้าอัปเวอร์ชัน yfinance ต้องวัดหน่วยใหม่แล้วแก้ที่ฟังก์ชันนี้จุดเดียว
     """
     try:
         info = yf.Ticker(ticker).info or {}
     except Exception:
         return None
-    raw = info.get("annualReportExpenseRatio")
-    if raw is None:
-        raw = info.get("netExpenseRatio")
+    raw = info.get("netExpenseRatio")
     if raw is None:
         return None
-    value = _safe_float(raw, -1.0)
-    if value < 0:
-        return None
-    pct = value * 100.0
-    if pct > _MAX_PLAUSIBLE_EXPENSE_RATIO_PCT:
+    pct = _safe_float(raw, -1.0)
+    if pct < 0 or pct > _MAX_PLAUSIBLE_EXPENSE_RATIO_PCT:
         return None
     return round(pct, 3)
 

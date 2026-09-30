@@ -16,6 +16,8 @@ import pytest
 
 from analysis.llm import LLMDisabledError
 from backend.services import rebalance_service
+from portfolio import targets as targets_module
+from portfolio.targets import RISK_PROFILES
 
 # ---------------------------------------------------------------------------
 # ฉากจำลอง: พอร์ต moderate (VOO .35 / SCHD .25 / QQQM .20 / XLV .10 / GLDM .10)
@@ -36,7 +38,15 @@ HOLDINGS = [
 # ไม่ใช่ preset ดิบใน rebalance_service อีกต่อไป · ค่าที่ได้กับ config ดีฟอลต์
 # (risk_profile=moderate, target_weights ว่าง, 5 ticker) เท่ากับ preset moderate เป๊ะ
 # ตัวเลขที่ตรึงไว้ในไฟล์นี้จึงไม่เปลี่ยน
-TARGET = rebalance_service.resolve_target_weights("moderate")
+# ไฟล์นี้ตรวจกลไก rebalance บนสัดส่วน preset ที่รู้คำตอบ — ไม่เรียก resolve_target_weights()
+# ระดับโมดูลอีกแล้ว: ตั้งแต่ ERC เป็นค่าเริ่มต้น (2026-09-30) บรรทัดนั้นดึงราคาจริงตอน collect
+TARGET = dict(RISK_PROFILES["moderate"])
+
+
+@pytest.fixture(autouse=True)
+def _preset_weighting(monkeypatch):
+    """compute_rebalance() อ่านเป้าหมายจาก targets.py — บังคับโหมด preset ให้ตรงกับ TARGET."""
+    monkeypatch.setattr(targets_module, "get_weighting_method", lambda: "preset")
 FX_RATE = 35.0
 
 

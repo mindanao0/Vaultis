@@ -198,6 +198,7 @@ class TestNormalResponse:
             llm.chat_text("system", "user", user_initiated=True)
 
 
+@pytest.mark.usefixtures("fake_erc")  # แผนจัดสรรผ่าน ERC (ค่าเริ่มต้น) — ไม่ยิงเน็ต
 class TestCallersSurviveRuntimeError:
     """``LLMDisabledError`` เป็นลูกของ ``RuntimeError`` — ที่ไหน catch เฉพาะตัวลูก
     จะไม่ครอบคลุมความล้มเหลวจริงของ LLM งานอัตโนมัติต้องไม่พังทั้งงาน

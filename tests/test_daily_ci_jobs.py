@@ -701,7 +701,7 @@ class TestSchedulerResilience:
         """งานที่พังต้องถูกกันไว้ที่ตัวมันเอง ไม่ลามไปหยุดงานอื่น"""
         import schedule as schedule_lib
 
-        def check_alerts():  # ชื่อเดิม — ``_names()`` ใน test_scheduler_startup อ่านจาก __name__
+        def check_alerts(**_kw):  # ชื่อเดิม — ``_names()`` ใน test_scheduler_startup อ่านจาก __name__
             raise RuntimeError("อ่านคลัง alert ไม่ได้")
 
         monkeypatch.setattr(scheduler_main, "check_alerts", check_alerts)

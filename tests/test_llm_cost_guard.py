@@ -84,6 +84,7 @@ class TestSingleProvider:
         assert llm.ANTHROPIC_MODEL in llm._MODEL_PRICES_USD_PER_MTOK
 
 
+@pytest.mark.usefixtures("fake_erc")  # แผนจัดสรรผ่าน ERC (ค่าเริ่มต้น) — ไม่ยิงเน็ต
 class TestAutomaticPathsAreFree:
     """เส้นทางอัตโนมัติต้องทำงานต่อได้ **โดยไม่เรียก LLM** และยังให้ตัวเลขครบ."""
 
@@ -166,6 +167,7 @@ class TestAutomaticPathsAreFree:
         assert "ข้าม" in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("fake_erc")
 class TestMonthlyAiSwitch:
     """VAULTIS_MONTHLY_AI เปิด AI ให้แผน DCA ต้นเดือนงานเดียว — ดีฟอลต์ต้องไม่จ่าย."""
 
@@ -203,13 +205,18 @@ class TestMonthlyAiSwitch:
         assert ai_advisor.monthly_ai_enabled() is False
 
     def test_dca_reminder_never_requests_explanation(self, monkeypatch):
-        """reminder ใช้แค่ allocation — เปิด AI ทุกสวิตช์แล้วก็ต้องไม่ขอคำอธิบาย."""
+        """reminder ใช้แค่ allocation — เปิด AI ทุกสวิตช์แล้วก็ต้องไม่ขอคำอธิบาย.
+
+        วัน DCA = 15: reminder วันที่ 14 ยังแนบแผนเอง (วัน DCA = 1 ไม่แนบ เพราะแผนต้นเดือน
+        ส่งเช้าวันที่ 1 อยู่แล้ว — ดู tests/test_discord_dedup.py)
+        """
         monkeypatch.setenv("VAULTIS_MONTHLY_AI", "1")
         monkeypatch.setenv("VAULTIS_LLM_AUTO", "1")
         main, calls = self._spy_advice(monkeypatch)
+        monkeypatch.setattr(main, "load_config", lambda: {"dca": {"monthly_budget_thb": 5000, "day_of_month": 15}})
         from datetime import datetime
 
-        monkeypatch.setattr(main, "_now_bangkok", lambda: datetime(2026, 9, 30, 8, 0, tzinfo=main.BANGKOK_TZ))
+        monkeypatch.setattr(main, "_now_bangkok", lambda: datetime(2026, 9, 14, 8, 0, tzinfo=main.BANGKOK_TZ))
         monkeypatch.setattr(main, "get_today_fx_rate_thb", lambda: 33.0)
         monkeypatch.setattr(main, "send_dca_reminder", lambda **k: {"success": True})
         main.check_and_send_dca_reminder("https://discord.invalid/webhook")

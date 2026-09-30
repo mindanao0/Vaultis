@@ -68,7 +68,17 @@ class TestApiKeyGuard:
 
 
 class TestTargetWeights:
-    """สัดส่วนเป้าหมายต้องมาจากแหล่งเดียว — เดิมมี 2 ชุดที่ไม่ตรงกัน."""
+    """สัดส่วนเป้าหมายต้องมาจากแหล่งเดียว — เดิมมี 2 ชุดที่ไม่ตรงกัน.
+
+    คลาสนี้ตรวจกลไกของสูตร preset (ทางเลือกใน Settings) — ERC ที่เป็นค่าเริ่มต้นตั้งแต่
+    2026-09-30 ตรวจที่ tests/test_erc_weights.py
+    """
+
+    @pytest.fixture(autouse=True)
+    def _preset(self, monkeypatch):
+        from portfolio import targets as targets_module
+
+        monkeypatch.setattr(targets_module, "get_weighting_method", lambda: "preset")
 
     def test_weights_sum_to_one(self):
         weights = get_target_weights(["VOO", "SCHD", "QQQM", "XLV", "GLDM"])

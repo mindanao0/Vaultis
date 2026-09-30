@@ -178,6 +178,63 @@ def _isolate_user_data_files(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_erc_price_fetch(request, monkeypatch):
+    """สัดส่วนฐานแบบ ERC (ค่าเริ่มต้นตั้งแต่ 2026-09-30) ดึงราคาจริงทุกครั้งที่คำนวณ.
+
+    เทสต์ที่ไม่ได้ติด ``pytest.mark.network`` ห้ามไปถึงการดึงนั้น — ตอนเปลี่ยนเป็นค่าเริ่มต้น
+    เทสต์ของสูตร preset ที่ไม่ได้ระบุ ``weighting_method`` ได้น้ำหนัก ERC จากตลาดจริงไปเทียบ
+    และสองไฟล์ที่เรียก ``resolve_target_weights()`` ระดับโมดูลยิงเน็ตตั้งแต่ตอน collect
+    ⇒ โยน AssertionError (ไม่ใช่ ValueError ที่ targets.py แปลงเป็น "ดึงราคาไม่ได้" แล้วกลืน)
+    เทสต์ที่ต้องการ ERC ให้สตับ ``portfolio.risk_weights.compute_erc_weights`` เอง
+    """
+    if request.node.get_closest_marker("network"):
+        yield
+        return
+    import portfolio.risk_weights as risk_weights
+
+    def _blocked(tickers, sector_cap=False):
+        raise AssertionError(
+            f"เทสต์นี้ไปถึงการดึงราคาจริงของ ERC ({', '.join(tickers)}) — สตับ "
+            "portfolio.risk_weights.compute_erc_weights หรือตั้ง weighting_method = preset"
+        )
+
+    monkeypatch.setattr(risk_weights, "compute_erc_weights", _blocked)
+
+    # ข้อมูลเซกเตอร์ของกอง (funds_data) ก็เป็น network เหมือนกัน — แผนรายเดือนเรียกมันเพื่อเตือน
+    # ความกระจุกตัว ``_fund_data`` มีสัญญาว่า "ไม่ throw คืนเหตุผลแทน" จึงคืนเหตุผลตามสัญญา
+    import portfolio.lookthrough as lookthrough
+
+    monkeypatch.setattr(
+        lookthrough, "_fund_data", lambda symbol: (None, None, "ออฟไลน์ในชุดเทสต์ — สตับ _fund_data เอง")
+    )
+    yield
+
+
+@pytest.fixture
+def fake_erc(monkeypatch):
+    """ERC แบบออฟไลน์สำหรับเทสต์ที่แค่ต้องให้เส้นทางจริง (ค่าเริ่มต้น ERC) เดินได้.
+
+    น้ำหนักเท่ากันทุกกอง + meta ว่าง — ไม่ใช่ตัวเลขของตลาดจริง เทสต์ที่ตรวจตัวเลข ERC
+    ต้องสตับเอง (ดู tests/test_erc_weights.py) · คืนลิสต์ tickers ที่ถูกขอคำนวณ
+    """
+    import portfolio.risk_weights as risk_weights
+
+    calls: list[tuple[str, ...]] = []
+
+    def _equal(tickers, sector_cap=False):
+        calls.append(tuple(tickers))
+        n = len(tickers)
+        return {
+            "weights": {t: 1.0 / n for t in tickers},
+            "risk_share": {t: 1.0 / n for t in tickers},
+            "meta": {},
+        }
+
+    monkeypatch.setattr(risk_weights, "compute_erc_weights", _equal)
+    return calls
+
+
+@pytest.fixture(autouse=True)
 def _isolate_ttl_caches():
     """ล้าง TTL cache ทุกตัวก่อน-หลังทุกเทสต์ — กันผลลัพธ์รั่วข้ามเคส.
 

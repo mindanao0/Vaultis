@@ -90,7 +90,7 @@ def stub_env(monkeypatch, tmp_path):
         json.dumps(
             {
                 "etf": {"tickers": ["VOO", "SCHD", "QQQM", "XLV", "GLDM"]},
-                "portfolio": {"risk_profile": "moderate", "target_weights": {}},
+                "portfolio": {"weighting_method": "preset", "risk_profile": "moderate", "target_weights": {}},
             },
             ensure_ascii=False,
         ),

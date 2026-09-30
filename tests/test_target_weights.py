@@ -54,7 +54,12 @@ def configured(tmp_path, monkeypatch):
             json.dumps(
                 {
                     "etf": {"tickers": list(tickers or FIVE)},
-                    "portfolio": {"risk_profile": profile, "target_weights": target_weights},
+                    # ไฟล์นี้ตรวจสูตร preset — ERC (ค่าเริ่มต้น) มีเทสต์ของตัวเองที่ test_erc_weights.py
+                    "portfolio": {
+                        "weighting_method": "preset",
+                        "risk_profile": profile,
+                        "target_weights": target_weights,
+                    },
                 },
                 ensure_ascii=False,
             ),

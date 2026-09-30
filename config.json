@@ -13,6 +13,7 @@
     ]
   },
   "portfolio": {
+    "weighting_method": "erc",
     "risk_profile": "moderate",
     "target_weights": {}
   },
