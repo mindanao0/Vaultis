@@ -1,0 +1,495 @@
+<title>สูตร DAR-DCA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~70ch) with full-width figures; verdict first, evidence after, method last. */
+:root {
+  --bg: #f4f6f8;
+  --surface: #fcfcfd;
+  --ink: #10151c;
+  --ink-2: #454e5c;
+  --muted: #778092;
+  --rule: #dfe3e9;
+  --rule-strong: #c5ccd6;
+  --accent: #2a78d6;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --good: #0ca30c; --good-ink: #006300; --crit: #d03b3b; --warn: #fab219;
+  --good-wash: rgba(12,163,12,.10); --crit-wash: rgba(208,59,59,.10); --accent-wash: rgba(42,120,214,.09);
+  --f-display: "Bai Jamjuree", "IBM Plex Sans Thai", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans Thai", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1015; --surface: #151a21; --ink: #eef1f5; --ink-2: #b6beca; --muted: #8b94a4;
+    --rule: #262d37; --rule-strong: #353e4a; --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --good-ink: #0ca30c; --good-wash: rgba(12,163,12,.16); --crit-wash: rgba(208,59,59,.18); --accent-wash: rgba(57,135,229,.14);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1015; --surface: #151a21; --ink: #eef1f5; --ink-2: #b6beca; --muted: #8b94a4;
+  --rule: #262d37; --rule-strong: #353e4a; --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --good-ink: #0ca30c; --good-wash: rgba(12,163,12,.16); --crit-wash: rgba(208,59,59,.18); --accent-wash: rgba(57,135,229,.14);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 16px; line-height: 1.7; }
+.page { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; display: grid; gap: 44px; }
+.col { max-width: 72ch; min-width: 0; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; line-height: 1.25; margin: 0; }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.5rem; font-weight: 600; }
+h3 { font-size: 1.1rem; font-weight: 600; }
+p { margin: 0; }
+.stack { display: grid; gap: 14px; }
+.eyebrow { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.lede { font-size: 1.12rem; color: var(--ink-2); }
+.muted { color: var(--muted); }
+.small { font-size: .9rem; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+code, .mono { font-family: var(--f-mono); font-size: .92em; }
+strong { font-weight: 600; }
+
+/* verdict */
+.verdict { background: var(--surface); border: 1px solid var(--rule); border-radius: 14px; padding: 22px; display: grid; gap: 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: .95rem; }
+.chip.good { background: var(--good-wash); color: var(--good-ink); }
+.chip.crit { background: var(--crit-wash); color: var(--crit); }
+.chip svg { flex: none; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.tile { border-top: 2px solid var(--rule-strong); padding-top: 10px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.tile .v { font-family: var(--f-body); font-size: 2rem; font-weight: 600; line-height: 1.15; }
+.tile .l { color: var(--ink-2); font-size: .92rem; }
+.tile.good { border-top-color: var(--good); }
+.tile.crit { border-top-color: var(--crit); }
+.bottomline { font-size: 1.05rem; }
+
+/* figures */
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 18px 12px; display: grid; gap: 10px; min-width: 0; }
+figcaption { color: var(--ink-2); font-size: .92rem; }
+.fig-title { font-weight: 600; font-size: 1rem; color: var(--ink); }
+.chart { position: relative; width: 100%; min-width: 0; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--muted); font-family: var(--f-body); font-size: 12px; }
+.chart .lab { fill: var(--ink-2); font-size: 12.5px; font-weight: 500; }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .base { stroke: var(--rule-strong); stroke-width: 1; }
+.chart .cross { stroke: var(--rule-strong); stroke-width: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .9rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.key-line { width: 18px; height: 2px; border-radius: 2px; display: inline-block; }
+.key-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 8px; padding: 8px 10px; font-size: .85rem; line-height: 1.45; box-shadow: 0 6px 20px rgba(0,0,0,.12); min-width: 150px; z-index: 5; }
+.tip .t-h { color: var(--muted); font-size: .8rem; margin-bottom: 2px; }
+.tip .row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.tip .row b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.tip .row span { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+.multiples { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.multiples h4 { margin: 0 0 4px; font-size: .95rem; font-weight: 600; font-family: var(--f-body); }
+
+/* tables */
+.tbl-wrap { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 150px; }
+thead th { color: var(--muted); font-weight: 500; font-size: .82rem; border-bottom: 1px solid var(--rule-strong); }
+tr.hl td { background: var(--accent-wash); }
+.pos { color: var(--good-ink); }
+.neg { color: var(--crit); }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: .8rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+.pill.good { background: var(--good-wash); color: var(--good-ink); }
+.pill.crit { background: var(--crit-wash); color: var(--crit); }
+.pill.neu { background: var(--accent-wash); color: var(--ink-2); }
+details { border-top: 1px solid var(--rule); padding-top: 8px; }
+summary { cursor: pointer; color: var(--ink-2); font-size: .9rem; }
+
+/* formula */
+.formula { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 18px; display: grid; gap: 14px; min-width: 0; }
+.formula pre { margin: 0; overflow-x: auto; font-family: var(--f-mono); font-size: .86rem; line-height: 1.65; color: var(--ink); background: var(--bg); border-radius: 8px; padding: 14px; }
+.steps { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+.note { border-left: 3px solid var(--rule-strong); padding: 4px 0 4px 14px; color: var(--ink-2); }
+.note.warn { border-left-color: var(--warn); }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; align-items: start; }
+.opts { display: grid; gap: 12px; }
+.opt { background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 16px; display: grid; gap: 6px; }
+.opt h3 { font-size: 1.02rem; }
+.hash { font-family: var(--f-mono); font-size: .78rem; color: var(--ink-2); word-break: break-all; }
+ul.src { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: .92rem; }
+@media (max-width: 560px) {
+  .page { padding-inline: 16px; gap: 36px; }
+  .verdict, .formula, figure { padding: 14px; }
+  .tile .v { font-size: 1.7rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<main class="page">
+  <header class="stack col">
+    <div class="eyebrow">Vaultis · งานวิจัยสูตรแบ่งเงิน DCA · 30 ก.ย. 2026</div>
+    <h1>สูตร DAR-DCA</h1>
+    <p class="lede">สูตรแบ่งเงิน DCA รายเดือนที่คิดใหม่หมด ไม่ผูกกับชื่อกองใด ออกแบบบนข้อมูลตลาดสหรัฐ 1926–1974 ล็อกสูตรก่อนทดสอบ แล้วยืนยันบนข้อมูล 1975–2026 ที่ไม่เคยเปิดดู เป้าหมายคือ <strong>เงินปลายทางมากที่สุด</strong> ภายใต้กติกา ซื้อทุกกองทุกเดือน · ห้ามขาย · ลงเงินครบทุกเดือน</p>
+  </header>
+
+  <section class="verdict" aria-labelledby="v2-h">
+    <h2 id="v2-h">ล่าสุด: รุ่น 2 ผ่านการยืนยันรอบ 2</h2>
+    <div class="chips">
+      <span class="chip good"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>ผ่านทุกเกณฑ์ที่ล็อกไว้ (13:00 น. 30 ก.ย. 2026)</span>
+    </div>
+    <p class="col">หลังรอบ 1 พบว่าสูตรเทเงินเข้าทองคำตลอดช่วงทองร่วงยาว รุ่น 2 จึงเพิ่ม <strong>เพดานต่อกอง 1.5 เท่าของส่วนเท่ากัน</strong> (30% เมื่อมี 5 กอง) ทุกอย่างอื่นเหมือนรุ่น 1 แล้วล็อกใหม่และทดสอบบนข้อมูลที่ไม่เคยเปิดดู คือดัชนีหุ้น 20 ประเทศ และสินค้าโภคภัณฑ์ 9 ชนิด (เงิน แพลทินัม ทองแดง น้ำมัน ฯลฯ) ช่วงปี 1990–2025</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>ชุดทดสอบ (DCA 20 ปี เทียบแบ่งเท่ากัน)</th><th>รุ่น 1</th><th>รุ่น 2</th><th>เกณฑ์</th></tr></thead>
+        <tbody>
+          <tr><td>ดัชนี 20 ประเทศ (หลัก) · เฉลี่ย / ชนะ / 10% แย่สุด</td><td>+1.06% / 69% / −4.0%</td><td class="pos">+1.24% / 75% / −1.6%</td><td>ชนะ ✓</td></tr>
+          <tr><td>ส่วนเกินต่อปี · CI 95%</td><td>+0.09% [−0.21, +0.39]</td><td class="pos">+0.11% [−0.10, +0.32]</td><td>ไม่แพ้ ✓ (&gt; −0.25)</td></tr>
+          <tr><td>4 ประเทศ + สินค้าโภคภัณฑ์ 1 ตัว · เฉลี่ย / ชนะ / 10% แย่สุด</td><td>+2.17% / 75% / −4.0%</td><td class="pos">+2.44% / 81% / −1.8%</td><td>ไม่ถึงเส้นยับยั้ง ✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="bottomline col"><strong>สถานะตอนนี้:</strong> รุ่น 2 ใช้งานเป็น<strong>หน้าทดลองแยก</strong>ในแอป มีพอร์ตของตัวเองที่เริ่มจากศูนย์ ส่งแผนเข้า Discord ทุกวันที่ 1 และมีพอร์ตเงาแบ่งเท่ากันไว้เทียบผลจริง แผนหลักแบบ ERC ไม่ถูกแตะ ความได้เปรียบที่คาดไว้เล็กมาก (+0.1–0.2%/ปี) และยังแยกจากดวงทางสถิติไม่ได้ · hash ของการล็อกรอบ 2: <span class="hash">PREREG_v2.md bb9a301a…6d1a · dar_formula_v2.py b85f0c18…5532</span></p>
+  </section>
+
+  <section class="verdict" aria-labelledby="v-h">
+    <h2 id="v-h">รอบ 1 (รุ่นไม่มีเพดาน): คำตัดสินตามเกณฑ์ที่ล็อกไว้</h2>
+    <div class="chips">
+      <span class="chip good"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>การทดสอบหลัก: ผ่านทั้งเกณฑ์ชนะและไม่แพ้</span>
+      <span class="chip crit"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>สิทธิ์ยับยั้งทำงาน: ชุดที่มีทองคำ</span>
+    </div>
+    <div class="tiles">
+      <div class="tile good"><div class="v">+2.62%</div><div class="l">เงินปลายทางของ DCA 20 ปี เทียบการแบ่งเท่ากัน · หุ้นผสม 1975–2026 · ชนะ 74% ของกรณี</div></div>
+      <div class="tile good"><div class="v">−0.12%/ปี</div><div class="l">ขอบล่างช่วงความเชื่อมั่น 95% ของส่วนเกินต่อปี · เกณฑ์ไม่แพ้คือสูงกว่า −0.25%</div></div>
+      <div class="tile crit"><div class="v">−2.67%</div><div class="l">ค่าเฉลี่ยเมื่อทุกจักรวาลมีทองคำ · 10% แย่สุดเสียเกิน 21% · เส้นยับยั้งคือ −2%</div></div>
+    </div>
+    <p class="bottomline col"><strong>สรุป:</strong> ตามกติกาที่ล็อกก่อนทดสอบ DAR-DCA <strong>เป็นค่าเริ่มต้นไม่ได้</strong> เป็นได้แค่โหมดเสริม เหตุผลคือพอร์ตของคุณมี GLDM และสูตรเคยซื้อทองหนักตลอดช่วงที่ทองร่วงยาว 20 ปี นอกจากนี้ส่วนที่ได้เปรียบเกือบทั้งหมดเกิดช่วง 1975–2000 ส่วนช่วง 2001–2026 แทบเป็นศูนย์</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s1">
+    <div class="stack col">
+      <div class="eyebrow">สิ่งที่ค้นพบ</div>
+      <h2 id="s1">เงิน DCA ถูกถือหลายปี สัญญาณที่ใช้จึงต้องแม่นขึ้นตามเวลา</h2>
+      <p>เงินที่ซื้อเดือนนี้จะอยู่ในพอร์ตไปอีก 10–20 ปีเพราะห้ามขาย สิ่งที่กำหนดเงินปลายทางจึงเป็นผลต่างสะสมตลอดช่วงที่ถือ ไม่ใช่ผลของเดือนหน้า กราฟด้านล่างวัดว่าสัญญาณแต่ละแบบทำนาย "ผลต่างสะสม" ได้ดีแค่ไหนเมื่อถือนานขึ้น</p>
+    </div>
+    <figure>
+      <div class="fig-title">ความแม่นของสัญญาณ (rank IC) ตามระยะเวลาที่ถือ · หุ้นสหรัฐ 17 อุตสาหกรรม 1926–1974</div>
+      <div class="legend" id="legA"></div>
+      <div class="chart" id="chartA" role="img" aria-label="กราฟเส้นสองเส้น momentum สูงสุดที่ 6 เดือนแล้วติดลบหลัง 60 เดือน ขณะที่ value 5 ปีใกล้ศูนย์ช่วงแรกแล้วขึ้นไปถึง 0.17 ที่ 120 เดือน"></div>
+      <figcaption>momentum (ผลตอบแทน 12 เดือน) ทำนายได้ดีช่วง 1–12 เดือน แล้วกลับทิศหลัง 5 ปี ส่วน value 5 ปี (ซื้อกองที่แพ้มา) แทบไม่ทำนายอะไรในระยะสั้น แต่แม่นขึ้นเรื่อย ๆ จนถึง 10 ปี ในข้อมูลยืนยัน 1975–2026 การเอียงเงิน DCA ตาม momentum ทำให้เงินปลายทาง 20 ปี<strong>แพ้</strong>การแบ่งเท่ากันใน 67–77% ของกรณี</figcaption>
+      <details><summary>ดูเป็นตาราง</summary><div class="tbl-wrap" id="tblA"></div></details>
+    </figure>
+    <p class="note col">ข้อนี้อธิบายได้ว่าทำไมคะแนนเดิมของโปรเจกต์ (RSI, MA, momentum 1–3 เดือน) ที่ใช้เอียงเงิน DCA ถึงไม่เคยผ่านด่าน edge สัญญาณพวกนั้นหมดฤทธิ์ภายในไม่กี่เดือน แต่เงินที่ซื้อตามมันถูกถือไว้หลายปี</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s2">
+    <div class="stack col">
+      <div class="eyebrow">ตัวสูตร</div>
+      <h2 id="s2">ซื้อกองที่ตามหลังผิดปกติ เมื่อเทียบกับนิสัยของมันเอง</h2>
+      <p>ถ้าซื้อกองที่แพ้มา 5 ปีแบบธรรมดา จะได้ผลดีกับกลุ่มอุตสาหกรรม แต่พังกับกองที่คัดหุ้นตามลักษณะอย่างกองปันผล เพราะกองพวกนั้นแพ้หรือชนะเป็นนิสัยถาวร (ในช่วงออกแบบได้ −3.8% และชนะแค่ 15%) DAR แก้ด้วยการหักนิสัยเดิมออก คือเทียบผลงาน 5 ปีล่าสุดกับจังหวะการเดินของกองนั้นเองใน 10 ปีก่อนหน้า</p>
+    </div>
+    <div class="two">
+      <div class="formula">
+        <h3>นิยาม (ใช้ราคาปิดสิ้นเดือนแบบรวมปันผล ก่อนเดือนที่ซื้อ)</h3>
+<pre>AMP = ln(ค่าเฉลี่ยราคา 54–66 เดือนก่อน) − ln(ราคาล่าสุด)
+OLD = ln(ราคา 60 เดือนก่อน) − ln(ราคา 180 เดือนก่อน)
+DAR = AMP + 0.5 × OLD
+
+z   = (DAR − ค่าเฉลี่ยของทุกกอง) / max(ส่วนเบี่ยงเบน, 0.15)
+w   = max(1 + z, 0) / N   → ปรับให้รวม 100% และ
+      ทุกกอง ≥ 0.2 / N</pre>
+        <p class="small muted">กองที่ประวัติไม่ถึง 181 เดือน (นับรวมกองพี่ที่ตามดัชนีเดียวกัน เช่น QQQM←QQQ, GLDM←GLD) ได้ z = 0 คือส่วนเท่ากัน ไม่เดาสัญญาณให้</p>
+      </div>
+      <div class="stack">
+        <ol class="steps">
+          <li><strong>AMP</strong> คือกองนี้แพ้หรือชนะมาแค่ไหนใน 5 ปี (นิยามจาก Asness, Moskowitz &amp; Pedersen 2013)</li>
+          <li><strong>OLD</strong> คือจังหวะการเดินใน 10 ปีก่อนหน้านั้น ถ้ากองโตเร็วเป็นนิสัยเท่ากับ μ ต่อปี AMP ≈ −5μ และ OLD ≈ 10μ ครึ่งหนึ่งของ OLD จึงหักล้าง AMP พอดี เหลือเฉพาะส่วนที่ผิดปกติ</li>
+          <li>แปลงเป็นคะแนนมาตรฐานภายในกลุ่มกองของคุณ ถ้ากองเกือบเหมือนกัน (เช่น VOO กับ SPY) เพดาน 0.15 จะกันไม่ให้สูตรเทเงินเพราะสัญญาณรบกวน</li>
+          <li>กองที่ตามหลังผิดปกติได้เงินมากขึ้น ทุกกองได้อย่างน้อย 20% ของส่วนเท่ากัน คือ 200 บาทจาก 5,000 บาทเมื่อมี 5 กอง</li>
+        </ol>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>ค่าคงที่</th><th>ค่า</th><th>มาจาก</th></tr></thead>
+            <tbody>
+              <tr><td>หน้าต่าง 5 ปี (เฉลี่ยเดือนที่ 54–66)</td><td class="mono">5y</td><td>งานวิจัย</td></tr>
+              <tr><td>สัมประสิทธิ์หักนิสัย</td><td class="mono">0.5</td><td>พีชคณิต 5/10</td></tr>
+              <tr><td>ความแรงการเอียง</td><td class="mono">1.0</td><td>ข้อมูลช่วงออกแบบ</td></tr>
+              <tr><td>ขั้นต่ำต่อกอง</td><td class="mono">0.2/N</td><td>กติกาซื้อทุกกอง</td></tr>
+              <tr><td>ส่วนเบี่ยงเบนขั้นต่ำ</td><td class="mono">0.15</td><td>ข้อมูลช่วงออกแบบ</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="stack" aria-labelledby="s3">
+    <div class="stack col">
+      <div class="eyebrow">ผลยืนยัน · 1975-01 ถึง 2026-08 · 200 จักรวาลสุ่ม ชุดละ 5 กอง</div>
+      <h2 id="s3">หุ้นผ่าน ทองไม่ผ่าน</h2>
+      <p>แต่ละจุดคือเงินปลายทางเฉลี่ยของ DCA 20 ปี เทียบการแบ่งเท่ากัน (เริ่มทุก 6 เดือน รวม 64 จุดเริ่ม) สูตรจริงคือ DAR ส่วนอีกสองแบบเป็นคู่เทียบที่บอกล่วงหน้าไว้ว่าจะวัด</p>
+    </div>
+    <figure>
+      <div class="fig-title">เงินปลายทาง DCA 20 ปี เทียบการแบ่งเท่ากัน (%)</div>
+      <div class="legend" id="legC"></div>
+      <div class="chart" id="chartC" role="img" aria-label="แผนภาพจุด 5 กลุ่มข้อมูล สามสูตรต่อกลุ่ม"></div>
+      <figcaption>DAR เป็นบวกใน 4 จาก 5 กลุ่ม แต่ติดลบในกลุ่มที่มีทองคำทุกจักรวาล value 5 ปีแบบไม่หักนิสัยพังในกลุ่มสไตล์ (−2.21%) ตรงตามที่คาดไว้ก่อนทดสอบ ส่วน momentum ติดลบในทุกกลุ่มอุตสาหกรรม</figcaption>
+    </figure>
+    <div class="tbl-wrap" id="tblPools"></div>
+    <p class="small muted col">"ส่วนเกิน/ปี" มาจาก DCA ต่อเนื่องหนึ่งเส้นต่อจักรวาลตั้งแต่ 1975-01 ถึง 2026-08 (620 เดือน) เฉลี่ยข้ามจักรวาล ช่วงความเชื่อมั่นใช้ Newey–West 24 lag · การตรวจว่าตัวจำลองกับสูตรอ้างอิงให้น้ำหนักตรงกัน: ต่างกันไม่เกิน 1.4×10⁻¹⁵ ทุกกลุ่ม</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s4">
+    <div class="stack col">
+      <div class="eyebrow">วิเคราะห์หลังเห็นผล · ไม่ใช้เปลี่ยนคำตัดสิน</div>
+      <h2 id="s4">ทองพังเพราะสูตรอ่านบูมในอดีตว่าเป็นนิสัยปกติ</h2>
+      <p>ทองขึ้นแรงช่วงทศวรรษ 1970 แล้วร่วงยาวตั้งแต่ปี 1980 ถึง 2001 พอถึงทศวรรษ 1980 ค่า OLD ของทองจึงเป็นบวกมาก สูตรเลยเห็นการร่วงเป็นการ "ตามหลังผิดปกติ" แล้วซื้อทองเกือบเต็มกำลังซ้ำทุกเดือน ขณะที่ทองร่วงต่ออีก 20 ปี DCA ที่เริ่มปี 1977–1988 จึงเสียหนักที่สุด</p>
+    </div>
+    <figure>
+      <div class="fig-title">เงินปลายทาง DCA 20 ปีของ DAR เทียบการแบ่งเท่ากัน แยกตามปีที่เริ่ม (%)</div>
+      <div class="multiples">
+        <div><h4>หุ้นผสม (P1)</h4><div class="chart" id="chartB1" role="img" aria-label="เส้นอยู่ระหว่างลบ 1.6 ถึงบวก 6.8 เปอร์เซ็นต์"></div></div>
+        <div><h4>หุ้น + ทองคำ (S4)</h4><div class="chart" id="chartB2" role="img" aria-label="เส้นดิ่งถึงลบ 25 เปอร์เซ็นต์สำหรับจุดเริ่มปี 1982 ถึง 1984 แล้วกลับเป็นบวกหลังปี 1989"></div></div>
+      </div>
+      <figcaption>แกนตั้งของทั้งสองแผงใช้สเกลเดียวกัน หลุมลึกในแผงขวาคือ DCA ที่เริ่มช่วงปลายยุค 1970 ถึงกลางยุค 1980</figcaption>
+      <details><summary>ดูเป็นตาราง</summary><div class="tbl-wrap" id="tblB"></div></details>
+    </figure>
+    <p class="note warn col"><strong>สมมติฐานสำหรับรอบหน้า (ยังไม่ใช่ข้อพิสูจน์):</strong> ถ้าตั้งเพดานไม่ให้กองใดเกิน 1.5 เท่าของส่วนเท่ากัน ชุดทองจะเปลี่ยนจาก −2.67% เป็น +1.15% (10% แย่สุด −6.5%) และชุดหุ้นยังได้ +2.15% (ชนะ 79%) ตัวเลข 1.5 นี้เลือกหลังเห็นข้อมูลยืนยันแล้ว จึงต้องล็อกแล้วทดสอบใหม่บนข้อมูลที่ยังไม่เคยเปิดดู เช่นดัชนีหุ้นรายประเทศและสินค้าโภคภัณฑ์อื่น</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s5">
+    <div class="stack col">
+      <div class="eyebrow">ETF ของคุณ · ผ่านตัวทดสอบของโปรเจกต์เอง · เชิงพรรณนา</div>
+      <h2 id="s5">บน 5 กองของคุณ สูตรตามหลังการแบ่งเท่ากันเล็กน้อย</h2>
+      <p>ช่วงเวลาสั้นเกินกว่าจะแยกความต่างระดับนี้ออกจากดวงได้ และสูตรทำงานได้แค่บางส่วน เพราะต้องมีประวัติ 15 ปี (SCHD ยังไม่ครบเลยตลอดช่วง ส่วน GLD เพิ่งครบปลายปี 2019) ลงเดือนละ 1,000 ดอลลาร์ในทุกแขน</p>
+    </div>
+    <div class="tbl-wrap" id="tblEtf"></div>
+    <p class="small muted col">ช่วง proxy ใช้ QQQ แทน QQQM และ GLD แทน GLDM · ประวัติสัญญาณของ VOO ต่อด้วย SPY · "แผนปัจจุบัน" คือ ERC × คะแนนเอียง 0.6–1.4 ที่เพิ่งเป็นค่าเริ่มต้นวันนี้ · ความต่างต่อปีเป็นแบบจับคู่ (paired) เทียบการแบ่งเท่ากัน ไม่มีคู่ไหนแยกออกจากศูนย์ได้</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s6">
+    <div class="stack col">
+      <div class="eyebrow">ตัวอย่าง · ไม่ใช่คำแนะนำให้ซื้อ</div>
+      <h2 id="s6">ถ้าใช้ DAR กับแผนเดือนตุลาคม 2026</h2>
+      <p>คำนวณจากราคาปิดวันที่ 29 ก.ย. 2026 แทนราคาสิ้นเดือน งบ 5,000 บาท ปัดหลักร้อย</p>
+    </div>
+    <div class="tbl-wrap" id="tblPlan"></div>
+    <p class="small muted col">SCHD มีประวัติ 180 เดือน ขาดอีก 1 เดือนก็ครบ 181 จึงได้ส่วนกลางในรอบนี้ · สูตรจะตัดน้ำหนักติดลบทิ้งก่อนปรับให้รวม 100% กองที่ได้ส่วนกลางจึงได้ต่ำกว่า 20% เล็กน้อยเมื่อมีกองติดขั้นต่ำ</p>
+  </section>
+
+  <section class="stack" aria-labelledby="s7">
+    <div class="stack col">
+      <div class="eyebrow">ข้อเสนอ</div>
+      <h2 id="s7">สิ่งที่หลักฐานรองรับจริง</h2>
+    </div>
+    <div class="opts">
+      <div class="opt"><h3>1. ใช้ DAR เป็นการทดลองแยก ไม่แทนแผนหลัก (ทำแล้ว)</h3><p>รุ่น 2 ผ่านรอบ 2 แล้ว และตอนนี้รันเป็นหน้า DAR-DCA ที่มีพอร์ต สมุด และข้อความ Discord ของตัวเอง ส่วนแผน ERC หลักไม่ถูกแตะ การเทียบกับพอร์ตเงาแบ่งเท่ากันที่ใช้เงินชุดเดียวกัน จะบอกได้ว่าสูตรช่วยจริงไหม แต่ต้องใช้เวลาหลายปี</p></div>
+      <div class="opt"><h3>2. เลิกเอียงเงิน DCA ด้วยสัญญาณระยะสั้น</h3><p>ทั้งข้อมูลออกแบบและข้อมูลยืนยันบอกตรงกันว่าสัญญาณที่ทำนายได้ไม่กี่เดือนไม่ช่วยเงินปลายทางของ DCA ที่ห้ามขาย และแบบ momentum ทำให้แย่ลง ข้อนี้ตรงกับที่ด่าน edge ของโปรเจกต์วัดได้เองว่าคะแนนเอียงแยกไม่ออกจากศูนย์</p></div>
+      <div class="opt"><h3>3. ข้อได้เปรียบที่แน่นอนอยู่ที่ต้นทุน ไม่ใช่การทำนาย</h3><p>ปันผลจากกองสหรัฐถูกหักภาษี ณ ที่จ่าย 15% ตามสนธิสัญญาไทย–สหรัฐ คิดจากอัตราปันผลปัจจุบัน SCHD เสียราว 0.45%/ปี VOO 0.16% XLV 0.22% QQQM 0.07% GLDM 0 ถ้าสองกองเกือบเหมือนกัน กองที่ต้นทุนต่ำกว่าควรได้เงินมากกว่า รายงานนี้ยังไม่ได้ใส่ชั้นนี้เข้าสูตร</p></div>
+      <div class="opt"><h3>4. DAR รุ่น 2 (ทำแล้ว)</h3><p>เพิ่มเพดานต่อกอง ล็อกสูตรใหม่ แล้วทดสอบบนดัชนีหุ้นรายประเทศและสินค้าโภคภัณฑ์ที่ไม่เคยเปิดดู ผ่านทุกเกณฑ์ (ดูกล่องบนสุด) · ภาษีปันผล 15% แสดงไว้บนหน้า DAR เป็นข้อมูลประกอบ แต่ไม่ได้ขยับเงินในสูตร เพราะทดสอบย้อนหลังไม่ได้</p></div>
+    </div>
+  </section>
+
+  <section class="stack" aria-labelledby="s8">
+    <div class="stack col">
+      <div class="eyebrow">วิธีการ</div>
+      <h2 id="s8">ความโปร่งใสของการทดสอบ</h2>
+      <p>แบ่งข้อมูลก่อนเริ่มวิเคราะห์: ช่วง 1926–1974 ใช้ออกแบบ ส่วน 1975–2026, ทองคำ และ ETF ของคุณเก็บไว้ยืนยัน สูตรและเกณฑ์ถูกล็อกด้วย SHA-256 เมื่อ 2026-09-30 11:43 น. ก่อนรันผลยืนยันใด ๆ</p>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>ไฟล์</th><th style="text-align:left">SHA-256</th></tr></thead>
+        <tbody>
+          <tr><td>PREREG.md (เกณฑ์)</td><td class="hash" style="text-align:left;white-space:normal">fd1d24a3c86c4843a0cc8d5908e688856deb0b955f0f39ec096a53289a80630d</td></tr>
+          <tr><td>dar_formula.py (สูตร)</td><td class="hash" style="text-align:left;white-space:normal">775997e7c1757e3f757fe7707ef244239cfb79dab586fca9e2a9fb80d05bb058</td></tr>
+          <tr><td>conf_ff.py (ทดสอบยืนยัน)</td><td class="hash" style="text-align:left;white-space:normal">4ed52e7c2a3c3bb7f0039a404dff7ae22d66be43605e5e6c54e470bdc63a16bc</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="two">
+      <div class="stack">
+        <h3>ข้อจำกัด</h3>
+        <ul class="src">
+          <li>ใช้ผลตอบแทนก่อนภาษี ภาษีปันผล 15% ยังไม่อยู่ในการทดสอบ</li>
+          <li>ราคาทองก่อน 2004-12 เป็นค่าเฉลี่ยรายเดือน (World Bank) ทำให้ผลตอบแทนเรียบกว่าจริง</li>
+          <li>ค่าหน้าต่าง 5 ปีจากงานวิจัยถูกประมาณบนข้อมูลที่ทับกับช่วง 1975+ บางส่วน</li>
+          <li>คำว่า "ยังไม่มีใครคิด" พิสูจน์ไม่ได้ ที่บอกได้คือไม่พบสูตรแบบนี้ในงานที่ค้นเจอ ส่วนประกอบแต่ละชิ้นมีงานวิจัยรองรับ</li>
+        </ul>
+      </div>
+      <div class="stack">
+        <h3>ข้อมูลและงานวิจัย</h3>
+        <ul class="src">
+          <li><a href="https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html" target="_blank" rel="noopener">Kenneth French Data Library</a> — 17/49 อุตสาหกรรม, พอร์ต D/P, BE/ME, ขนาด×BM</li>
+          <li><a href="https://www.worldbank.org/en/research/commodity-markets" target="_blank" rel="noopener">World Bank Pink Sheet</a> — ราคาทองรายเดือน 1960+</li>
+          <li><a href="https://pages.stern.nyu.edu/~lpederse/papers/ValMomEverywhere.pdf" target="_blank" rel="noopener">Asness, Moskowitz &amp; Pedersen (2013) Value and Momentum Everywhere</a></li>
+          <li><a href="https://www.nber.org/papers/w15205" target="_blank" rel="noopener">Gârleanu &amp; Pedersen (2013) Dynamic Trading with Predictable Returns</a></li>
+          <li><a href="https://www.semanticscholar.org/paper/Mean-Reversion-across-National-Stock-Markets-and-Balvers-Wu/117557c2e70dc1947888b65fff477b5214c92247" target="_blank" rel="noopener">Balvers, Wu &amp; Gilliland (2000) Mean Reversion across National Stock Markets</a></li>
+          <li><a href="https://www.sciencedirect.com/science/article/abs/pii/S037842661630022X" target="_blank" rel="noopener">Long-term industry reversals (JBF)</a></li>
+          <li><a href="https://www.nber.org/papers/w18706" target="_blank" rel="noopener">Erb &amp; Harvey (2013) The Golden Dilemma</a></li>
+          <li><a href="https://www.anderson.ucla.edu/documents/areas/fac/finance/dollarcostave.pdf" target="_blank" rel="noopener">Brennan, Li &amp; Torous (2005) Dollar Cost Averaging</a></li>
+          <li><a href="https://www.irs.gov/pub/irs-trty/thailand.pdf" target="_blank" rel="noopener">สนธิสัญญาภาษีไทย–สหรัฐ (อัตราปันผล 15%)</a></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const DATA = {"pools":{"P1_mixed":{"starts":["1975-01","1975-07","1976-01","1976-07","1977-01","1977-07","1978-01","1978-07","1979-01","1979-07","1980-01","1980-07","1981-01","1981-07","1982-01","1982-07","1983-01","1983-07","1984-01","1984-07","1985-01","1985-07","1986-01","1986-07","1987-01","1987-07","1988-01","1988-07","1989-01","1989-07","1990-01","1990-07","1991-01","1991-07","1992-01","1992-07","1993-01","1993-07","1994-01","1994-07","1995-01","1995-07","1996-01","1996-07","1997-01","1997-07","1998-01","1998-07","1999-01","1999-07","2000-01","2000-07","2001-01","2001-07","2002-01","2002-07","2003-01","2003-07","2004-01","2004-07","2005-01","2005-07","2006-01","2006-07"],"DAR":{"roll_mean":2.62,"roll_median":2.98,"roll_win":74.1,"roll_p10":-3.95,"roll_p90":8.34,"cont_ann":0.163,"cont_lo":-0.122,"cont_hi":0.449,"sub1":0.346,"sub2":-0.022,"term_mean":0.87,"term_win":57.0,"by_start":[2.59,1.98,0.99,1.01,0.52,0.75,0.26,0.58,0.98,0.76,0.31,0.45,0.54,0.01,-0.98,-0.78,-1.2,-1.62,-0.78,-0.66,0.53,1.48,3.1,4.5,4.75,5.33,5.05,5.63,5.79,6.23,6.69,7.05,6.76,6.34,6.08,5.52,5.32,4.91,4.37,3.99,3.78,3.57,3.54,3.61,3.2,3.17,3.27,2.95,2.61,2.37,2.37,1.79,1.44,1.64,2.09,2.84,3.11,2.78,2.99,3.03,1.92,1.31,1.38,1.6]},"AMP_only":{"roll_mean":-0.29,"roll_median":0.98,"roll_win":55.3,"roll_p10":-10.55,"roll_p90":7.75,"cont_ann":-0.029,"cont_lo":-0.47,"cont_hi":0.412,"sub1":0.033,"sub2":-0.092,"term_mean":-5.93,"term_win":40.5},"MOM_12_1":{"roll_mean":-0.44,"roll_median":-0.87,"roll_win":33.2,"roll_p10":-3.18,"roll_p90":2.91,"cont_ann":0.097,"cont_lo":-0.07,"cont_hi":0.264,"sub1":0.14,"sub2":0.053,"term_mean":3.04,"term_win":57.0},"xcheck":1.1102230246251565e-15},"S1_ind17":{"starts":["1975-01","1975-07","1976-01","1976-07","1977-01","1977-07","1978-01","1978-07","1979-01","1979-07","1980-01","1980-07","1981-01","1981-07","1982-01","1982-07","1983-01","1983-07","1984-01","1984-07","1985-01","1985-07","1986-01","1986-07","1987-01","1987-07","1988-01","1988-07","1989-01","1989-07","1990-01","1990-07","1991-01","1991-07","1992-01","1992-07","1993-01","1993-07","1994-01","1994-07","1995-01","1995-07","1996-01","1996-07","1997-01","1997-07","1998-01","1998-07","1999-01","1999-07","2000-01","2000-07","2001-01","2001-07","2002-01","2002-07","2003-01","2003-07","2004-01","2004-07","2005-01","2005-07","2006-01","2006-07"],"DAR":{"roll_mean":3.46,"roll_median":4.14,"roll_win":78.0,"roll_p10":-3.85,"roll_p90":9.82,"cont_ann":0.261,"cont_lo":-0.122,"cont_hi":0.644,"sub1":0.495,"sub2":0.024,"term_mean":5.69,"term_win":76.5,"by_start":[5.25,4.94,4.4,4.69,4.22,4.42,3.29,2.42,2.16,1.49,1.7,1.95,-0.71,-2.67,-4.98,-4.94,-4.88,-5.2,-3.46,-3.26,-1.53,-0.49,1.38,2.19,1.87,2.65,2.56,2.84,2.61,3.64,4.33,5.22,5.41,5.62,6.18,6.03,6.04,6.26,6.1,5.64,6.31,6.63,6.81,6.18,5.45,5.37,5.19,4.82,4.41,4.26,4.37,3.83,3.4,3.85,4.63,5.52,5.73,6.61,7.06,7.95,7.25,6.78,7.03,6.53]},"AMP_only":{"roll_mean":2.9,"roll_median":3.78,"roll_win":70.0,"roll_p10":-6.69,"roll_p90":11.74,"cont_ann":0.27,"cont_lo":-0.205,"cont_hi":0.746,"sub1":0.544,"sub2":-0.007,"term_mean":5.18,"term_win":72.0},"MOM_12_1":{"roll_mean":-1.52,"roll_median":-1.92,"roll_win":22.6,"roll_p10":-4.53,"roll_p90":1.97,"cont_ann":-0.061,"cont_lo":-0.178,"cont_hi":0.057,"sub1":-0.122,"sub2":0.001,"term_mean":-1.87,"term_win":29.5},"xcheck":9.71445146547012e-16},"S2_ind49":{"starts":["1975-01","1975-07","1976-01","1976-07","1977-01","1977-07","1978-01","1978-07","1979-01","1979-07","1980-01","1980-07","1981-01","1981-07","1982-01","1982-07","1983-01","1983-07","1984-01","1984-07","1985-01","1985-07","1986-01","1986-07","1987-01","1987-07","1988-01","1988-07","1989-01","1989-07","1990-01","1990-07","1991-01","1991-07","1992-01","1992-07","1993-01","1993-07","1994-01","1994-07","1995-01","1995-07","1996-01","1996-07","1997-01","1997-07","1998-01","1998-07","1999-01","1999-07","2000-01","2000-07","2001-01","2001-07","2002-01","2002-07","2003-01","2003-07","2004-01","2004-07","2005-01","2005-07","2006-01","2006-07"],"DAR":{"roll_mean":1.19,"roll_median":2.3,"roll_win":63.0,"roll_p10":-8.95,"roll_p90":9.7,"cont_ann":0.181,"cont_lo":-0.087,"cont_hi":0.448,"sub1":0.414,"sub2":-0.056,"term_mean":2.18,"term_win":62.0,"by_start":[3.83,3.34,3.49,3.73,3.3,3.22,2.1,0.74,0.35,-0.63,-1.37,-2.18,-1.86,-2.49,-3.45,-2.66,-3.17,-3.84,-2.6,-2.66,-1.66,-0.32,0.49,0.77,0.49,0.28,-0.2,-1.22,0.51,0.44,-0.05,0.79,-0.38,0.19,1.43,2.11,1.89,2.24,1.42,0.97,0.98,1.57,1.91,1.93,1.44,1.59,1.66,1.83,2.0,2.37,2.41,2.73,2.95,2.98,3.79,3.59,3.01,4.06,4.72,4.93,4.67,4.04,4.44,3.25]},"AMP_only":{"roll_mean":3.72,"roll_median":3.79,"roll_win":67.3,"roll_p10":-8.64,"roll_p90":14.95,"cont_ann":0.326,"cont_lo":-0.106,"cont_hi":0.759,"sub1":0.844,"sub2":-0.199,"term_mean":4.33,"term_win":70.5},"MOM_12_1":{"roll_mean":-1.83,"roll_median":-1.94,"roll_win":28.9,"roll_p10":-6.63,"roll_p90":2.92,"cont_ann":-0.049,"cont_lo":-0.213,"cont_hi":0.115,"sub1":-0.109,"sub2":0.012,"term_mean":-1.43,"term_win":34.5},"xcheck":1.1102230246251565e-15},"S3_style":{"starts":["1975-01","1975-07","1976-01","1976-07","1977-01","1977-07","1978-01","1978-07","1979-01","1979-07","1980-01","1980-07","1981-01","1981-07","1982-01","1982-07","1983-01","1983-07","1984-01","1984-07","1985-01","1985-07","1986-01","1986-07","1987-01","1987-07","1988-01","1988-07","1989-01","1989-07","1990-01","1990-07","1991-01","1991-07","1992-01","1992-07","1993-01","1993-07","1994-01","1994-07","1995-01","1995-07","1996-01","1996-07","1997-01","1997-07","1998-01","1998-07","1999-01","1999-07","2000-01","2000-07","2001-01","2001-07","2002-01","2002-07","2003-01","2003-07","2004-01","2004-07","2005-01","2005-07","2006-01","2006-07"],"DAR":{"roll_mean":1.9,"roll_median":1.79,"roll_win":68.9,"roll_p10":-3.69,"roll_p90":8.09,"cont_ann":0.187,"cont_lo":-0.263,"cont_hi":0.637,"sub1":0.402,"sub2":-0.03,"term_mean":-0.47,"term_win":43.5,"by_start":[1.12,0.1,-1.35,-1.77,-2.33,-1.93,-1.16,0.56,2.15,1.97,1.21,0.84,2.04,2.26,1.59,1.32,0.48,-0.01,-0.04,-0.2,0.08,0.74,2.37,4.49,5.7,6.17,5.14,5.64,6.55,6.85,7.46,7.89,7.25,6.38,5.58,5.03,4.67,4.26,3.39,2.92,2.5,1.99,1.97,2.09,2.64,2.69,2.87,2.78,2.27,1.54,1.05,0.17,-0.23,-0.19,0.1,0.74,0.76,-0.18,-0.02,-0.79,-1.62,-2.41,-2.72,-1.84]},"AMP_only":{"roll_mean":-2.21,"roll_median":-0.16,"roll_win":48.8,"roll_p10":-12.3,"roll_p90":4.48,"cont_ann":-0.186,"cont_lo":-0.891,"cont_hi":0.518,"sub1":-0.217,"sub2":-0.155,"term_mean":-11.96,"term_win":14.5},"MOM_12_1":{"roll_mean":0.39,"roll_median":-0.3,"roll_win":41.9,"roll_p10":-1.64,"roll_p90":3.61,"cont_ann":0.166,"cont_lo":-0.088,"cont_hi":0.42,"sub1":0.263,"sub2":0.067,"term_mean":4.67,"term_win":76.0},"xcheck":1.4432899320127035e-15},"S4_mixed_gold":{"starts":["1975-01","1975-07","1976-01","1976-07","1977-01","1977-07","1978-01","1978-07","1979-01","1979-07","1980-01","1980-07","1981-01","1981-07","1982-01","1982-07","1983-01","1983-07","1984-01","1984-07","1985-01","1985-07","1986-01","1986-07","1987-01","1987-07","1988-01","1988-07","1989-01","1989-07","1990-01","1990-07","1991-01","1991-07","1992-01","1992-07","1993-01","1993-07","1994-01","1994-07","1995-01","1995-07","1996-01","1996-07","1997-01","1997-07","1998-01","1998-07","1999-01","1999-07","2000-01","2000-07","2001-01","2001-07","2002-01","2002-07","2003-01","2003-07","2004-01","2004-07","2005-01","2005-07","2006-01","2006-07"],"DAR":{"roll_mean":-2.67,"roll_median":2.68,"roll_win":59.4,"roll_p10":-21.45,"roll_p90":7.98,"cont_ann":0.144,"cont_lo":-0.461,"cont_hi":0.749,"sub1":0.277,"sub2":0.01,"term_mean":0.64,"term_win":57.0,"by_start":[1.61,0.09,-1.99,-3.64,-6.01,-8.35,-11.64,-13.89,-14.43,-14.97,-13.9,-14.45,-17.07,-20.28,-24.53,-25.67,-25.17,-25.1,-23.26,-21.75,-18.79,-16.25,-12.69,-9.43,-8.07,-6.42,-3.73,-0.75,2.24,3.49,4.11,4.9,4.07,3.93,4.61,4.56,4.88,5.97,7.05,7.03,6.91,6.42,6.24,6.12,5.05,5.14,5.08,4.91,5.37,5.3,5.31,5.12,4.89,5.34,5.78,5.75,5.91,5.86,5.88,6.04,5.34,5.01,5.22,4.9]},"AMP_only":{"roll_mean":-4.25,"roll_median":1.55,"roll_win":55.4,"roll_p10":-29.59,"roll_p90":9.8,"cont_ann":0.233,"cont_lo":-0.623,"cont_hi":1.089,"sub1":0.485,"sub2":-0.022,"term_mean":2.14,"term_win":65.5},"MOM_12_1":{"roll_mean":-0.22,"roll_median":-1.7,"roll_win":36.9,"roll_p10":-5.45,"roll_p90":7.83,"cont_ann":-0.321,"cont_lo":-0.96,"cont_hi":0.317,"sub1":-0.657,"sub2":0.018,"term_mean":-0.18,"term_win":41.0},"xcheck":1.27675647831893e-15}},"etf":{"proxy":{"start":"2011-10-01","traded":["VOO","SCHD","QQQ","XLV","GLD"],"metrics":{"DAR":{"final_value":576994.99,"total_invested":180000.0,"cagr_pct":14.14,"vol_pct":12.31,"max_drawdown_pct":-18.15},"equal":{"final_value":591771.89,"total_invested":180000.0,"cagr_pct":14.38,"vol_pct":12.52,"max_drawdown_pct":-19.36},"old_preset":{"final_value":616817.68,"total_invested":180000.0,"cagr_pct":15.07,"vol_pct":13.51,"max_drawdown_pct":-21.02},"old_preset_tilt":{"final_value":617282.83,"total_invested":180000.0,"cagr_pct":15.11,"vol_pct":13.58,"max_drawdown_pct":-21.03},"erc_tilt_current":{"final_value":586376.44,"total_invested":180000.0,"cagr_pct":14.29,"vol_pct":12.06,"max_drawdown_pct":-18.07},"voo_only":{"final_value":605704.48,"total_invested":180000.0,"cagr_pct":15.11,"vol_pct":14.8,"max_drawdown_pct":-23.86}},"paired":{"DAR_vs_equal":{"diff_annual_pct":-0.20971755641861597,"ci95_low_pct":-0.5312788646975164,"ci95_high_pct":0.11184375186028442,"mde_annual_pct":0.45651914767283325,"distinguishable_from_zero":false},"old_preset_vs_equal":{"diff_annual_pct":0.6016744365565405,"ci95_low_pct":-0.42741545722203766,"ci95_high_pct":1.6307643303351187,"mde_annual_pct":1.4609943083670103,"distinguishable_from_zero":false},"old_preset_tilt_vs_equal":{"diff_annual_pct":0.6322951074953254,"ci95_low_pct":-0.4535938278760099,"ci95_high_pct":1.7181840428666606,"mde_annual_pct":1.5416316530629381,"distinguishable_from_zero":false},"erc_tilt_current_vs_equal":{"diff_annual_pct":-0.07729169512426783,"ci95_low_pct":-0.6872221227642821,"ci95_high_pct":0.5326387325157464,"mde_annual_pct":0.8659154935532288,"distinguishable_from_zero":false},"voo_only_vs_equal":{"diff_annual_pct":0.6325910305192405,"ci95_low_pct":-1.6134494518146032,"ci95_high_pct":2.8786315128530844,"mde_annual_pct":3.1886936028522364,"distinguishable_from_zero":false},"DAR_vs_current":{"diff_annual_pct":-0.1324258612943482,"ci95_low_pct":-0.5934143805393222,"ci95_high_pct":0.3285626579506257,"mde_annual_pct":0.6544633339722169,"distinguishable_from_zero":false}},"erc_fallback_months":13},"real":{"start":"2020-11-01","traded":["VOO","SCHD","QQQM","XLV","GLDM"],"metrics":{"DAR":{"final_value":114107.94,"total_invested":71000.0,"cagr_pct":14.81,"vol_pct":10.38,"max_drawdown_pct":-12.23},"equal":{"final_value":116197.65,"total_invested":71000.0,"cagr_pct":15.78,"vol_pct":11.63,"max_drawdown_pct":-17.1},"old_preset":{"final_value":116046.0,"total_invested":71000.0,"cagr_pct":16.35,"vol_pct":12.74,"max_drawdown_pct":-19.38},"old_preset_tilt":{"final_value":115769.68,"total_invested":71000.0,"cagr_pct":16.34,"vol_pct":12.75,"max_drawdown_pct":-19.4},"erc_tilt_current":{"final_value":117984.42,"total_invested":71000.0,"cagr_pct":14.85,"vol_pct":11.09,"max_drawdown_pct":-14.66},"voo_only":{"final_value":116645.46,"total_invested":71000.0,"cagr_pct":17.05,"vol_pct":14.74,"max_drawdown_pct":-22.37}},"paired":{"DAR_vs_equal":{"diff_annual_pct":-0.8411753760195118,"ci95_low_pct":-3.6072199646022978,"ci95_high_pct":1.9248692125632743,"mde_annual_pct":3.8844925082609194,"distinguishable_from_zero":false},"old_preset_vs_equal":{"diff_annual_pct":0.49459268105144016,"ci95_low_pct":-1.7908224478395809,"ci95_high_pct":2.780007809942461,"mde_annual_pct":3.209520910504162,"distinguishable_from_zero":false},"old_preset_tilt_vs_equal":{"diff_annual_pct":0.4793744957833192,"ci95_low_pct":-1.8533159095089773,"ci95_high_pct":2.812064901075616,"mde_annual_pct":3.2759119071514036,"distinguishable_from_zero":false},"erc_tilt_current_vs_equal":{"diff_annual_pct":-0.8038864118652849,"ci95_low_pct":-3.8439644280044254,"ci95_high_pct":2.2361916042738557,"mde_annual_pct":4.269331133332079,"distinguishable_from_zero":false},"voo_only_vs_equal":{"diff_annual_pct":1.0953117584635388,"ci95_low_pct":-4.079881307493491,"ci95_high_pct":6.270504824420569,"mde_annual_pct":7.2677782478604,"distinguishable_from_zero":false},"DAR_vs_current":{"diff_annual_pct":-0.037288964154226625,"ci95_low_pct":-2.12637024140089,"ci95_high_pct":2.051792313092437,"mde_annual_pct":2.9337996227930074,"distinguishable_from_zero":false}},"erc_fallback_months":0}},"current_plan":{"plan_2026-10 (Sep month-end = 2026-09-29 close)":{"VOO":{"months":405,"ret_5y_pct":86.79112977883152,"ret_prior10y_pct":361.1490139794651,"AMP":-0.6248208535551685,"OLD":1.5285510455138924,"DAR":0.13945466920177774,"weight":0.21637077099684593},"SCHD":{"months":180,"neutral":true,"weight":0.1686043014002594},"QQQM":{"months":331,"ret_5y_pct":111.1445737274444,"ret_prior10y_pct":651.8719228413469,"AMP":-0.7473728963992929,"OLD":2.0173958080858894,"DAR":0.26132500764365174,"weight":0.25929747171406897},"XLV":{"months":334,"ret_5y_pct":43.02083038100761,"ret_prior10y_pct":375.26551453308576,"AMP":-0.3578201006634618,"OLD":1.558703439840953,"DAR":0.42153161925701466,"weight":0.3157274558888258},"GLDM":{"months":263,"ret_5y_pct":129.24695167121354,"ret_prior10y_pct":4.643503735687804,"AMP":-0.8296296280969959,"OLD":0.045389184872842936,"DAR":-0.8069350356605745,"weight":0.04}},"plan_2026-09 (Aug month-end)":{"VOO":{"months":404,"ret_5y_pct":89.56081458673783,"ret_prior10y_pct":350.88506708902634,"AMP":-0.6395397083522099,"OLD":1.5060422808799467,"DAR":0.11348143208776351,"weight":0.21315333961494923},"SCHD":{"months":179,"neutral":true,"weight":0.16854320146973986},"QQQM":{"months":330,"ret_5y_pct":107.06814830691154,"ret_prior10y_pct":661.3139308655935,"AMP":-0.7278777719706042,"OLD":2.0298756109424074,"DAR":0.2870600335005995,"weight":0.2685706741468605},"XLV":{"months":333,"ret_5y_pct":44.597930537921116,"ret_prior10y_pct":380.4486889348217,"AMP":-0.3687868120015265,"OLD":1.56955024990395,"DAR":0.41598831295044847,"weight":0.3097327847684504},"GLDM":{"months":262,"ret_5y_pct":146.57295511196617,"ret_prior10y_pct":-3.734326766848839,"AMP":-0.9024877276490328,"OLD":-0.038058387291007634,"DAR":-0.9215169212945367,"weight":0.04}}}};
+const IC = { h: [1,3,6,12,24,36,60,84,120],
+  amp: [-0.02,-0.01,0.00,0.04,0.09,0.13,0.15,0.15,0.17],
+  mom: [0.10,0.12,0.13,0.07,0.01,0.00,-0.05,-0.07,-0.05] };
+const POOLS = [
+  ["P1_mixed","หุ้นผสม (หลัก)"],["S1_ind17","17 อุตสาหกรรม"],["S2_ind49","49 อุตสาหกรรม"],["S3_style","พอร์ตสไตล์"],["S4_mixed_gold","หุ้น + ทองคำ"]];
+const ARMS = [["DAR","DAR (สูตรจริง)","--s1"],["AMP_only","value 5 ปี ไม่หักนิสัย","--s2"],["MOM_12_1","momentum 12 เดือน","--s3"]];
+const NS = "http://www.w3.org/2000/svg";
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, d = 2, suf = "") => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d) + suf;
+function el(tag, attrs = {}, parent) { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; }
+function txt(parent, x, y, s, cls, anchor = "start") { const t = el("text", { x, y, "text-anchor": anchor, class: cls || "" }, parent); t.textContent = s; return t; }
+function legend(id, items, kind) {
+  const L = document.getElementById(id); L.textContent = "";
+  for (const [label, token] of items) { const s = document.createElement("span"); const k = document.createElement("i");
+    k.className = kind === "dot" ? "key-dot" : "key-line"; k.style.background = `var(${token})`; s.appendChild(k); s.appendChild(document.createTextNode(label)); L.appendChild(s); }
+}
+function tipBox(container) { let t = container.querySelector(".tip"); if (!t) { t = document.createElement("div"); t.className = "tip"; t.hidden = true; container.appendChild(t); } return t; }
+function fillTip(tip, head, rows) { tip.textContent = ""; const h = document.createElement("div"); h.className = "t-h"; h.textContent = head; tip.appendChild(h);
+  for (const [label, val, token] of rows) { const r = document.createElement("div"); r.className = "row"; const s = document.createElement("span");
+    if (token) { const k = document.createElement("i"); k.className = "key-line"; k.style.background = `var(${token})`; s.appendChild(k); }
+    s.appendChild(document.createTextNode(label)); const b = document.createElement("b"); b.textContent = val; r.appendChild(s); r.appendChild(b); tip.appendChild(r); } }
+function placeTip(tip, container, px, py) { const cw = container.clientWidth; tip.hidden = false; const tw = tip.offsetWidth; let x = px + 14; if (x + tw > cw) x = Math.max(0, px - tw - 14); tip.style.left = x + "px"; tip.style.top = Math.max(0, py - 10) + "px"; }
+
+/* generic line chart with index-based x and crosshair */
+function lineChart(id, opts) {
+  const box = document.getElementById(id); box.textContent = "";
+  const W = Math.max(280, Math.round(box.clientWidth || opts.w || 720)), H = opts.h || 300, m = { t: 14, r: opts.rightPad || 96, b: 40, l: 48 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "xMidYMid meet" }, box);
+  const n = opts.xLabels.length, [y0, y1] = opts.yDomain;
+  const X = i => m.l + (W - m.l - m.r) * (n === 1 ? 0.5 : i / (n - 1));
+  const Y = v => m.t + (H - m.t - m.b) * (1 - (v - y0) / (y1 - y0));
+  for (const v of opts.yTicks) { el("line", { x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), class: v === 0 ? "base" : "grid" }, svg); txt(svg, m.l - 8, Y(v) + 4, opts.yFmt(v), "", "end"); }
+  const plotW = W - m.l - m.r, minGap = 34; let last = -1e9;
+  opts.xTickIdx.forEach(i => { if (X(i) - last < minGap && i !== opts.xTickIdx[opts.xTickIdx.length - 1]) return; if (X(i) - last < minGap) return; txt(svg, X(i), H - m.b + 20, opts.xLabels[i], "", "middle"); last = X(i); });
+  if (opts.xTitle) txt(svg, (m.l + W - m.r) / 2, H - 4, opts.xTitle, "", "middle");
+  for (const s of opts.series) {
+    const d = s.values.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join("");
+    el("path", { d, fill: "none", stroke: `var(${s.token})`, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+    const li = s.values.length - 1;
+    el("circle", { cx: X(li), cy: Y(s.values[li]), r: 4.5, fill: `var(${s.token})`, stroke: "var(--surface)", "stroke-width": 2 }, svg);
+    if (s.endLabel) txt(svg, X(li) + 10, Y(s.values[li]) + 4 + (s.labelDy || 0), s.endLabel, "lab");
+  }
+  const cross = el("line", { y1: m.t, y2: H - m.b, class: "cross", visibility: "hidden" }, svg);
+  const dots = opts.series.map(s => el("circle", { r: 4.5, fill: `var(${s.token})`, stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" }, svg));
+  const hit = el("rect", { x: m.l - 10, y: m.t, width: W - m.l - m.r + 20, height: H - m.t - m.b, fill: "transparent", tabindex: 0 }, svg);
+  const tip = tipBox(box);
+  function show(i) { i = Math.max(0, Math.min(n - 1, i)); cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("visibility", "visible");
+    opts.series.forEach((s, k) => { dots[k].setAttribute("cx", X(i)); dots[k].setAttribute("cy", Y(s.values[i])); dots[k].setAttribute("visibility", "visible"); });
+    fillTip(tip, opts.tipHead(i), opts.series.map(s => [s.name, opts.tipFmt(s.values[i]), opts.series.length > 1 ? s.token : null]));
+    const r = svg.getBoundingClientRect(), sc = r.width / W; placeTip(tip, box, X(i) * sc, Y(opts.series[0].values[i]) * sc); }
+  function hide() { cross.setAttribute("visibility", "hidden"); dots.forEach(d => d.setAttribute("visibility", "hidden")); tip.hidden = true; }
+  let cur = 0;
+  hit.addEventListener("pointermove", e => { const r = svg.getBoundingClientRect(); const px = (e.clientX - r.left) * W / r.width; cur = Math.round((px - m.l) / ((W - m.l - m.r) / (n - 1))); show(cur); });
+  hit.addEventListener("pointerleave", hide); hit.addEventListener("blur", hide);
+  hit.addEventListener("focus", () => show(cur));
+  hit.addEventListener("keydown", e => { if (e.key === "ArrowRight") { cur = Math.min(n - 1, cur + 1); show(cur); e.preventDefault(); } if (e.key === "ArrowLeft") { cur = Math.max(0, cur - 1); show(cur); e.preventDefault(); } });
+}
+
+function chartA() {
+  legend("legA", [["value 5 ปี (ซื้อกองที่แพ้มา)", "--s2"], ["momentum 12 เดือน", "--s3"]], "line");
+  lineChart("chartA", { w: 720, h: 300, rightPad: 110, xLabels: IC.h.map(h => h + ""), xTickIdx: document.getElementById("chartA").clientWidth < 520 ? [0,3,5,6,8] : [0,1,2,3,4,5,6,7,8], xTitle: "ถือนาน (เดือน)",
+    yDomain: [-0.1, 0.2], yTicks: [-0.1, -0.05, 0, 0.05, 0.1, 0.15, 0.2], yFmt: v => v.toFixed(2),
+    series: [{ name: "value 5 ปี", token: "--s2", values: IC.amp, endLabel: "value 5 ปี" }, { name: "momentum", token: "--s3", values: IC.mom, endLabel: "momentum" }],
+    tipHead: i => `ถือ ${IC.h[i]} เดือน`, tipFmt: v => fmt(v, 2) });
+  const t = document.getElementById("tblA"); const tb = document.createElement("table");
+  tb.innerHTML = "<thead><tr><th>ถือนาน (เดือน)</th><th>value 5 ปี</th><th>momentum 12 เดือน</th></tr></thead>";
+  const body = document.createElement("tbody"); IC.h.forEach((h, i) => { const tr = document.createElement("tr"); [h + "", fmt(IC.amp[i], 2), fmt(IC.mom[i], 2)].forEach(v => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); }); body.appendChild(tr); });
+  tb.appendChild(body); t.appendChild(tb);
+}
+
+function chartB() {
+  const P = DATA.pools, st = P.P1_mixed.starts;
+  const yTicks = [-25, -20, -15, -10, -5, 0, 5, 10];
+  const idx = []; st.forEach((s, i) => { if (s.endsWith("-01") && (+s.slice(0, 4)) % 5 === 0) idx.push(i); });
+  const labels = st.map(s => s.slice(0, 4));
+  [["chartB1", "P1_mixed"], ["chartB2", "S4_mixed_gold"]].forEach(([id, key]) => lineChart(id, { w: 460, h: 280, rightPad: 18, xLabels: labels, xTickIdx: idx, xTitle: "ปีที่เริ่ม DCA",
+    yDomain: [-26, 10], yTicks, yFmt: v => (v > 0 ? "+" : "") + v + "%",
+    series: [{ name: "DAR เทียบแบ่งเท่ากัน", token: "--s1", values: P[key].DAR.by_start }],
+    tipHead: i => `เริ่ม ${st[i]} · ถือ 20 ปี`, tipFmt: v => fmt(v, 1, "%") }));
+  const t = document.getElementById("tblB"); const tb = document.createElement("table");
+  tb.innerHTML = "<thead><tr><th>เริ่ม DCA</th><th>หุ้นผสม</th><th>หุ้น + ทองคำ</th></tr></thead>";
+  const body = document.createElement("tbody"); st.forEach((s, i) => { const tr = document.createElement("tr"); [s, fmt(P.P1_mixed.DAR.by_start[i], 1, "%"), fmt(P.S4_mixed_gold.DAR.by_start[i], 1, "%")].forEach(v => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); }); body.appendChild(tr); });
+  tb.appendChild(body); t.appendChild(tb);
+}
+
+function chartC() {
+  legend("legC", ARMS.map(a => [a[1], a[2]]), "dot");
+  const box = document.getElementById("chartC"); box.textContent = "";
+  const W = Math.max(300, Math.round(box.clientWidth || 720)), rowH = 44, m = { t: 10, r: 24, b: 36, l: W < 480 ? 104 : 132 }, H = m.t + m.b + rowH * POOLS.length;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}` }, box);
+  const x0 = -5, x1 = 4; const X = v => m.l + (W - m.l - m.r) * (v - x0) / (x1 - x0);
+  const step = W < 520 ? 2 : 1;
+  for (let v = -5; v <= 4; v++) { el("line", { x1: X(v), x2: X(v), y1: m.t, y2: H - m.b, class: v === 0 ? "base" : "grid" }, svg); if ((v + 6) % step === 0 || v === 0) txt(svg, X(v), H - m.b + 18, (v > 0 ? "+" : "") + v + "%", "", "middle"); }
+  const tip = tipBox(box);
+  POOLS.forEach(([key, name], r) => {
+    const y = m.t + rowH * r + rowH / 2; txt(svg, m.l - 10, y + 4, name, "lab", "end");
+    const vals = ARMS.map(a => DATA.pools[key][a[0]].roll_mean);
+    el("line", { x1: X(Math.min(...vals)), x2: X(Math.max(...vals)), y1: y, y2: y, class: "grid" }, svg);
+    ARMS.forEach(([arm, label, token], k) => {
+      const d = DATA.pools[key][arm], cx = X(d.roll_mean);
+      el("circle", { cx, cy: y, r: arm === "DAR" ? 6 : 4.5, fill: `var(${token})`, stroke: "var(--surface)", "stroke-width": 2 }, svg);
+      const hit = el("circle", { cx, cy: y, r: 12, fill: "transparent", tabindex: 0 }, svg);
+      const on = () => { fillTip(tip, `${name} · ${label}`, [["เงินปลายทางเฉลี่ย", fmt(d.roll_mean, 2, "%"), null], ["ชนะกี่ % ของกรณี", d.roll_win.toFixed(1) + "%", null], ["10% แย่สุด", fmt(d.roll_p10, 2, "%"), null]]);
+        const rr = svg.getBoundingClientRect(), sc = rr.width / W; placeTip(tip, box, cx * sc, y * sc); };
+      hit.addEventListener("pointerenter", on); hit.addEventListener("focus", on);
+      hit.addEventListener("pointerleave", () => tip.hidden = true); hit.addEventListener("blur", () => tip.hidden = true);
+    });
+    const dv = DATA.pools[key].DAR.roll_mean; txt(svg, X(dv), y - 11, fmt(dv, 2, "%"), "lab", "middle");
+  });
+}
+
+function table(id, head, rows, rowClass) {
+  const wrap = document.getElementById(id); const tb = document.createElement("table");
+  const th = document.createElement("thead"); const tr = document.createElement("tr");
+  head.forEach(h => { const c = document.createElement("th"); c.textContent = h; tr.appendChild(c); }); th.appendChild(tr); tb.appendChild(th);
+  const body = document.createElement("tbody");
+  rows.forEach((r, i) => { const row = document.createElement("tr"); if (rowClass && rowClass(i)) row.className = rowClass(i);
+    r.forEach(cell => { const td = document.createElement("td"); if (cell && typeof cell === "object") { if (cell.node) td.appendChild(cell.node); else { td.textContent = cell.t; if (cell.c) td.className = cell.c; } } else td.textContent = cell; row.appendChild(td); });
+    body.appendChild(row); });
+  tb.appendChild(body); wrap.appendChild(tb);
+}
+function pill(kind, label) { const s = document.createElement("span"); s.className = "pill " + kind; s.textContent = (kind === "good" ? "✓ " : kind === "crit" ? "✕ " : "") + label; return { node: s }; }
+const sgn = (v, d, suf) => ({ t: fmt(v, d, suf), c: v > 0 ? "pos" : v < 0 ? "neg" : "" });
+
+function poolTable() {
+  const rows = POOLS.map(([key, name]) => { const d = DATA.pools[key].DAR;
+    const verdict = key === "P1_mixed" ? pill("good", "ผ่าน (หลัก)") : d.roll_mean < -2 ? pill("crit", "ยับยั้ง") : pill("neu", "ไม่ยับยั้ง");
+    return [name, sgn(d.roll_mean, 2, "%"), d.roll_win.toFixed(1) + "%", sgn(d.roll_p10, 1, "%"), sgn(d.cont_ann, 2, ""), `${fmt(d.cont_lo, 2)} ถึง ${fmt(d.cont_hi, 2)}`, sgn(d.sub1, 2, ""), sgn(d.sub2, 2, ""), verdict]; });
+  table("tblPools", ["กลุ่มข้อมูล (DAR)", "DCA 20 ปี เฉลี่ย", "ชนะ", "10% แย่สุด", "ส่วนเกิน %/ปี", "CI 95%", "1975–2000", "2001–2026", "ผล"], rows, i => i === 0 ? "hl" : "");
+}
+
+function etfTable() {
+  const names = { DAR: "DAR-DCA", equal: "แบ่งเท่ากัน", old_preset: "35/25/20/10/10", old_preset_tilt: "35/25/20/10/10 + เอียงคะแนน", erc_tilt_current: "แผนปัจจุบัน (ERC + เอียง)", voo_only: "VOO ตัวเดียว" };
+  const E = DATA.etf; const rows = [];
+  Object.keys(names).forEach(a => { const p = E.proxy.metrics[a], r = E.real.metrics[a];
+    const pp = a === "equal" ? null : E.proxy.paired[a + "_vs_equal"], rp = a === "equal" ? null : E.real.paired[a + "_vs_equal"];
+    rows.push([names[a], "$" + Math.round(p.final_value).toLocaleString("en-US"), pp ? sgn(pp.diff_annual_pct, 2, "") : "—", p.max_drawdown_pct.toFixed(1) + "%", "$" + Math.round(r.final_value).toLocaleString("en-US"), rp ? sgn(rp.diff_annual_pct, 2, "") : "—", r.max_drawdown_pct.toFixed(1) + "%"]); });
+  table("tblEtf", ["แขน", "2011-10→2026-09 มูลค่า", "vs เท่ากัน %/ปี", "ร่วงลึกสุด", "2020-11→2026-09 มูลค่า", "vs เท่ากัน %/ปี", "ร่วงลึกสุด"], rows, i => i === 0 ? "hl" : "");
+}
+
+function planTable() {
+  const key = Object.keys(DATA.current_plan)[0]; const P = DATA.current_plan[key];
+  const order = ["XLV", "QQQM", "VOO", "SCHD", "GLDM"];
+  const rows = order.map(t => { const d = P[t]; const thb = Math.round(d.weight * 5000 / 100) * 100;
+    if (d.neutral) return [t, "—", "—", "ประวัติยังไม่ครบ", (d.weight * 100).toFixed(1) + "%", thb.toLocaleString("en-US")];
+    return [t, fmt(d.ret_5y_pct, 0, "%"), fmt(d.ret_prior10y_pct, 0, "%"), fmt(d.DAR, 2), (d.weight * 100).toFixed(1) + "%", thb.toLocaleString("en-US")]; });
+  table("tblPlan", ["กอง", "5 ปีล่าสุด", "10 ปีก่อนหน้า", "DAR", "สัดส่วน", "บาท"], rows);
+}
+
+function renderAll() { chartA(); chartB(); chartC(); }
+renderAll(); poolTable(); etfTable(); planTable();
+let rz = null, lastW = document.documentElement.clientWidth;
+window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { const w = document.documentElement.clientWidth; if (w !== lastW) { lastW = w; renderAll(); } }, 150); });
+</script>

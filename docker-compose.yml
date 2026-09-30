@@ -22,6 +22,9 @@ x-app-env: &app-env
   # scheduler จำว่าส่งแผน DCA เดือนไหนไปแล้ว (ส่งย้อนหลังเมื่อคอมปิดตอน 08:00 วันที่ 1)
   # ต้องอยู่ใน /data ที่ bind mount จาก host — อยู่ใน image = rebuild แล้วลืม = ส่งซ้ำ
   VAULTIS_SCHEDULER_STATE_PATH: /data/scheduler_state.json
+  # งานแผน DAR-DCA (พอร์ตทดลองแยก) จำเดือนที่ส่งแล้วในไฟล์ของตัวเอง — เหตุผลเดียวกับบรรทัดบน
+  # สมุดของพอร์ต DAR อยู่ที่ค่าดีฟอลต์ portfolio/data/dar_transactions.csv ซึ่ง bind mount อยู่แล้ว
+  VAULTIS_DAR_STATE_PATH: /data/dar_scheduler_state.json
   # ระดับ log ของ "ทางเข้า" ทั้งสองทาง (uvicorn backend.main:app และ python main.py)
   # ไม่ตั้ง = INFO ตามค่าในโค้ด · ตั้ง WARNING เพื่อหรี่, DEBUG เพื่อไล่ปัญหา
   # uvicorn --log-level ใช้แทนกันไม่ได้ มันตั้งเฉพาะ logger ชื่อ uvicorn*
@@ -186,6 +189,9 @@ services:
       VAULTIS_LEDGER_PATH: /tmp/vaultis-test-data/transactions.csv
       VAULTIS_ALERTS_PATH: /tmp/vaultis-test-data/price_alerts.json
       VAULTIS_SCHEDULER_STATE_PATH: /tmp/vaultis-test-data/scheduler_state.json
+      # พอร์ตทดลอง DAR-DCA มีสมุด + ไฟล์สถานะของตัวเอง — ออกนอก repo ด้วยเหตุผลเดียวกัน
+      VAULTIS_DAR_LEDGER_PATH: /tmp/vaultis-test-data/dar_transactions.csv
+      VAULTIS_DAR_STATE_PATH: /tmp/vaultis-test-data/dar_scheduler_state.json
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
       DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"

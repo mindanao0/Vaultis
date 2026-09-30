@@ -45,6 +45,7 @@ from analysis.ai_advisor import (
 from analysis.returns import calculate_period_returns, real_bars
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
+from jobs.dar_monthly import run_dar_plan_if_due
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
 from technical.signal_rules import rsi_zone
@@ -833,6 +834,11 @@ def run_scheduler() -> None:
             # 4) ทุกวัน 09:00 -> Technical Alert เฉพาะ RSI ผิดปกติ
             if notifications.get("rsi_alert", True):
                 schedule.every().day.at("09:00").do(_safe(generate_daily_technical_alerts), webhook_url=webhook_url)
+            # 4b) แผน DAR-DCA (พอร์ตทดลองแยก) — จังหวะเดียวกับแผนหลัก แต่ไฟล์สถานะ/ตัวกันซ้ำ
+            #     ของตัวเอง (jobs/dar_monthly.py) ไม่แตะสถานะของแผน ERC และไม่ใช้ LLM
+            schedule.every().day.at("08:00").do(_safe(run_dar_plan_if_due), webhook_url=webhook_url)
+            schedule.every().hour.do(_safe(run_dar_plan_if_due), webhook_url=webhook_url)
+            _safe(run_dar_plan_if_due)(webhook_url=webhook_url)
         # 5) ทุกวัน 09:00 และ 21:00 -> Price Alert (ไม่ต้องใช้ webhook)
         #    ผ่าน run_price_alert_job ไม่ใช่ check_alerts ดิบ ๆ — ผลลัพธ์ต้องถูก
         #    "อ่าน" ออกมาเป็น 3 สถานะ ไม่งั้น unchecked/store_error หายไปกับค่าคืนที่ทิ้ง
@@ -950,6 +956,10 @@ if __name__ == "__main__":
             raise SystemExit(PRICE_ALERT_STORE_ERROR_EXIT_CODE)
     elif args.job == "daily_check":
         run()
+    elif args.job == "dar_plan":
+        # ส่งแผน DAR ของเดือนนี้ทันที (ข้ามการเช็คเวลา) แล้วจำว่าส่งแล้ว — scheduler จะไม่ส่งซ้ำ
+        status = run_dar_plan_if_due(force=True)
+        print(f"DAR-DCA plan: {status}")
         if status not in {"sent"}:
             raise SystemExit(1)
     elif args.job == "all":

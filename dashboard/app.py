@@ -214,6 +214,8 @@ NAV_GROUPS = [
     ("Main", ["Overview", "Scorecard", "Portfolio"]),
     ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
+    # พอร์ตทดลองที่แยกจากแผนหลักทั้งหมด (สูตร/สมุด/งาน Discord ของตัวเอง) — dashboard/dar_page.py
+    ("Experiments", ["DAR-DCA"]),
     ("System", ["Settings"]),
 ]
 
@@ -5464,6 +5466,12 @@ def render_dashboard() -> None:
             return
         elif page == "Price Alerts":
             render_price_alerts_page()
+            return
+        elif page == "DAR-DCA":
+            # import ตอนใช้: หน้าทดลองต้องไม่ทำให้หน้าหลักล่มถ้าโมดูลของมันมีปัญหา
+            from dashboard.dar_page import render_dar_page
+
+            render_dar_page(apply_theme=_apply_plotly_dark_theme)
             return
         elif page == "Settings":
             render_settings_page()

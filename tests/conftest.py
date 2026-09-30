@@ -68,6 +68,25 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {"_monthly_plan_sent_in_process": set()},
     },
     {
+        # พอร์ตทดลอง DAR-DCA — สมุดแยกจากพอร์ตหลัก, gitignored ⇒ หายแล้วกู้ไม่ได้เหมือนกัน
+        "label": "สมุด DAR-DCA",
+        "module": "portfolio.dar_ledger",
+        "attr": "DAR_LEDGER_PATH",
+        "real": REPO_ROOT / "portfolio" / "data" / "dar_transactions.csv",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
+        "label": "สถานะงานแผน DAR-DCA",
+        "module": "jobs.dar_monthly",
+        "attr": "DAR_STATE_PATH",
+        "real": REPO_ROOT / ".dar_scheduler_state.json",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {"_dar_sent_in_process": set()},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",

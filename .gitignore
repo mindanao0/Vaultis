@@ -8,6 +8,11 @@ __pycache__/
 # ข้อมูลส่วนตัว/ฐานข้อมูล — ห้าม track (AUDIT.md H1)
 vaultis.db
 portfolio/data/transactions.csv
+# พอร์ตทดลอง DAR-DCA — สมุดของมันเองเป็นข้อมูลส่วนตัวเหมือนสมุดหลัก (.tmp = ไฟล์ข้างเคียงของการบันทึกแบบ atomic)
+portfolio/data/dar_transactions.csv
+portfolio/data/dar_transactions.csv.tmp
+.dar_scheduler_state.json
+.dar_scheduler_state.json.tmp
 
 # ข้อมูลรันไทม์ของ Docker (SQLite) — ห้าม track (AUDIT.md H1)
 # ignore เฉพาะ "ของข้างใน" ไม่ใช่ตัวโฟลเดอร์ — ต้องเหลือ .gitkeep ไว้ให้ fresh clone
