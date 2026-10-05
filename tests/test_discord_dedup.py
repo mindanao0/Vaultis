@@ -250,6 +250,10 @@ class TestSchedule:
         monkeypatch.setattr(scheduler_main, "load_config", lambda: cfg)
         monkeypatch.setattr(scheduler_main, "generate_monthly_ai_advisor_and_notify",
                             lambda: pytest.fail("เทสต์นี้ห้ามส่งแผนจริง"))
+        # งานตอนเริ่ม scheduler ที่ยิงเน็ตจริงเมื่อมี webhook (แผน DAR/SELECT ดึงราคา+FX, simulation ดึงข้อมูลสด) — เทสต์นี้ดูแค่การลงทะเบียนเวลา
+        # และ sleep ที่ถูกสตับให้ KeyboardInterrupt จะหยุดมันกลางทาง ก่อนงานราคาถูกลงทะเบียน (ทำให้ modes ว่าง)
+        for _name in ("run_dar_plan_if_due", "run_select_plan_if_due", "run_simulation_refresh"):
+            monkeypatch.setattr(scheduler_main, _name, lambda *a, **k: None)
 
         def _stop(_seconds):
             raise KeyboardInterrupt

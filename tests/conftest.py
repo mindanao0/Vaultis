@@ -117,6 +117,16 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {"_select_sent_in_process": set()},
     },
     {
+        # พอร์ตกระดาษ STOCK-DCA (เลือกหุ้นรายตัว) — forward test ที่กฎห้ามย้อนบันทึก/ลบทิ้ง ⇒ หายแล้วกู้ไม่ได้
+        "label": "สมุด STOCK-DCA",
+        "module": "portfolio.stock_ledger",
+        "attr": "STOCK_LEDGER_PATH",
+        "real": REPO_ROOT / "portfolio" / "data" / "stock_transactions.csv",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",

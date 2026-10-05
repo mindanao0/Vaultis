@@ -151,6 +151,10 @@ def test_scheduler_registers_catchup_and_checks_at_startup(env, monkeypatch):
            "notifications": {"discord_webhook_url": "https://discord.example/webhook",
                              "weekly_summary": False, "dca_reminder": False, "rsi_alert": False}}
     monkeypatch.setattr(main, "load_config", lambda: cfg)
+    # งานตอนเริ่ม scheduler ที่ยิงเน็ตจริงเมื่อมี webhook (แผน DAR/SELECT ดึงราคา+FX, simulation ดึงข้อมูลสด) — เทสต์นี้ดูแค่การลงทะเบียนเวลา
+    # และ sleep ที่ถูกสตับให้ KeyboardInterrupt จะหยุดมันกลางทาง ก่อนงานราคาถูกลงทะเบียน (ทำให้ modes ว่าง)
+    for _name in ("run_dar_plan_if_due", "run_select_plan_if_due", "run_simulation_refresh"):
+        monkeypatch.setattr(main, _name, lambda *a, **k: None)
 
     def _stop(_s):
         raise KeyboardInterrupt
