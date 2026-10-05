@@ -137,6 +137,16 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {},
     },
     {
+        # สมุดคำทำนาย TRADE (หุ้นรายตัว รายวัน) — บัญชีกระดาษเล่นซ้ำจากสมุดนี้ ⇒ หายแล้วกู้ไม่ได้ (หลักฐาน forward test ทั้งก้อน)
+        "label": "สมุดคำทำนาย TRADE",
+        "module": "portfolio.trade_ledger",
+        "attr": "TRADE_LEDGER_PATH",
+        "real": REPO_ROOT / "portfolio" / "data" / "trade_log.csv",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",
@@ -310,6 +320,10 @@ def _no_live_erc_price_fetch(request, monkeypatch):
 
     monkeypatch.setattr(predict_lab_mod, "fetch_prices", _guard(predict_lab_mod.fetch_prices, "PREDICT"))
     monkeypatch.setattr(stock_pick_mod, "fetch_prices", _guard(stock_pick_mod.fetch_prices, "STOCK-DCA"))
+
+    import analysis.trade_lab as trade_lab_mod
+
+    monkeypatch.setattr(trade_lab_mod, "fetch_ohlc", _guard(trade_lab_mod.fetch_ohlc, "TRADE"))
 
     # ข้อมูลเซกเตอร์ของกอง (funds_data) ก็เป็น network เหมือนกัน — แผนรายเดือนเรียกมันเพื่อเตือน
     # ความกระจุกตัว ``_fund_data`` มีสัญญาว่า "ไม่ throw คืนเหตุผลแทน" จึงคืนเหตุผลตามสัญญา

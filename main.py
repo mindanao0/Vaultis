@@ -48,6 +48,7 @@ from jobs.daily_check import run
 from jobs.dar_monthly import run_dar_plan_if_due
 from jobs.select_monthly import run_select_plan_if_due
 from jobs.predict_daily import run_predict_daily
+from jobs.trade_daily import run_trade_daily
 from jobs.simulation_refresh import run_simulation_refresh
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
@@ -866,6 +867,10 @@ def run_scheduler() -> None:
         #    ให้คะแนนที่ครบกำหนดแล้ว และจำลองเกณฑ์ตัดสิน — ไม่ต้องใช้ webhook ไม่มี LLM ไม่มีค่าใช้จ่าย (รันทันทีตอนเริ่มโปรเซสด้วย)
         schedule.every().day.at("06:30").do(_safe(run_predict_daily))
         _safe(run_predict_daily)()
+        # 8) TRADE (หุ้นรายตัว 30 ตัว รายวัน, แยกจาก PREDICT): 06:35 บันทึกคำทำนาย พรุ่งนี้/1 สัปดาห์/1 เดือน + เล่นซ้ำบัญชีกระดาษ (ซื้อขายที่เปิดวันถัดไป) —
+        #    ไม่ต้องใช้ webhook ไม่มี LLM ไม่มีค่าใช้จ่าย (ครั้งแรกใช้เวลา ~1–2 นาที: Prophet 30 ตัว)
+        schedule.every().day.at("06:35").do(_safe(run_trade_daily))
+        _safe(run_trade_daily)()
 
         print(
             "Vaultis scheduler started: "
@@ -880,7 +885,8 @@ def run_scheduler() -> None:
             "price alert check (daily 09:00 + price summary when there is a new close, "
             "21:00 alerts only) = True, "
             "simulation refresh (daily 06:00 + startup) = True, "
-            "predict daily (06:30 + startup) = True"
+            "predict daily (06:30 + startup) = True, "
+            "trade daily (06:35 + startup) = True"
         )
 
         while True:
@@ -991,6 +997,12 @@ if __name__ == "__main__":
         # บันทึกคำทำนายของวันนี้ + ให้คะแนน + จำลองเกณฑ์ตัดสินใหม่ทันที (ชุดของวันที่บันทึกไปแล้วไม่ถูกเขียนซ้ำ)
         outcome = run_predict_daily(force=True)
         print(f"predict: {outcome}")
+        if not outcome["ok"]:
+            raise SystemExit(1)
+    elif args.job == "trade_daily":
+        # บันทึกคำทำนายหุ้น 30 ตัวของวันนี้ + ให้คะแนน + เล่นซ้ำบัญชีกระดาษ + จำลองเกณฑ์ใหม่ทันที (ชุดของวันที่บันทึกไปแล้วไม่ถูกเขียนซ้ำ)
+        outcome = run_trade_daily(force=True)
+        print(f"trade: {outcome}")
         if not outcome["ok"]:
             raise SystemExit(1)
     elif args.job == "select_plan":
