@@ -216,7 +216,7 @@ NAV_GROUPS = [
     ("Analysis", ["Backtest", "DCA Simulator", "Simulation", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
     # พอร์ตทดลองที่แยกจากแผนหลักทั้งหมด (สูตร/สมุด/งาน Discord ของตัวเอง) — dashboard/dar_page.py
-    ("Experiments", ["DAR-DCA"]),
+    ("Experiments", ["DAR-DCA", "SELECT-DCA"]),
     ("System", ["Settings"]),
 ]
 
@@ -1237,6 +1237,11 @@ def render_settings_page() -> None:
         "เตือนเมื่อ RSI เข้าเขต Oversold/Overbought",
         value=bool(config["notifications"]["rsi_alert"]),
     )
+    select_discord_enabled = st.checkbox(
+        "ส่งแผน SELECT-DCA (โหมด \"โมเดลเลือกกองเอง\") เข้า Discord ทุกต้นเดือน",
+        value=bool(config.get("select", {}).get("discord_enabled", False)),
+        help="ปิดไว้ก่อนตามที่ตกลง — เปิดหลังตรวจว่า Dime ขายกองในจักรวาลของโหมดนี้จริง (หน้า SELECT-DCA). ข้อความจะพกสถานะหลักฐานและข้อควรระวังไปด้วยเสมอ",
+    )
     if st.button("ทดสอบส่ง Discord"):
         if not webhook_url.strip():
             st.error("ยังไม่ได้ตั้ง DISCORD_WEBHOOK_URL จึงส่งไม่ได้")
@@ -1292,6 +1297,7 @@ def render_settings_page() -> None:
                 "dca_reminder": bool(dca_reminder_enabled),
                 "rsi_alert": bool(rsi_alert_enabled),
             },
+            "select": {"discord_enabled": bool(select_discord_enabled)},
             "display": {
                 "default_page": default_page,
                 "currency": currency,
@@ -5520,6 +5526,12 @@ def render_dashboard() -> None:
             from dashboard.dar_page import render_dar_page
 
             render_dar_page(apply_theme=_apply_plotly_dark_theme)
+            return
+        elif page == "SELECT-DCA":
+            # import ตอนใช้: โหมดทดลอง ("โมเดลเลือกกองเอง") พังต้องไม่ลากหน้าหลักไปด้วย (รูปแบบเดียวกับ DAR-DCA)
+            from dashboard.select_page import render_select_page
+
+            render_select_page(apply_theme=_apply_plotly_dark_theme)
             return
         elif page == "Simulation":
             # import ตอนใช้: ส่วน simulation พังต้องไม่ลากหน้าหลักไปด้วย (รูปแบบเดียวกับหน้า DAR-DCA)

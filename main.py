@@ -46,6 +46,7 @@ from analysis.returns import calculate_period_returns, real_bars
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from jobs.dar_monthly import run_dar_plan_if_due
+from jobs.select_monthly import run_select_plan_if_due
 from jobs.simulation_refresh import run_simulation_refresh
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
@@ -840,6 +841,12 @@ def run_scheduler() -> None:
             schedule.every().day.at("08:00").do(_safe(run_dar_plan_if_due), webhook_url=webhook_url)
             schedule.every().hour.do(_safe(run_dar_plan_if_due), webhook_url=webhook_url)
             _safe(run_dar_plan_if_due)(webhook_url=webhook_url)
+            # 4c) แผน SELECT-DCA ("โมเดลเลือกกองเอง", พอร์ตทดลองแยกอีกพอร์ต) — **ปิดไว้ก่อน** ส่งเฉพาะเมื่อผู้ใช้เปิด
+            #     config select.discord_enabled (หน้า Settings) · ไฟล์สถานะของตัวเอง (jobs/select_monthly.py) · ไม่ใช้ LLM
+            #     ลงทะเบียนเสมอ (สวิตช์ถูกเช็คตอนรัน) เพื่อให้เปิดจาก Settings ได้โดยไม่ต้องรีสตาร์ต
+            schedule.every().day.at("08:00").do(_safe(run_select_plan_if_due), webhook_url=webhook_url)
+            schedule.every().hour.do(_safe(run_select_plan_if_due), webhook_url=webhook_url)
+            _safe(run_select_plan_if_due)(webhook_url=webhook_url)
         # 5) ทุกวัน 09:00 และ 21:00 -> Price Alert (ไม่ต้องใช้ webhook)
         #    ผ่าน run_price_alert_job ไม่ใช่ check_alerts ดิบ ๆ — ผลลัพธ์ต้องถูก
         #    "อ่าน" ออกมาเป็น 3 สถานะ ไม่งั้น unchecked/store_error หายไปกับค่าคืนที่ทิ้ง
@@ -973,6 +980,12 @@ if __name__ == "__main__":
         outcome = run_simulation_refresh(force=True)
         print(f"simulation: {outcome}")
         if not outcome["ok"]:
+            raise SystemExit(1)
+    elif args.job == "select_plan":
+        # ส่งแผน SELECT ของเดือนนี้ทันที (ข้ามการเช็คเวลา — แต่ไม่ข้ามสวิตช์ select.discord_enabled ที่ปิดอยู่)
+        status = run_select_plan_if_due(force=True)
+        print(f"SELECT-DCA plan: {status}")
+        if status not in {"sent"}:
             raise SystemExit(1)
     elif args.job == "all":
         # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)

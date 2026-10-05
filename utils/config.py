@@ -48,6 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "currency": "THB",
         "default_fx_rate": 33.5,
     },
+    # โหมด SELECT-DCA ("โมเดลเลือกกองเอง", พอร์ตทดลองแยก — analysis/select_dca.py): ข้อความ Discord รายเดือน **ปิดไว้ก่อน**
+    # เปิดเองที่หน้า Settings หลังตรวจว่า Dime ขายกองในจักรวาลจริง (มติผู้ใช้ 2026-10-05) — รายชื่อกอง/งบของโหมดนี้ตายตัวในโค้ด ไม่อยู่ในไฟล์นี้
+    "select": {
+        "discord_enabled": False,
+    },
     # ชั้นต้นทุนโดยประมาณ (Roadmap Phase 2 ข้อ 4) — ไม่มี secret
     "costs": {
         # FX spread ของโบรก/ธนาคาร เป็น "ประมาณการ" — ปรับให้ตรงบัญชีจริงได้ที่นี่
@@ -118,6 +123,9 @@ def _normalize_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     currency = str(merged["display"].get("currency", "THB")).upper()
     merged["display"]["currency"] = currency if currency in {"THB", "USD"} else "THB"
     merged["display"]["default_fx_rate"] = float(merged["display"].get("default_fx_rate", 33.5))
+
+    sel = merged.get("select")
+    merged["select"] = {"discord_enabled": (sel.get("discord_enabled") is True) if isinstance(sel, dict) else False}  # เฉพาะ true จริงเท่านั้น
 
     try:
         fx_spread = float(merged["costs"].get("fx_spread_pct", 0.25))

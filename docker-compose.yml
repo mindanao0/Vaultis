@@ -25,6 +25,9 @@ x-app-env: &app-env
   # งานแผน DAR-DCA (พอร์ตทดลองแยก) จำเดือนที่ส่งแล้วในไฟล์ของตัวเอง — เหตุผลเดียวกับบรรทัดบน
   # สมุดของพอร์ต DAR อยู่ที่ค่าดีฟอลต์ portfolio/data/dar_transactions.csv ซึ่ง bind mount อยู่แล้ว
   VAULTIS_DAR_STATE_PATH: /data/dar_scheduler_state.json
+  # งานแผน SELECT-DCA ("โมเดลเลือกกองเอง") จำเดือนที่ส่งแล้วในไฟล์ของตัวเอง (ปิดไว้ก่อน — เปิดที่ Settings) · สมุดอยู่ที่
+  # portfolio/data/select_transactions.csv ซึ่ง bind mount อยู่แล้ว
+  VAULTIS_SELECT_STATE_PATH: /data/select_scheduler_state.json
   # ระดับ log ของ "ทางเข้า" ทั้งสองทาง (uvicorn backend.main:app และ python main.py)
   # ไม่ตั้ง = INFO ตามค่าในโค้ด · ตั้ง WARNING เพื่อหรี่, DEBUG เพื่อไล่ปัญหา
   # uvicorn --log-level ใช้แทนกันไม่ได้ มันตั้งเฉพาะ logger ชื่อ uvicorn*
@@ -195,6 +198,9 @@ services:
       # พอร์ตทดลอง DAR-DCA มีสมุด + ไฟล์สถานะของตัวเอง — ออกนอก repo ด้วยเหตุผลเดียวกัน
       VAULTIS_DAR_LEDGER_PATH: /tmp/vaultis-test-data/dar_transactions.csv
       VAULTIS_DAR_STATE_PATH: /tmp/vaultis-test-data/dar_scheduler_state.json
+      # พอร์ตทดลอง SELECT-DCA ("โมเดลเลือกกองเอง") — สมุด + ไฟล์สถานะของตัวเอง ออกนอก repo เหมือนกัน
+      VAULTIS_SELECT_LEDGER_PATH: /tmp/vaultis-test-data/select_transactions.csv
+      VAULTIS_SELECT_STATE_PATH: /tmp/vaultis-test-data/select_scheduler_state.json
       # ข้อมูล simulation (ราคาที่ดึงสด + ผลล่าสุด) — ออกนอก repo เหมือนไฟล์ข้างบน
       VAULTIS_SIM_DATA_DIR: /tmp/vaultis-test-data/simulation
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง

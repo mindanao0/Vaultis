@@ -98,6 +98,25 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {"_dar_sent_in_process": set()},
     },
     {
+        # พอร์ตทดลอง SELECT-DCA ("โมเดลเลือกกองเอง") — สมุดแยกจากพอร์ตหลักและพอร์ต DAR, gitignored ⇒ หายแล้วกู้ไม่ได้
+        "label": "สมุด SELECT-DCA",
+        "module": "portfolio.select_ledger",
+        "attr": "SELECT_LEDGER_PATH",
+        "real": REPO_ROOT / "portfolio" / "data" / "select_transactions.csv",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
+        "label": "สถานะงานแผน SELECT-DCA",
+        "module": "jobs.select_monthly",
+        "attr": "SELECT_STATE_PATH",
+        "real": REPO_ROOT / ".select_scheduler_state.json",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {"_select_sent_in_process": set()},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",
