@@ -6,7 +6,7 @@ import base64
 import json
 import math
 import os
-from datetime import datetime
+from datetime import date as _date, datetime, timedelta
 from typing import Any
 
 import anthropic
@@ -43,6 +43,13 @@ ALLOWED_CATEGORIES = ("บันเทิง", "ลงทุน", "โอนเ�
 # เพดานความสมเหตุสมผลของยอดในสลิปโอนเงินไทย 1 ใบ — OCR ที่อ่านเลขติดกันจะพุ่งทะลุค่านี้
 # (ผลตรวจ D2.1: amount 999,999,999,999 ถูกตอบกลับเป็น success=true)
 MAX_SLIP_AMOUNT = 100_000_000.0
+
+# หน้าต่างวันที่ที่เป็นไปได้ของสลิป: ไม่ใช่วันในอนาคต (เผื่อ 1 วันเรื่องเขตเวลา) และไม่เก่าเกินนี้
+# สลิปไทยพิมพ์ปี **พ.ศ.** เป็นปกติ — ถ้า OCR คืน "2569-08-05" ``fromisoformat`` รับเป็นปี ค.ศ. 2569 ได้ตามกฎของมัน
+# และเดิมถูกตอบกลับเป็น success=true เข้าไปอยู่ในแบบฟอร์มธุรกรรมที่ปลายปีหน้า 543 ปี ·
+# ไม่แปลง พ.ศ. → ค.ศ. ให้เอง (เดาแล้วธุรกรรมไปอยู่ผิดช่วง) — ตอบว่าอ่านไม่ได้แล้วให้ผู้ใช้กรอกเอง
+MAX_SLIP_AGE_DAYS = 3650
+MAX_SLIP_FUTURE_DAYS = 1
 
 _client: anthropic.Anthropic | None = None
 
@@ -132,11 +139,12 @@ def _parse_amount(raw: Any) -> float | None:
     return value
 
 
-def _parse_date(raw: Any) -> str | None:
-    """คืน ``YYYY-MM-DD`` เมื่อ parse ได้จริงเท่านั้น.
+def _parse_date(raw: Any, today: _date | None = None) -> str | None:
+    """คืน ``YYYY-MM-DD`` เมื่อ parse ได้จริง **และอยู่ในหน้าต่างที่เป็นไปได้** เท่านั้น.
 
     รับเฉพาะรูปแบบ ISO ตามที่ system prompt สั่งไว้ — ``05/08/2026`` ไม่รับเพราะแยกไม่ออก
-    ว่าเป็นวัน/เดือน หรือเดือน/วัน (เดาผิดแล้วธุรกรรมไปอยู่ผิดเดือน)
+    ว่าเป็นวัน/เดือน หรือเดือน/วัน (เดาผิดแล้วธุรกรรมไปอยู่ผิดเดือน) · วันในอนาคต/เก่าเกิน
+    ``MAX_SLIP_AGE_DAYS`` (รวมปี พ.ศ. ที่ถูกอ่านเป็น ค.ศ.) = ``None`` เหมือน parse ไม่ได้
     """
     if not isinstance(raw, str):
         return None
@@ -144,9 +152,13 @@ def _parse_date(raw: Any) -> str | None:
     if not text:
         return None
     try:
-        return datetime.fromisoformat(text).date().isoformat()
+        parsed = datetime.fromisoformat(text).date()
     except ValueError:
         return None
+    ref = today or datetime.now().date()
+    if parsed > ref + timedelta(days=MAX_SLIP_FUTURE_DAYS) or parsed < ref - timedelta(days=MAX_SLIP_AGE_DAYS):
+        return None
+    return parsed.isoformat()
 
 
 def _parse_category(raw: Any) -> str | None:
@@ -245,7 +257,7 @@ async def upload_slip(file: UploadFile):
         message
         for value, message in (
             (amount, "อ่านยอดเงินจากสลิปไม่ได้"),
-            (date, "อ่านวันที่จากสลิปไม่ได้"),
+            (date, "อ่านวันที่จากสลิปไม่ได้ (หรืออยู่นอกช่วงที่เป็นไปได้ เช่น ปี พ.ศ. หรือวันในอนาคต)"),
             (category, "อ่านหมวดหมู่จากสลิปไม่ได้"),
         )
         if value is None

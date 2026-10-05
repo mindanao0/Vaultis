@@ -300,3 +300,40 @@ def _run(coro):
     import asyncio
 
     return asyncio.run(coro)
+
+
+# --------------------------------------------------------------------------- #
+# หน้าต่างวันที่ที่เป็นไปได้ — สลิปไทยพิมพ์ปี พ.ศ. (2569) ``fromisoformat`` อ่านเป็น ค.ศ. 2569 ได้ตามกฎของมัน
+# เดิมถูกตอบกลับเป็น success=true ("2569-08-05") ไปอยู่ในแบบฟอร์มธุรกรรมอีก 543 ปีข้างหน้า
+# --------------------------------------------------------------------------- #
+class TestSlipDateWindow:
+    TODAY = __import__("datetime").date(2026, 10, 5)
+
+    @pytest.mark.parametrize("raw", ["2569-08-05", "2569-10-05", "2027-10-07", "2026-12-31", "2016-10-04", "0001-01-01", "1999-01-01"])
+    def test_implausible_dates_are_unreadable_not_success(self, raw):
+        assert transactions._parse_date(raw, today=self.TODAY) is None
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("2026-10-05", "2026-10-05"),        # วันนี้
+        ("2026-10-06", "2026-10-06"),        # พรุ่งนี้ — เผื่อ 1 วันเรื่องเขตเวลา (สลิปเวลาไทยเร็วกว่าเครื่อง)
+        ((__import__("datetime").date(2026, 10, 5) - __import__("datetime").timedelta(days=3650)).isoformat(),
+         (__import__("datetime").date(2026, 10, 5) - __import__("datetime").timedelta(days=3650)).isoformat()),   # เก่าสุดที่ยังรับ (3,650 วัน)
+        ("2026-08-05T09:30:00", "2026-08-05"),
+    ])
+    def test_boundaries_are_inclusive(self, raw, expected):
+        assert transactions._parse_date(raw, today=self.TODAY) == expected
+
+    def test_one_day_older_than_the_limit_is_rejected(self):
+        d = __import__("datetime")
+        too_old = (self.TODAY - d.timedelta(days=3651)).isoformat()
+        assert transactions._parse_date(too_old, today=self.TODAY) is None
+
+    def test_endpoint_rejects_buddhist_year_with_a_readable_reason(self, monkeypatch):
+        res = _post(monkeypatch, _slip(date="2569-08-05"))
+        body = res.json()
+        assert res.status_code == 200 and body["success"] is False, body
+        assert "พ.ศ." in body["error"] and body["date"] is None and body["amount"] is None, body    # ไม่คืนฟิลด์ครึ่งใบ
+
+    def test_endpoint_still_accepts_a_normal_recent_slip(self, monkeypatch):
+        body = _post(monkeypatch, _slip(date="2026-08-05")).json()
+        assert body["success"] is True and body["date"] == "2026-08-05", body
