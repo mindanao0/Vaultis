@@ -67,6 +67,14 @@ def run_simulation_refresh(force: bool = False, now: datetime | None = None) -> 
             steps.append(f"รันแผน {result['plan']['plan_strategy']} ({result['paths_per_world']:,} เส้นทาง/โลก)")
         else:
             steps.append("ไม่ต้องรันใหม่ (ผลล่าสุดยังใหม่และแผนไม่เปลี่ยน)")
+        # ตรวจความแม่นยำของโมเดลเทียบประวัติจริง: ข้อมูลเพิ่งถูกดึงใหม่ / ยังไม่เคยตรวจ / ผลเก่ากว่า 7 วัน
+        cal = service.load_calibration()
+        cal_age = service.last_plan_age_days(cal, now)
+        if force or fetched or cal is None or cal_age is None or cal_age > PLAN_RESULT_MAX_AGE_DAYS:
+            from simulation import validate
+
+            service.save_calibration(validate.calibration_report(panel))
+            steps.append("ตรวจความแม่นยำของโมเดลเทียบประวัติจริง")
         return {"ok": True, "steps": steps, "error": None, "fetched": fetched}
     except (sim_data.SimulationDataError, PriceDataUnavailableError, TargetWeightsError, ValueError) as exc:
         logger.error("simulation refresh ล้มเหลว: %s — ข้อมูล/ผลเดิม (ถ้ามี) ยังอยู่แต่จะถูกแสดงว่าเก่า", exc)

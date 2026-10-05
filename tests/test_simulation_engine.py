@@ -211,3 +211,174 @@ def test_last_plan_roundtrip(tmp_path):
     assert service.load_last_plan(tmp_path)["x"] == [1, 2]
     (tmp_path / service.LAST_PLAN_FILE).write_text("{ไม่ใช่ json", encoding="utf-8")
     assert service.load_last_plan(tmp_path) is None  # อ่านไม่ได้ = None + log ERROR ไม่ใช่ crash
+
+
+# ---------------------------------------------------------------- ต้นทุน: ภาษีปันผล + FX spread (ค่าเริ่มต้นของเอนจิน = 0 เพื่อ parity)
+def _eq_value(panel, **kw):
+    cfg = engine.Config(world="rw", drift="mid", P=300, T=120, seed=9, horizons=(120,), arms=("EQ",), **kw)
+    return engine.run_chunk(panel, cfg)["H"][120]["arms"]["EQ"]["V"]
+
+
+def test_withholding_tax_lowers_value_by_roughly_yield_times_rate():
+    panel = _panel(seed=8, hr=215)
+    base = _eq_value(panel)
+    taxed = _eq_value(panel, withholding_pct=0.15)
+    ratio = float(np.median(taxed / base))
+    # ผลตอบแทนหายปีละ 0.15 × 2% = 0.3% — DCA 10 ปี เงินที่ลงเฉลี่ยอยู่ ~5 ปี → มูลค่าปลายทางหายราว 1.5%
+    assert 0.975 < ratio < 0.995, ratio
+    assert (taxed < base).all()
+
+
+def test_fx_spread_scales_every_purchase_exactly():
+    panel = _panel(seed=8, hr=215)
+    base = _eq_value(panel)
+    spread = _eq_value(panel, fx_spread_pct=0.25)
+    assert np.allclose(spread / base, 1 - 0.0025, rtol=1e-12)
+
+
+def test_withholding_needs_yields_and_never_guesses_them():
+    panel = _panel(seed=8, hr=215)
+    panel.pop("yields")
+    with pytest.raises(ValueError, match="yield"):
+        _eq_value(panel, withholding_pct=0.15)
+    _eq_value(panel)  # ไม่หักภาษี = ไม่ต้องใช้ yield
+
+
+def test_panel_measures_yields_from_real_dividends_and_flags_defaults():
+    raw = _synthetic_raw(seed=2)
+    panel = sim_data.build_panel(raw)
+    assert panel["meta"]["yield_source"]["VOO"] == "measured" and 0.015 < panel["yields"]["VOO"] < 0.025
+    assert panel["yields"]["GLDM"] == 0.0, "กองที่ไม่จ่ายปันผลต้อง yield 0 (ไม่ใช่ค่าเริ่มต้นตามชนิด)"
+    raw.dividends.pop("SCHD")
+    p2 = sim_data.build_panel(raw)
+    assert p2["meta"]["yield_source"]["SCHD"] == "kind_default" and p2["yields"]["SCHD"] == sim_data.DEFAULT_YIELD_BY_KIND["us_dividend"]
+
+
+def test_dividends_survive_the_raw_roundtrip(tmp_path):
+    raw = _synthetic_raw(seed=3)
+    manifest = sim_data.save_raw(raw, tmp_path)
+    back = sim_data.load_raw(tmp_path)
+    assert set(back.dividends) == set(raw.dividends) and manifest["dividends"]["VOO"] == len(raw.dividends["VOO"])
+    assert float(back.dividends["VOO"].sum()) == pytest.approx(float(raw.dividends["VOO"].sum()))
+
+
+def test_service_result_carries_costs_and_matching_limitations():
+    panel = _panel(seed=6, hr=215)
+    kw = dict(reference="ERC", budget_thb=5000.0, worlds=("rw",), horizons=(60,), paths=200, seed=2)
+    taxed = service.simulate_strategies(panel, {"ERC": "ERC", "BLEND": "BLEND"}, **kw)
+    assert taxed["costs"]["withholding_pct"] == 0.15 and taxed["costs"]["yields"]["VOO"] == 0.02
+    assert any("หักภาษี" in ln for ln in taxed["limitations"]) and not any(ln.startswith("ไม่ได้หักภาษี") for ln in taxed["limitations"])
+    plain = service.simulate_strategies(panel, {"ERC": "ERC", "BLEND": "BLEND"}, costs={"withholding_pct": 0.0, "fx_spread_pct": 0.0}, **kw)
+    assert any(ln.startswith("ไม่ได้หักภาษี") for ln in plain["limitations"])
+    a = taxed["worlds"]["rw"]["horizons"]["60"]["strategies"]["BLEND"]["value_med_thb"]
+    b = plain["worlds"]["rw"]["horizons"]["60"]["strategies"]["BLEND"]["value_med_thb"]
+    assert a < b, "หักต้นทุนแล้วมูลค่าปลายทางต้องต่ำกว่า"
+
+
+# ---------------------------------------------------------------- สินทรัพย์เพิ่ม
+def test_extra_funds_are_available_and_a_mixed_universe_builds():
+    raw = _synthetic_raw(seed=4)
+    sim_data.save_raw(raw, tmp := Path(__import__("tempfile").mkdtemp()))
+    st = sim_data.data_status(tmp)
+    assert {"BND", "VXUS"} <= set(st["funds_available"]) and set(FIVE) <= set(st["funds_available"])
+    panel = sim_data.build_panel(raw, ["VOO", "BND", "VXUS"])
+    assert panel["funds"] == ["VOO", "BND", "VXUS"] and panel["kinds"] == ["us_equity", "bond", "intl_equity"]
+    # ช่วงสอบเทียบเริ่มหลังกองที่ประวัติสั้นสุด (VXUS ยืดด้วย VEU ตั้งแต่ 2007-03 → ผลตอบแทนแรก 2007-04)
+    assert panel["stats"]["pool_range"][0] >= "2007-03"
+    r = engine.run_chunk(panel, engine.Config(P=100, T=60, horizons=(60,), seed=1, arms=("EQ", "ERC", "BLEND"), withholding_pct=0.15))
+    assert all(np.isfinite(x["V"]).all() for x in r["H"][60]["arms"].values())
+
+
+def test_fetch_raw_skips_a_broken_extra_but_never_a_broken_core_fund(monkeypatch, real_fetch_raw):
+    from data.fetcher import PriceDataUnavailableError
+
+    real = _synthetic_raw(seed=5, extras=("BND", "VXUS"))
+
+    def fake_prices(tickers, years):
+        for t in tickers:
+            if t == "VXUS":
+                raise PriceDataUnavailableError("Yahoo 404 (จำลอง)")
+        return real.daily[list(dict.fromkeys(tickers))]
+
+    monkeypatch.setattr(sim_data, "fetch_total_return_history", fake_prices)
+    monkeypatch.setattr(sim_data, "_fetch_fred", lambda sid: real.fred[sid])
+    monkeypatch.setattr(sim_data, "fetch_dividends", lambda ts: {t: real.dividends.get(t, pd.Series(dtype=float)) for t in ts})
+    monkeypatch.setattr(sim_data, "extra_tickers", lambda: ["BND", "VXUS"])
+    raw = real_fetch_raw(FIVE)
+    assert "BND" in raw.daily.columns and "VXUS" not in raw.daily.columns
+    assert any("VXUS" in n and "ข้าม" in n for n in raw.notes), "ข้ามกองเสริมต้องบอกใน notes ไม่เงียบ"
+
+    def core_down(tickers, years):
+        if "VOO" in tickers:
+            raise PriceDataUnavailableError("Yahoo ล่ม (จำลอง)")
+        return fake_prices(tickers, years)
+
+    monkeypatch.setattr(sim_data, "fetch_total_return_history", core_down)
+    with pytest.raises(sim_data.SimulationDataError, match="ดึงราคา"):
+        real_fetch_raw(FIVE)
+
+
+def test_what_if_universe_validates_inputs(monkeypatch, tmp_path):
+    monkeypatch.setattr(sim_data, "DATA_DIR", tmp_path)
+    sim_data.save_raw(_synthetic_raw(seed=6), tmp_path)
+    kw = dict(budget_thb=5000.0, paths=200, worlds=("rw",), horizons=(60,))
+    with pytest.raises(ValueError, match="2 กอง"):
+        service.simulate_universe({"VOO": 1.0}, **kw)
+    with pytest.raises(ValueError, match="ZZZZ"):
+        service.simulate_universe({"VOO": 1.0, "ZZZZ": 1.0}, **kw)
+    res = service.simulate_universe({"VOO": 0.4, "BND": 0.6}, **kw)
+    assert res["universe"]["tickers"] == ["BND", "VOO"] and res["universe"]["kinds"] == ["bond", "us_equity"]
+    s = res["worlds"]["rw"]["horizons"]["60"]["strategies"]
+    assert {"ERC", "BLEND", "1/N", "สัดส่วนที่กำหนด"} <= set(s)
+    # พันธบัตร 60% ต้องนิ่งกว่าหุ้นล้วนเทียบ 1/N ที่มีหุ้นครึ่งหนึ่ง — ตรวจทิศทางของความเสี่ยง ไม่ใช่ตัวเลข
+    assert s["สัดส่วนที่กำหนด"]["dd_med"] <= s["1/N"]["dd_med"] + 3.0
+
+
+# ---------------------------------------------------------------- ความแม่นยำของโมเดล (validate)
+def _calib(panel, **kw):
+    from simulation import validate
+
+    return validate.calibration_report(panel, paths=400, seed=3, **kw)
+
+
+def test_calibration_report_shape_and_determinism():
+    panel = _panel(seed=11, hr=215)
+    a, b = _calib(panel), _calib(panel)
+    assert a == b
+    names = [c["name"] for c in a["checks"]]
+    assert sum(n.startswith("ความผันผวนต่อปี") for n in names) == 5
+    assert any("หางหนา" in n for n in names) and any("MaxDD" in n for n in names) and any("12 เดือนที่แย่สุด" in n for n in names)
+    assert all(c["status"] for c in a["checks"]) and a["caveat"]
+    assert set(a["flags_loose"]) <= set(names) and a["verdict"]
+
+
+def test_calibration_flags_a_model_that_is_looser_than_history():
+    """ประวัติผันผวนสูงกว่าที่โมเดลสร้างมาก → ต้องถูกจับว่า "หลวมกว่าอดีต" (ความเสี่ยงที่แสดงจะต่ำเกินจริง)."""
+    panel = _panel(seed=11, hr=215)
+    n = len(panel["funds"])
+    wild = {**panel, "chron": {**panel["chron"], "X": panel["chron"]["X"].copy()}}
+    wild["chron"]["X"][:, :n] *= 4.0  # ประวัติ "จริง" ผันผวนกว่าโมเดล 4 เท่า
+    rep = _calib(wild)
+    assert any("ความผันผวนต่อปี" in f for f in rep["flags_loose"]), rep["flags_loose"]
+    assert rep["verdict"] != "ok"
+
+
+def test_percentile_and_drawdown_helpers():
+    from simulation import validate
+
+    assert validate._percentile_of(5.0, np.arange(10.0)) == 50.0
+    flat = np.zeros((1, 24))
+    assert validate._max_drawdown(flat)[0] == pytest.approx(0.0)
+    crash = np.array([[0.1, 0.1, -0.5, 0.0, 0.2]])
+    assert validate._max_drawdown(crash)[0] == pytest.approx(1 - np.exp(-0.5))
+    assert validate._worst_12m(np.full((1, 12), -0.01))[0] == pytest.approx(-0.12)
+
+
+def test_calibration_lines_warn_only_when_loose_and_always_count():
+    ok = {"checks": [{"name": "a", "status": "ok"}, {"name": "ความผันผวนเป็นกลุ่ม x", "status": "ok", "value": -0.09, "model": 0.1, "history": 0.2}],
+          "flags_loose": []}
+    text = "\n".join(service.calibration_lines(ok))
+    assert "ผ่านการตรวจ 2/2 ข้อ" in text and "⚠️" not in text and "อ่อนกว่าอดีต" in text
+    bad = {"checks": [{"name": "MaxDD", "status": "โมเดลหลวมกว่าอดีต"}], "flags_loose": ["MaxDD"]}
+    assert "⚠️ โมเดลหลวมกว่าประวัติจริง" in "\n".join(service.calibration_lines(bad))
+    assert service.calibration_lines(None) == []

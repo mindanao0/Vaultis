@@ -23,6 +23,7 @@ from simulation import engine
 logger = logging.getLogger(__name__)
 
 LAST_PLAN_FILE = "last_plan.json"
+CALIBRATION_FILE = "calibration.json"
 #: โลกที่รันเป็นค่าเริ่มต้น: สุ่มเดิน (ไม่มีรูปแบบ) · ต่อเนื่อง (ร้ายต่อสูตรสวนทางราคา) · ประวัติจริง (ไม่พึ่งข้อสมมติเหตุการณ์)
 DEFAULT_WORLDS = ("rw", "mom", "boot")
 DEFAULT_HORIZONS = (60, 120, 240)
@@ -32,14 +33,33 @@ CHUNK = 3000
 #: ผลต่างเล็กกว่านี้ (pp ของ IRR/ปี) ที่ simulation จำนวนเส้นทางระดับนี้แยกจากสัญญาณรบกวนไม่ได้
 NOISE_FLOOR_PP = 0.15
 
-LIMITATIONS = (
-    "ผลตอบแทนคาดหวังข้างหน้าและเหตุการณ์ใหญ่ส่วนใหญ่ (สงคราม ฟองสบู่ เงินเฟ้อยาว ฯลฯ) เป็น **ข้อสมมติ** ไม่ใช่ข้อมูลที่วัด",
-    "ใช้ **เทียบสูตรกัน** ไม่ใช่พยากรณ์ผลตอบแทนจริง และสร้างหลักฐานว่าสูตรไหนชนะไม่ได้ (ผลคือสิ่งที่สมมติใส่เข้าไป)",
-    "แผนในโมเดลเป็นสัดส่วนฐานล้วน ไม่รวมการเอียงตามคะแนนรายเดือน 0.6–1.4× ของแผนจริง",
-    "ไม่หักภาษีหัก ณ ที่จ่ายปันผล 15% (กองที่ปันผลสูงจึงดูดีกว่าความจริงเล็กน้อย)",
-    "ข้อมูลกองเริ่มราว 2004 ไม่มีทศวรรษ 1970 — เหตุการณ์แบบนั้นมาจากข้อสมมติเท่านั้น",
-    "ช่วงความเชื่อมั่นคือความคลาดเคลื่อนของการสุ่ม ไม่ใช่ความไม่แน่นอนของโมเดล ซึ่งใหญ่กว่ามาก",
-)
+def limitations(costs: dict[str, Any] | None = None) -> tuple[str, ...]:
+    """ข้อจำกัดของโมเดลที่ต้องแสดงคู่กับตัวเลขเสมอ — บรรทัดเรื่องภาษี/ต้นทุนเปลี่ยนตามว่าหักแล้วหรือยัง."""
+    w = float((costs or {}).get("withholding_pct", 0.0))
+    fx = float((costs or {}).get("fx_spread_pct", 0.0))
+    if w > 0:
+        cost_line = (f"หักภาษีหัก ณ ที่จ่ายปันผล {w * 100:.0f}% (ตาม yield 12 เดือนล่าสุดของแต่ละกอง คงที่ตลอดอนาคต) "
+                     f"และ FX spread {fx:.2f}% ต่อการซื้อ (ค่าประมาณจาก config) แล้ว · ค่าคอม Dime 0.15% ต่อรายการรวมอยู่แล้ว")
+    else:
+        cost_line = "ไม่ได้หักภาษีหัก ณ ที่จ่ายปันผล 15% และ FX spread (กองที่ปันผลสูงจึงดูดีกว่าความจริงเล็กน้อย)"
+    return (
+        "ผลตอบแทนคาดหวังข้างหน้าและเหตุการณ์ใหญ่ส่วนใหญ่ (สงคราม ฟองสบู่ เงินเฟ้อยาว ฯลฯ) เป็น **ข้อสมมติ** ไม่ใช่ข้อมูลที่วัด",
+        "ใช้ **เทียบสูตรกัน** ไม่ใช่พยากรณ์ผลตอบแทนจริง และสร้างหลักฐานว่าสูตรไหนชนะไม่ได้ (ผลคือสิ่งที่สมมติใส่เข้าไป)",
+        "แผนในโมเดลเป็นสัดส่วนฐานล้วน ไม่รวมการเอียงตามคะแนนรายเดือน 0.6–1.4× ของแผนจริง",
+        cost_line,
+        "ข้อมูลกองเริ่มราว 2004 ไม่มีทศวรรษ 1970 — เหตุการณ์แบบนั้นมาจากข้อสมมติเท่านั้น",
+        "ช่วงความเชื่อมั่นคือความคลาดเคลื่อนของการสุ่ม ไม่ใช่ความไม่แน่นอนของโมเดล ซึ่งใหญ่กว่ามาก",
+    )
+
+
+LIMITATIONS = limitations()   # รูปแบบก่อนหักต้นทุน (ใช้เมื่อไม่มีข้อมูลต้นทุน) — ผลจริงเก็บรายการของตัวเองไว้ใน result["limitations"]
+
+
+def current_costs() -> dict[str, float]:
+    """ต้นทุนที่ใส่ใน simulation: ภาษีปันผลหัก ณ ที่จ่าย (``portfolio.costs.US_DIVIDEND_WITHHOLDING``) + FX spread จาก config."""
+    from portfolio.costs import US_DIVIDEND_WITHHOLDING, fx_spread_pct
+
+    return {"withholding_pct": float(US_DIVIDEND_WITHHOLDING), "fx_spread_pct": float(fx_spread_pct())}
 
 
 # ---------------------------------------------------------------- รันเอนจิน
@@ -51,14 +71,16 @@ def _task(args):
 
 
 def run_world(panel: dict, world: str, arms: tuple, fixed: dict | None, *, paths: int, horizons: tuple, seed: int,
-              budget_thb: float, drift: str = "mid", event_mult: float = 1.0, workers: int = 1) -> dict[int, dict[str, dict]]:
+              budget_thb: float, drift: str = "mid", event_mult: float = 1.0, workers: int = 1,
+              withholding_pct: float = 0.0, fx_spread_pct: float = 0.0) -> dict[int, dict[str, dict]]:
     """รันหนึ่งโลก → ``{ขอบฟ้า: {กลยุทธ์: {V, irr, maxdd, ...}}}`` ต่อเส้นทางรวมทุกก้อน."""
     if not 100 <= paths <= MAX_PATHS:
         raise ValueError(f"จำนวนเส้นทางต้องอยู่ระหว่าง 100 ถึง {MAX_PATHS:,} (ได้ {paths})")
     n_chunks = max(1, -(-paths // CHUNK))
     sizes = [min(CHUNK, paths - i * CHUNK) for i in range(n_chunks)]
     cfgs = [engine.Config(world=world, drift=drift, event_mult=event_mult, P=s, seed=seed + 1000 * i, arms=arms, fixed=fixed,
-                          horizons=horizons, budget_thb=budget_thb, fx_revert=(0.0 if world == "boot" else engine.FX_REVERT))
+                          horizons=horizons, budget_thb=budget_thb, fx_revert=(0.0 if world == "boot" else engine.FX_REVERT),
+                          withholding_pct=withholding_pct, fx_spread_pct=fx_spread_pct)
             for i, s in enumerate(sizes)]
     if workers > 1 and n_chunks > 1:
         with ProcessPoolExecutor(max_workers=min(workers, n_chunks)) as pool:
@@ -109,13 +131,14 @@ def summarize_world(res: dict[int, dict[str, dict]], budget_thb: float, referenc
 
 def simulate_strategies(panel: dict, strategies: dict[str, Any], *, reference: str, budget_thb: float, worlds=DEFAULT_WORLDS,
                         horizons=DEFAULT_HORIZONS, paths: int | None = None, seed: int = 20261005, drift: str = "mid",
-                        workers: int = 1) -> dict[str, Any]:
+                        workers: int = 1, costs: dict[str, float] | None = None) -> dict[str, Any]:
     """รันหลายกลยุทธ์บนเส้นทางเดียวกันในหลายโลก.
 
     ``strategies``: ``{ชื่อ: "DAR"|"EQ"|"ERC"|"BLEND"}`` (สูตรสด คำนวณใหม่ทุกเดือนในโลกจำลอง)
     หรือ ``{ชื่อ: {ticker: น้ำหนัก}}`` (น้ำหนักคงที่ เช่นแผน preset/กำหนดเอง)
     """
     paths = DEFAULT_PATHS if paths is None else paths
+    costs = current_costs() if costs is None else costs
     funds = list(panel["funds"])
     dynamic = tuple(v for v in strategies.values() if isinstance(v, str))
     unknown = [v for v in dynamic if v not in ("DAR", "EQ", "ERC", "BLEND")]
@@ -135,13 +158,61 @@ def simulate_strategies(panel: dict, strategies: dict[str, Any], *, reference: s
             fixed[name] = w / w.sum()
     # ชื่อของสูตรสดในเอนจินคือชื่อสูตรเอง — จับคู่กลับเป็นชื่อที่ผู้เรียกตั้ง
     name_of = {v: k for k, v in strategies.items() if isinstance(v, str)}
-    result: dict[str, Any] = {"worlds": {}, "reference": reference}
+    result: dict[str, Any] = {"worlds": {}, "reference": reference, "costs": {
+        **costs, "yields": {f: round(float(panel["yields"][f]), 4) for f in funds} if "yields" in panel else {},
+        "yield_source": panel["meta"].get("yield_source", {})}, "limitations": list(limitations(costs))}
     for i, world in enumerate(worlds):
         res = run_world(panel, world, tuple(dict.fromkeys(dynamic)), fixed or None, paths=paths, horizons=tuple(horizons),
-                        seed=seed + 7919 * i, budget_thb=budget_thb, drift=drift, workers=workers)
+                        seed=seed + 7919 * i, budget_thb=budget_thb, drift=drift, workers=workers,
+                        withholding_pct=float(costs.get("withholding_pct", 0.0)), fx_spread_pct=float(costs.get("fx_spread_pct", 0.0)))
         renamed = {h: {name_of.get(a, a): x for a, x in arms.items()} for h, arms in res.items()}
         result["worlds"][world] = {"label": engine.WORLD_TH[world], "horizons": summarize_world(renamed, budget_thb, reference)}
     return result
+
+
+# ---------------------------------------------------------------- จักรวาลกองอื่น ๆ (what-if)
+_PANEL_CACHE: dict[tuple, dict] = {}
+
+
+def panel_for(tickers: list[str]) -> dict:
+    """แผงสอบเทียบของกองที่ระบุ จากข้อมูลดิบที่ดึงไว้ (ไม่ยิงเน็ต) — cache ตาม hash ของข้อมูล + รายชื่อ."""
+    raw = sim_data.load_raw()
+    key = (raw.sha256, tuple(sorted(str(t).strip().upper() for t in tickers)))
+    if key not in _PANEL_CACHE:
+        if len(_PANEL_CACHE) > 8:
+            _PANEL_CACHE.clear()
+        _PANEL_CACHE[key] = sim_data.build_panel(raw, list(key[1]))
+    return _PANEL_CACHE[key]
+
+
+def simulate_universe(weights: dict[str, float], *, budget_thb: float, paths: int | None = None, workers: int = 1,
+                      worlds=DEFAULT_WORLDS, horizons=DEFAULT_HORIZONS, seed: int = 20261005,
+                      label: str = "สัดส่วนที่กำหนด") -> dict[str, Any]:
+    """ลองสัดส่วนที่กำหนดเอง บน **จักรวาลของกองที่ระบุเอง** (รวมกองเสริมได้) เทียบ ERC / blend / 1/N ของจักรวาลเดียวกัน.
+
+    กองที่ไม่อยู่ในข้อมูลที่ดึงไว้ = ``SimulationDataError`` บอกตรง ๆ ว่ากองไหน (ห้ามเดา/ข้าม)
+    """
+    tickers = sorted(str(t).strip().upper() for t, w in weights.items() if float(w) > 0)
+    if len(tickers) < 2:
+        raise ValueError("ต้องมีอย่างน้อย 2 กองที่มีน้ำหนัก > 0 จึงเทียบกับ ERC / 1/N ได้")
+    status = sim_data.data_status()
+    if status.get("exists"):
+        available = set(status.get("funds_available", []))
+        absent = [t for t in tickers if t not in available]
+        if absent:
+            # ผิดที่อินพุตของผู้เรียก (ไม่ใช่ข้อมูลล่ม) → ValueError ให้ API ตอบ 400 พร้อมรายชื่อที่ใช้ได้
+            raise ValueError(
+                f"ไม่มีข้อมูลของ {', '.join(absent)} ในข้อมูลที่ดึงไว้ (กองที่ใช้ได้: {', '.join(sorted(available))})")
+    panel = panel_for(tickers)
+    res = simulate_strategies(panel, {"ERC": "ERC", "BLEND": "BLEND", "1/N": "EQ", label: {t: float(weights[t]) for t in tickers}},
+                              reference="ERC", budget_thb=budget_thb, paths=paths, workers=workers, worlds=worlds,
+                              horizons=horizons, seed=seed)
+    guessed = panel["meta"].get("guessed_kinds") or []
+    res["universe"] = {"tickers": panel["funds"], "kinds": panel["kinds"], "as_of": panel["meta"]["as_of"],
+                       "pool_months": panel["meta"]["n_pool_months"], "pool_range": panel["stats"].get("pool_range"),
+                       "guessed_kinds": guessed}
+    res["notes"] = ([f"ไม่รู้จักชนิดของ {', '.join(guessed)} — ใช้ค่าสมมติของหุ้นสหรัฐ"] if guessed else [])
+    return res
 
 
 # ---------------------------------------------------------------- แผนปัจจุบันของระบบ
@@ -186,7 +257,7 @@ def simulate_current_plan(*, paths: int | None = None, workers: int = 1, panel: 
         "paths_per_world": paths, "seed": seed, "reference": reference, "worlds": res["worlds"],
         "data": {"as_of": panel["meta"]["as_of"], "last_bar": panel["meta"]["last_bar"], "fetched_at": panel["meta"]["fetched_at"],
                  "pool_months": panel["meta"]["n_pool_months"], "raw_sha256": panel["meta"]["raw_sha256"]},
-        "notes": notes, "limitations": list(LIMITATIONS), "noise_floor_pp": NOISE_FLOOR_PP,
+        "notes": notes, "limitations": res["limitations"], "costs": res["costs"], "noise_floor_pp": NOISE_FLOOR_PP,
     }
     return out
 
@@ -212,6 +283,45 @@ def load_last_plan(directory: Path | None = None) -> dict[str, Any] | None:
         return None
 
 
+def save_calibration(report: dict[str, Any], directory: Path | None = None) -> Path:
+    """เก็บผลตรวจความแม่นยำของโมเดล (``validate.calibration_report``) แบบ atomic."""
+    d = Path(directory or sim_data.DATA_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    report = {**report, "created_at": _now_iso()}
+    tmp = d / (CALIBRATION_FILE + ".tmp")
+    tmp.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=float), encoding="utf-8")
+    os.replace(tmp, d / CALIBRATION_FILE)
+    return d / CALIBRATION_FILE
+
+
+def load_calibration(directory: Path | None = None) -> dict[str, Any] | None:
+    p = Path(directory or sim_data.DATA_DIR) / CALIBRATION_FILE
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.error("อ่านผลตรวจความแม่นยำของโมเดลไม่ได้: %s", exc)
+        return None
+
+
+def calibration_lines(report: dict[str, Any] | None) -> list[str]:
+    """บรรทัดสรุปการตรวจโมเดลเทียบประวัติจริง — โมเดล "หลวมกว่าอดีต" ต้องเตือน (ความเสี่ยงที่แสดงอาจต่ำเกินจริง)."""
+    if not report:
+        return []
+    checks = report.get("checks", [])
+    ok = sum(1 for c in checks if c.get("status") == "ok")
+    lines: list[str] = []
+    if report.get("flags_loose"):
+        lines.append("   ⚠️ โมเดลหลวมกว่าประวัติจริงใน: " + ", ".join(report["flags_loose"]) + " — ตัวเลขความเสี่ยงอาจต่ำเกินจริง")
+    acf = next((c for c in checks if c["name"].startswith("ความผันผวนเป็นกลุ่ม")), None)
+    note = ""
+    if acf and acf.get("value") is not None and acf["value"] < -0.05:
+        note = f" · ความผันผวนเป็นกลุ่มของโมเดลอ่อนกว่าอดีต ({acf['model']} เทียบ {acf['history']})"
+    lines.append(f"   เทียบประวัติจริง: ผ่านการตรวจ {ok}/{len(checks)} ข้อ{note}")
+    return lines
+
+
 def last_plan_age_days(result: dict[str, Any] | None, now: datetime | None = None) -> float | None:
     if not result or not result.get("created_at"):
         return None
@@ -220,7 +330,8 @@ def last_plan_age_days(result: dict[str, Any] | None, now: datetime | None = Non
 
 
 # ---------------------------------------------------------------- ข้อความสรุป (Discord / dashboard)
-def summary_lines(result: dict[str, Any] | None, *, stale_after_days: float = 14.0) -> list[str]:
+def summary_lines(result: dict[str, Any] | None, *, stale_after_days: float = 14.0,
+                  calibration: dict[str, Any] | None = None) -> list[str]:
     """สรุปสั้น ๆ ของผล simulation เป็นข้อความไทย — ไม่มีผล/เก่าเกินไป = **บอก** ไม่ใช่เงียบ (ไม่มีข้อความ ≠ ปลอดภัย)."""
     if not result:
         return ["🧪 Simulation: ยังไม่มีผลของแผนนี้ (ยังไม่ได้ดึงข้อมูลหรือยังไม่เคยรัน) — ไม่ได้แปลว่าแผนผ่านการจำลองแล้ว"]
@@ -252,5 +363,7 @@ def summary_lines(result: dict[str, Any] | None, *, stale_after_days: float = 14
             lines.append(f"   โลกประวัติจริงสุ่มบล็อก (ไม่พึ่งข้อสมมติเหตุการณ์): มัธยฐาน {b['irr_p50']:.1f}%/ปี ขาดทุนสูงสุดมัธยฐาน {b['dd_med']:.0f}% — อดีตดีผิดปกติ ถือเป็นขอบบน")
     except (KeyError, TypeError) as exc:
         return [f"🧪 Simulation: อ่านผลไม่ได้ ({exc}) — รันใหม่"]
-    lines.append(f"   ข้อมูลถึง {result['data']['as_of']} · ใช้เทียบสูตรกัน ไม่ใช่พยากรณ์ · ข้อจำกัด: ผลตอบแทนคาดหวัง/เหตุการณ์เป็นข้อสมมติ, ฐานล้วนไม่รวมการเอียงตามคะแนน")
+    lines.extend(calibration_lines(calibration))
+    lines.append(f"   ข้อมูลถึง {result['data']['as_of']} · ใช้เทียบสูตรกัน ไม่ใช่พยากรณ์ · ข้อจำกัด: ผลตอบแทนคาดหวัง/เหตุการณ์เป็นข้อสมมติ, ฐานล้วนไม่รวมการเอียงตามคะแนน"
+                 + ("; หักภาษีปันผล+FX spread แล้ว" if (result.get("costs") or {}).get("withholding_pct") else "; ยังไม่หักภาษีปันผล"))
     return lines

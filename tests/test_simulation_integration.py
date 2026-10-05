@@ -51,6 +51,7 @@ def test_first_run_fetches_then_runs_the_plan_and_saves_it(sim_env, tmp_path):
     assert out["ok"] and out["fetched"] and sim_env["fetch"] == 1
     assert any("ดึงข้อมูลสด" in s for s in out["steps"]) and any("รันแผน" in s for s in out["steps"])
     last = service.load_last_plan(tmp_path)
+    assert any("ตรวจความแม่นยำ" in st for st in out["steps"]) and service.load_calibration(tmp_path)["checks"]
     assert last and last["plan"]["method"] == "blend" and last["plan"]["plan_strategy"] == "BLEND"
     assert last["inputs"]["method"] == "blend" and last["limitations"], "ผลต้องพกข้อจำกัดของโมเดลไปด้วยเสมอ"
     assert set(last["worlds"]) == {"rw", "mom", "boot"}
@@ -100,6 +101,18 @@ def test_force_always_refetches(sim_env):
 
 
 # ---------------------------------------------------------------- Discord
+def test_calibration_is_not_recomputed_every_run(sim_env, monkeypatch):
+    from simulation import validate
+
+    job.run_simulation_refresh()
+    called = []
+    monkeypatch.setattr(validate, "calibration_report", lambda *a, **k: called.append(1) or {"checks": []})
+    job.run_simulation_refresh()
+    assert not called, "ข้อมูลยังใหม่และผลตรวจยังใหม่ ต้องไม่ตรวจซ้ำทุกรอบ"
+    job.run_simulation_refresh(now=_now(days=sim_data.STALE_AFTER_DAYS + 2))
+    assert called, "ข้อมูลถูกดึงใหม่แล้ว ต้องตรวจโมเดลใหม่"
+
+
 def test_discord_context_carries_the_simulation_summary(sim_env):
     from analysis import ai_advisor
 
@@ -108,6 +121,7 @@ def test_discord_context_carries_the_simulation_summary(sim_env):
     job.run_simulation_refresh()
     after = "\n".join(ai_advisor._base_context_lines([]))
     assert "Simulation แผน (BLEND)" in after and "10 ปี" in after and "20 ปี" in after and "ไม่ใช่พยากรณ์" in after
+    assert "เทียบประวัติจริง: ผ่านการตรวจ" in after and "หักภาษีปันผล+FX spread แล้ว" in after
 
 
 # ---------------------------------------------------------------- API
@@ -126,6 +140,16 @@ def test_api_status_and_last_when_nothing_has_run(sim_env, client):
     assert r.status_code == 404 and "ยังไม่มีผล" in r.json()["detail"]
 
 
+def test_api_calibration_and_funds(sim_env, client):
+    assert client.get("/api/simulation/calibration").status_code == 404
+    assert client.get("/api/simulation/funds").json()["data"] == {"data_exists": False, "funds": []}
+    job.run_simulation_refresh()
+    cal = client.get("/api/simulation/calibration").json()["data"]
+    assert cal["checks"] and any("เทียบประวัติจริง" in ln for ln in cal["summary_lines"])
+    funds = {f["ticker"]: f for f in client.get("/api/simulation/funds").json()["data"]["funds"]}
+    assert {"VOO", "BND", "VXUS"} <= set(funds) and funds["BND"]["kind"] == "bond" and not funds["BND"]["kind_is_guess"]
+
+
 def test_api_run_without_data_is_503_not_a_made_up_answer(sim_env, client):
     r = client.post("/api/simulation/run", json={"paths": 100})
     assert r.status_code == 503 and "ยังไม่มีข้อมูล" in r.json()["detail"]
@@ -139,15 +163,19 @@ def test_api_run_whatif_and_last_after_data_exists(sim_env, client):
     assert body["plan"]["plan_strategy"] == "BLEND" and any("10 ปี" in ln for ln in body["summary_lines"])
     what = client.post("/api/simulation/whatif", json={"weights": {"VOO": 0.5, "GLDM": 0.5}, "paths": 100})
     assert what.status_code == 200
-    assert "สัดส่วนที่กำหนด" in what.json()["data"]["worlds"]["rw"]["horizons"]["240"]["strategies"]
+    body = what.json()["data"]
+    assert "สัดส่วนที่กำหนด" in body["worlds"]["rw"]["horizons"]["240"]["strategies"]
+    assert body["universe"]["tickers"] == ["GLDM", "VOO"] and body["costs"]["withholding_pct"] == 0.15
     assert client.get("/api/simulation/last").status_code == 200
     assert client.get("/api/simulation/status").json()["data"]["last_plan"]["age_days"] < 1
 
 
 def test_api_rejects_unknown_ticker_and_bad_paths(sim_env, client):
     job.run_simulation_refresh()
-    bad = client.post("/api/simulation/whatif", json={"weights": {"ZZZZ": 1.0}, "paths": 100})
-    assert bad.status_code == 400 and "ZZZZ" in bad.json()["detail"], "กองที่ไม่อยู่ในข้อมูลต้องถูกปฏิเสธ ไม่ถูกทิ้งเงียบ ๆ"
+    bad = client.post("/api/simulation/whatif", json={"weights": {"VOO": 1.0, "ZZZZ": 1.0}, "paths": 100})
+    assert bad.status_code == 400 and "ZZZZ" in bad.json()["detail"] and "VOO" in bad.json()["detail"], "กองที่ไม่อยู่ในข้อมูลต้องถูกปฏิเสธ พร้อมบอกกองที่ใช้ได้"
+    one = client.post("/api/simulation/whatif", json={"weights": {"VOO": 1.0}, "paths": 100})
+    assert one.status_code == 400 and "2 กอง" in one.json()["detail"]
     assert client.post("/api/simulation/run", json={"paths": 5}).status_code == 422
     assert client.post("/api/simulation/run", json={"paths": 10_000_000}).status_code == 422
 
@@ -233,8 +261,10 @@ def test_dashboard_panel_shows_tables_limitations_and_plan_label(sim_env, monkey
     panel.render_simulation_panel()
     text = "\n".join(fake.said)
     assert "BLEND" in text and "ข้อมูลถึง" in text and "ผลต่างระหว่างสูตรที่เล็กกว่า" in text
-    frames = fake.frames
+    frames = [f for f in fake.frames if "กลยุทธ์" in f.columns]
     assert len(frames) == 9, "3 โลก × 3 ขอบฟ้า (5, 10, 20 ปี) = 9 ตาราง"
+    cal = [f for f in fake.frames if "ข้อ" in f.columns]
+    assert len(cal) == 1 and cal[0]["ผล"].isin(["ok", "หลวมกว่าอดีต", "โหดกว่าอดีตมาก", "ต่างจากอดีต", "โมเดลหลวมกว่าอดีต", "โมเดลโหดกว่าอดีตมาก"]).all()
     assert "กลยุทธ์" in frames[0].columns and set(frames[0]["กลยุทธ์"]) >= {"ERC", "BLEND", "1/N"}
 
 

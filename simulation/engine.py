@@ -236,6 +236,11 @@ class Config:
     events_only: tuple | None = None
     budget_thb: float = DEFAULT_BUDGET_THB
     drift_overrides: dict = field(default_factory=dict)   # {ticker: CAGR} ทับค่าตามชนิด
+    #: ภาษีหัก ณ ที่จ่ายปันผล (สัดส่วน เช่น 0.15) — หักจากผลตอบแทนรายเดือนตาม yield 12 เดือนล่าสุดของแต่ละกอง (panel["yields"])
+    #: ค่าเริ่มต้น 0 = เหมือนตัววิจัย (parity) · ``service`` ใส่ค่าจริงจาก ``portfolio.costs`` เสมอ
+    withholding_pct: float = 0.0
+    #: FX spread ต่อการซื้อ (%) — หักจากเงินที่แปลงเป็น USD ทุกเดือน (ค่าประมาณจาก config costs.fx_spread_pct)
+    fx_spread_pct: float = 0.0
     debug: int = 0
 
 
@@ -334,6 +339,11 @@ def run_chunk(panel: dict, cfg: Config) -> dict:
         persistent = rng.normal(0.0, world["dsd"], size=(P, 1, N))
         drift_m = (np.log1p(g)[None, None, :] + common + persistent) / 12.0
         lr += drift_m
+    if cfg.withholding_pct:
+        if "yields" not in panel:
+            raise ValueError("แผงข้อมูลไม่มี yield ของกอง — คำนวณภาษีปันผลไม่ได้ (ดึงข้อมูลใหม่)")
+        y = np.array([float(panel["yields"][f]) for f in funds])
+        lr -= (cfg.withholding_pct * y / 12.0)[None, None, :]
     fx = dev[:, :, N] + (0.0 if boot else rng.normal(0.0, FX_DRIFT_SD, size=(P, 1)) / 12.0)
     us_m = dev[:, :, N + 1] + mu_sim[N + 1]
     d_10 = dev[:, :, N + 3]
@@ -419,7 +429,7 @@ def run_chunk(panel: dict, cfg: Config) -> dict:
             delta = 0.0
 
         fx_now = np.exp(LF[:, k])
-        buy_usd = BUDGET_THB / fx_now
+        buy_usd = BUDGET_THB * (1.0 - cfg.fx_spread_pct / 100.0) / fx_now
         price_now = np.exp(LL[:, n, :])
 
         W = {}

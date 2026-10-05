@@ -62,6 +62,11 @@ def is_guessed(ticker: str) -> bool:
     return str(ticker).strip().upper() not in _REGISTRY
 
 
+def extra_tickers() -> list[str]:
+    """กองเสริมที่ดึงข้อมูลไว้เสมอ (นอกเหนือจากกองที่ผู้ใช้ติดตาม) — ให้ลองสัดส่วนที่มีสินทรัพย์เหล่านี้ใน simulation ได้ทันที."""
+    return [a.ticker for a in KNOWN_EXTRA_ASSETS]
+
+
 def universe_for(tickers: list[str] | tuple[str, ...]) -> tuple[Asset, ...]:
     out, seen = [], set()
     for t in tickers:

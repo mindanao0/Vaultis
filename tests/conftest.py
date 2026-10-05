@@ -207,6 +207,17 @@ def _isolate_user_data_files(tmp_path_factory, monkeypatch):
     assert_user_data_paths_are_isolated()
 
 
+import simulation.data as _sim_data_module
+
+_REAL_FETCH_RAW = _sim_data_module.fetch_raw  # ตัวจริงก่อนถูกปิดด้วย autouse — ไว้เทสต์ตรรกะของมันเองด้วยข้อมูลสังเคราะห์
+
+
+@pytest.fixture
+def real_fetch_raw():
+    """``simulation.data.fetch_raw`` ตัวจริง (ไม่ถูกปิด) — ใช้กับเทสต์ที่สตับชั้นล่าง (ราคา/FRED/ปันผล) เองทั้งหมด."""
+    return _REAL_FETCH_RAW
+
+
 @pytest.fixture(autouse=True)
 def _no_live_erc_price_fetch(request, monkeypatch):
     """สัดส่วนฐานแบบ ERC (ค่าเริ่มต้นตั้งแต่ 2026-09-30) ดึงราคาจริงทุกครั้งที่คำนวณ.

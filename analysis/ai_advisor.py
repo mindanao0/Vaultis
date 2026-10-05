@@ -504,9 +504,9 @@ def _base_context_lines(notes: list[str]) -> list[str]:
     # simulation เป็นงานหลัก: ทุกแผนที่ส่งออกไปต้องมีผลการลองรันในโลกจำลองแนบไปด้วย (อ่านผลที่ scheduler รันไว้ — ไม่รันที่นี่
     # เพราะใช้เวลาหลายวินาที) ไม่มีผล/เก่าเกินไป = บอกตรง ๆ ไม่เงียบ · ห้ามให้พังจนแผนที่คำนวณเสร็จแล้วไม่ถูกส่ง
     try:
-        from simulation.service import load_last_plan, summary_lines
+        from simulation.service import load_calibration, load_last_plan, summary_lines
 
-        lines.extend(summary_lines(load_last_plan()))
+        lines.extend(summary_lines(load_last_plan(), calibration=load_calibration()))
     except Exception as exc:  # noqa: BLE001
         lines.append(f"🧪 Simulation: อ่านผลไม่ได้ ({exc}) — ไม่ได้แปลว่าแผนผ่านการจำลองแล้ว")
     return lines

@@ -53,18 +53,24 @@ def synthetic_panel(n=5, seed=0, hr=200):
         "chron": {"X": X, "S": np.vstack(pool_S), "days": np.concatenate(pool_days), "reg": np.zeros(len(X), dtype=int)},
         "meta": {"as_of": "2026-09-30", "plan_month": "2026-10", "last_bar": "2026-10-02", "funds": funds, "kinds": kinds,
                  "guessed_kinds": [], "raw_sha256": "x", "fetched_at": "2026-10-05T09:00:00+07:00", "n_pool_months": len(X),
-                 "live_months": hr, "dar_ready": hr >= 181},
-        "stats": {},
+                 "live_months": hr, "dar_ready": hr >= 181, "yield_source": {f: "measured" for f in funds}},
+        "stats": {}, "yields": {f: 0.02 for f in funds},
     }
 
 
-def synthetic_raw(tickers=None, seed=0):
+def synthetic_raw(tickers=None, seed=0, extras=("BND", "VXUS")):
     rng = np.random.default_rng(seed)
     tickers = tickers or FIVE
+    from simulation.universe import asset_for
+
     need = sim_data.required_tickers(tickers)
+    for e in extras:  # กองเสริม + กองพี่ (เหมือนที่ fetch_raw ดึงไว้เสมอ)
+        need += [e] + ([asset_for(e).calib_proxy] if asset_for(e).calib_proxy else [])
+    need = list(dict.fromkeys(need))
     days = pd.bdate_range("1993-01-04", "2026-10-02")
     starts = {"VOO": "2010-09-09", "SPY": "1993-01-04", "SCHD": "2011-10-20", "DVY": "2003-11-07", "QQQM": "2020-10-13",
-              "QQQ": "1999-03-10", "XLV": "1998-12-22", "GLDM": "2018-06-26", "GLD": "2004-11-18", "THB=X": "2003-12-01"}
+              "QQQ": "1999-03-10", "XLV": "1998-12-22", "GLDM": "2018-06-26", "GLD": "2004-11-18", "THB=X": "2003-12-01",
+              "BND": "2007-04-10", "AGG": "2003-09-29", "VXUS": "2011-01-28", "VEU": "2007-03-08"}
     cols = {}
     common = rng.normal(0.0003, 0.008, size=len(days))
     for t in need:
@@ -87,9 +93,20 @@ def synthetic_raw(tickers=None, seed=0):
     fred["DCOILWTICO"] = pd.Series(np.exp(4 + rng.normal(0, 0.02, len(dd)).cumsum() * 0.2), index=dd)
     fred["DEXTHUS"] = pd.Series(np.exp(3.4 + rng.normal(0, 0.004, len(dd)).cumsum()), index=dd)
     vd = pd.bdate_range("1990-01-02", "2026-10-01")
-    fred["VIXCLS"] = pd.Series(np.clip(18 + rng.normal(0, 1.2, len(vd)).cumsum() * 0.3, 9, 60), index=vd)
+    # VIX แกว่งเป็นคลื่น 12–35 (ไม่สุ่มเดิน): ให้ทุก regime (calm/stress/crisis) มีเดือนจริงในช่วงสอบเทียบแน่นอน ไม่ขึ้นกับ seed
+    fred["VIXCLS"] = pd.Series(23.5 + 11.5 * np.sin(np.arange(len(vd)) / 90.0) + rng.normal(0, 0.5, len(vd)), index=vd)
     yrs = pd.to_datetime([f"{y}-01-01" for y in range(1960, 2026)])
     fred["FPCPITOTLZGTHA"] = pd.Series(rng.normal(3.0, 1.5, len(yrs)), index=yrs)
-    return sim_data.RawInputs(daily=daily, fred=fred, tickers=list(tickers), fetched_at="2026-10-05T09:00:00+07:00")
+    # ปันผลรายไตรมาส ~0.5% ของราคา (ทอง = ไม่จ่าย → ซีรีส์ว่าง ซึ่งเป็นสถานะที่ถูกต้อง ไม่ใช่ข้อมูลหาย)
+    divs = {}
+    for t in list(tickers) + list(extras):
+        if t in ("GLDM",):
+            divs[t] = pd.Series(dtype=float)
+            continue
+        qd = pd.date_range("2012-03-15", "2026-09-15", freq="3MS") + pd.Timedelta(days=14)
+        px = daily[t].dropna()
+        qd = qd[qd >= px.index[0]]
+        divs[t] = pd.Series([float(px.asof(d)) * 0.005 for d in qd], index=qd)
+    return sim_data.RawInputs(daily=daily, fred=fred, tickers=list(tickers), fetched_at="2026-10-05T09:00:00+07:00", dividends=divs)
 
 
