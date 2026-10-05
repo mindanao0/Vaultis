@@ -3,7 +3,11 @@
 
 วิธีคำนวณฐาน (``portfolio.weighting_method`` — มติผู้ใช้ 2026-09-30)
 -----------------------------------------------------------------
-* ``erc`` (ค่าเริ่มต้น) — **ไม่มีสัดส่วนตายตัว** คำนวณจากข้อมูลทุกครั้งด้วย Equal Risk
+* ``blend`` (**ค่าเริ่มต้นตั้งแต่ 2026-10-05 — มติผู้ใช้**) — ERC ครึ่งหนึ่ง + 1/N ครึ่งหนึ่ง
+  (``risk_weights.BLEND_ERC_SHARE``) ผลตอบแทนสูงกว่า ERC ล้วน ~0.1 pp/ปี แลกกับ MaxDD ที่ลึกขึ้น ~1 จุด
+  (simulation 300,000 เส้นทาง/โลก: ``research/dar_sim/REPORT_NEW.md``) **ตกเกณฑ์ที่ล็อกไว้ก่อนรัน** ผู้ใช้เลือกเอง
+  ดึงราคาไม่ได้ → :class:`RiskWeightsUnavailable` เหมือน ERC (ไม่ถอยไป 1/N หรือ preset เงียบ ๆ)
+* ``erc`` — **ไม่มีสัดส่วนตายตัว** คำนวณจากข้อมูลทุกครั้งด้วย Equal Risk
   Contribution: ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน นับการขึ้นลงพร้อมกันด้วย
   (ดู ``portfolio/risk_weights.py`` — ที่มา ผล backtest และข้อจำกัด) ดึงราคาไม่ได้ →
   :class:`RiskWeightsUnavailable` **ห้ามถอยไปใช้ preset เงียบ ๆ** เพราะนั่นคือสูตรที่ผู้ใช้เลิกใช้
@@ -144,10 +148,12 @@ class RiskWeightsUnavailable(TargetWeightsError):
 
 
 WEIGHTING_ERC = "erc"
+#: ERC ครึ่ง + 1/N ครึ่ง — ค่าเริ่มต้นตั้งแต่ 2026-10-05 (มติผู้ใช้; ไม่ผ่านเกณฑ์ A1 ที่ล็อกไว้ — ดู risk_weights.py)
+WEIGHTING_BLEND = "blend"
 #: ERC + เพดานเซกเตอร์ 2× ตลาดโลก — ทางเลือก (backtest ไม่ผ่านเกณฑ์ที่ล็อกไว้: ดู risk_weights.py)
 WEIGHTING_ERC_SECTOR_CAP = "erc_sector_cap"
 WEIGHTING_PRESET = "preset"
-WEIGHTING_METHODS = (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP, WEIGHTING_PRESET)
+WEIGHTING_METHODS = (WEIGHTING_BLEND, WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP, WEIGHTING_PRESET)
 # นิยามเดียวอยู่ที่ utils/config.DEFAULT_CONFIG — ค่าเริ่มต้นสองที่ไม่พัง มันแค่เพี้ยนออกจากกัน
 DEFAULT_WEIGHTING = str(DEFAULT_CONFIG["portfolio"]["weighting_method"])
 
@@ -175,14 +181,14 @@ class TargetWeights:
     source: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     adjusted: bool = False
-    #: ``erc`` / ``preset`` — วิธีที่ใช้คำนวณ ``weights`` รอบนี้
+    #: ``blend`` / ``erc`` / ``erc_sector_cap`` / ``preset`` — วิธีที่ใช้คำนวณ ``weights`` รอบนี้
     method: str = WEIGHTING_PRESET
     #: รายละเอียดของ ERC (ช่วงข้อมูล, ความผันผวน, ส่วนแบ่งความเสี่ยง) — ว่างในโหมด preset
     details: dict[str, Any] = field(default_factory=dict)
 
 
 def get_weighting_method() -> str:
-    """``erc`` หรือ ``preset`` จาก config — ค่าที่ไม่รู้จัก = คอนฟิกผิด ห้ามเดา."""
+    """``blend`` / ``erc`` / ``erc_sector_cap`` / ``preset`` จาก config — ค่าที่ไม่รู้จัก = คอนฟิกผิด ห้ามเดา."""
     raw = load_config()["portfolio"].get("weighting_method", DEFAULT_WEIGHTING)
     method = str(raw).strip().lower()
     if method not in WEIGHTING_METHODS:
@@ -228,9 +234,10 @@ def get_target_weights_with_status(
     method = get_weighting_method()
     if not symbols:
         return TargetWeights(weights={}, profile=profile_name, method=method)
-    if method in (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
+    if method in (WEIGHTING_BLEND, WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
         return _erc_status(
-            symbols, partial, profile_name, config, sector_cap=method == WEIGHTING_ERC_SECTOR_CAP
+            symbols, partial, profile_name, config,
+            sector_cap=method == WEIGHTING_ERC_SECTOR_CAP, blend=method == WEIGHTING_BLEND,
         )
 
     notes: list[str] = []
@@ -301,23 +308,30 @@ def _erc_status(
     config: dict[str, Any],
     *,
     sector_cap: bool = False,
+    blend: bool = False,
 ) -> TargetWeights:
-    """โหมด ERC — คำนวณบน ``symbols`` ที่ส่งมาตรง ๆ.
+    """โหมด ERC / blend — คำนวณบน ``symbols`` ที่ส่งมาตรง ๆ.
+
+    ``blend=True`` = ERC ที่คำนวณได้ผสมกับ 1/N ครึ่งต่อครึ่ง (``risk_weights.blend_result``) — ขั้นดึงราคา/ประมาณ
+    ความเสี่ยงเหมือน ERC ทุกอย่าง จึงมีเงื่อนไขล้มเหลวเดียวกัน (:class:`RiskWeightsUnavailable`).
 
     ``partial=True`` (ชุดย่อยที่ดึงราคาสำเร็จ) ก็คิด ERC บนชุดย่อยนั้นเลย: ERC คือการแบ่ง
     ความเสี่ยงระหว่าง "กองที่จะซื้อจริงรอบนี้" ไม่มีน้ำหนักของกองที่หายไปให้ต้องรักษาสัดส่วน
     แบบโหมด preset — แต่ต้องบอกผู้ใช้ว่ารอบนี้คิดไม่ครบทุกกอง
     """
     from data.fetcher import PriceDataUnavailableError
-    from portfolio.risk_weights import compute_erc_weights
+    from portfolio.risk_weights import blend_result, compute_erc_weights
 
     try:
         result = compute_erc_weights(tuple(symbols), sector_cap)
+        if blend:
+            result = blend_result(result)
     except (PriceDataUnavailableError, ValueError) as exc:
         raise RiskWeightsUnavailable(
-            f"คำนวณสัดส่วนฐานแบบ ERC ไม่ได้: {exc} — ระบบไม่เดาสัดส่วนแทน "
+            f"คำนวณสัดส่วนฐานแบบ {'blend (ERC + 1/N)' if blend else 'ERC'} ไม่ได้: {exc} — ระบบไม่เดาสัดส่วนแทน "
             "และไม่ถอยไปใช้สัดส่วนตายตัว (ลองใหม่เมื่อดึงราคาได้)"
         ) from exc
+    method_name = WEIGHTING_BLEND if blend else (WEIGHTING_ERC_SECTOR_CAP if sector_cap else WEIGHTING_ERC)
 
     notes: list[str] = []
     meta = result.get("meta") or {}
@@ -336,23 +350,24 @@ def _erc_status(
         left_out = [t for t in _full_universe(symbols) if t not in symbols]
         if left_out:
             notes.append(
-                f"รอบนี้คิดสัดส่วน ERC จาก {len(symbols)} กองที่มีข้อมูล — "
+                f"รอบนี้คิดสัดส่วน {'blend' if blend else 'ERC'} จาก {len(symbols)} กองที่มีข้อมูล — "
                 f"{', '.join(left_out)} ดึงราคาไม่สำเร็จจึงไม่อยู่ในรอบนี้"
             )
     if config["portfolio"].get("target_weights"):
         notes.append(
             "มีค่า portfolio.target_weights ตั้งไว้ใน config.json แต่ไม่ถูกใช้ "
-            "เพราะ weighting_method = erc (คำนวณจากข้อมูล ไม่ใช้สัดส่วนตายตัว)"
+            f"เพราะ weighting_method = {method_name} (คำนวณจากข้อมูล ไม่ใช้สัดส่วนตายตัว)"
         )
     return TargetWeights(
         weights={s: float(result["weights"][s]) for s in symbols},
         profile=profile_name,
-        source={s: WEIGHTING_ERC for s in symbols},
+        source={s: method_name for s in symbols},
         notes=notes,
-        method=WEIGHTING_ERC_SECTOR_CAP if sector_cap else WEIGHTING_ERC,
+        method=method_name,
         details={
             "risk_share": result["risk_share"],
             "risk_per_pct": result.get("risk_per_pct") or {},
+            **({"erc_weights": result["erc_weights"], "erc_share": result["erc_share"]} if blend else {}),
             **meta,
         },
     )

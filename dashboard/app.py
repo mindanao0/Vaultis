@@ -110,6 +110,7 @@ from portfolio.lookthrough import (
 from portfolio.dca import COVERAGE_ATTR, describe_coverage, simulate_monthly_dca
 from portfolio.targets import (
     RISK_PROFILES,
+    WEIGHTING_BLEND,
     WEIGHTING_ERC,
     WEIGHTING_ERC_SECTOR_CAP,
     WEIGHTING_METHODS,
@@ -949,7 +950,7 @@ def _render_target_weights_table(current_tickers: list[str], preset: dict[str, f
                     "ETF": t,
                     "เป้าหมายตาม preset": f"{preset.get(t, 0) * 100:.0f}%",
                     "เป้าหมายที่ใช้จริง": f"{effective_targets.get(t, 0) * 100:.1f}%",
-                    "ที่มา": {"custom": "ตั้งเอง", "preset": "preset", "erc": "ERC"}.get(
+                    "ที่มา": {"custom": "ตั้งเอง", "preset": "preset", "erc": "ERC", "blend": "blend (ERC+1/N)"}.get(
                         status.source.get(t, ""), "ไม่รู้จัก"
                     ),
                 }
@@ -967,14 +968,14 @@ def _render_target_weights_table(current_tickers: list[str], preset: dict[str, f
     )
 
 
-def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = False) -> None:
+def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = False, blend: bool = False) -> None:
     """ตารางสัดส่วนฐานแบบ ERC ที่คำนวณจากข้อมูลตอนนี้ — ไม่มีตัวเลขตายตัวให้ตั้ง.
 
     แสดงคู่กับความผันผวนและส่วนแบ่งความเสี่ยง เพื่อให้เห็นว่าทำไมแต่ละกองได้เท่านั้น
     (กองที่ขึ้นลงพร้อมกันแชร์งบความเสี่ยงก้อนเดียว) และบอกช่วงข้อมูลที่ใช้จริงเสมอ
     """
     from data.fetcher import PriceDataUnavailableError
-    from portfolio.risk_weights import compute_erc_weights
+    from portfolio.risk_weights import blend_result, compute_erc_weights
 
     symbols = [str(t).strip().upper() for t in current_tickers if str(t).strip()]
     if not symbols:
@@ -982,6 +983,8 @@ def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = Fal
         return
     try:
         result = compute_erc_weights(tuple(symbols), sector_cap)
+        if blend:
+            result = blend_result(result)
     except (PriceDataUnavailableError, ValueError) as exc:
         _render_risk_weights_unavailable(RiskWeightsUnavailable(str(exc)))
         return
@@ -999,8 +1002,10 @@ def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = Fal
             # จึงไม่บอกอะไร (ผู้ใช้ถามว่าทำไมขึ้น 20% ทุกช่อง — 2026-09-30)
             "ความเสี่ยงที่เพิ่มต่อเงิน 1%": f"{per_pct[t]:.1f}" if t in per_pct else "—",
         }
-        if meta.get("binding_sectors"):
-            # มีเพดานชน = ส่วนแบ่งไม่เท่ากันแล้ว ตัวเลขนี้จึงกลับมามีความหมาย
+        if blend:
+            row["น้ำหนัก ERC ล้วน"] = f"{result['erc_weights'][t] * 100:.1f}%"
+        if (meta.get("binding_sectors") or blend) and result.get("risk_share"):
+            # มีเพดานชน / ผสม 1/N = ส่วนแบ่งไม่เท่ากันแล้ว ตัวเลขนี้จึงกลับมามีความหมาย
             row["ส่วนแบ่งความเสี่ยง"] = f"{result['risk_share'][t] * 100:.1f}%"
         rows.append(row)
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -1017,13 +1022,25 @@ def _render_erc_weights_table(current_tickers: list[str], sector_cap: bool = Fal
     corr_window = result["meta"].get("corr_window") or {}
     vol_window = result["meta"].get("vol_window") or {}
     if corr_window and vol_window:
-        st.caption(
-            "ไม่มีสัดส่วนตายตัว — คำนวณใหม่จากข้อมูลทุกครั้ง (วัดเป็นเงินบาท) ให้ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน "
+        windows = (
             f"(ความผันผวน {vol_window['start']} → {vol_window['end']} · "
             f"การขึ้นลงพร้อมกัน {corr_window['start']} → {corr_window['end']}) "
-            "กองที่ขึ้นลงพร้อมกันจึงแชร์งบความเสี่ยงก้อนเดียว — เป็นสูตรกระจายความเสี่ยง "
-            "ไม่ได้พิสูจน์ว่าให้ผลตอบแทนสูงกว่า"
         )
+        if blend:
+            st.caption(
+                "blend = ERC ครึ่งหนึ่ง + แบ่งเท่ากัน 1/N ครึ่งหนึ่ง — ส่วน ERC คำนวณใหม่จากข้อมูลทุกครั้ง (วัดเป็นเงินบาท) "
+                + windows
+                + "ทดสอบด้วย simulation (300,000 เส้นทาง/โลก): ผลตอบแทนสูงกว่า ERC ล้วน ~0.1 pp/ปี แลกกับขาดทุนสูงสุด (MaxDD) "
+                "ลึกขึ้น ~1 จุด · **ไม่ผ่านเกณฑ์ที่ล็อกไว้ก่อนรัน** ผู้ใช้เลือกเอง (2026-10-05) — "
+                "เป็นการเลือกจุดบนเส้นแลกเปลี่ยนความเสี่ยงกับผลตอบแทน ไม่ใช่สูตรที่พิสูจน์ว่าดีกว่า"
+            )
+        else:
+            st.caption(
+                "ไม่มีสัดส่วนตายตัว — คำนวณใหม่จากข้อมูลทุกครั้ง (วัดเป็นเงินบาท) ให้ทุกกองแบกความเสี่ยงของพอร์ตเท่ากัน "
+                + windows
+                + "กองที่ขึ้นลงพร้อมกันจึงแชร์งบความเสี่ยงก้อนเดียว — เป็นสูตรกระจายความเสี่ยง "
+                "ไม่ได้พิสูจน์ว่าให้ผลตอบแทนสูงกว่า"
+            )
     _render_world_sector_comparison(result["weights"])
 
 
@@ -1136,6 +1153,7 @@ def render_settings_page() -> None:
         f"({TILT_MIN:.1f}–{TILT_MAX:.1f} เท่า) ไม่ตัดสินทรัพย์ใดออกจากพอร์ต"
     )
     method_labels = {
+        WEIGHTING_BLEND: "blend — ERC ครึ่ง + แบ่งเท่ากัน 1/N ครึ่ง (ค่าเริ่มต้น: ผลตอบแทนสูงกว่า ERC ~0.1 pp/ปี แลก MaxDD ลึกขึ้น ~1 จุด)",
         WEIGHTING_ERC: "ERC — คำนวณจากความเสี่ยงและการขึ้นลงพร้อมกัน (ไม่มีสัดส่วนตายตัว)",
         WEIGHTING_ERC_SECTOR_CAP: "ERC + เพดานเซกเตอร์ 2× ตลาดโลก (ทดสอบย้อนหลังแล้ว drawdown แย่ลง ~3 จุด)",
         WEIGHTING_PRESET: "Preset — สัดส่วนตายตัวตามโปรไฟล์ความเสี่ยง",
@@ -1144,7 +1162,7 @@ def render_settings_page() -> None:
         current_method = get_weighting_method()
     except InvalidTargetWeights as exc:
         st.warning(f"{exc} — กดบันทึกเพื่อเขียนค่าที่เลือกด้านล่างทับ")
-        current_method = WEIGHTING_ERC
+        current_method = WEIGHTING_BLEND
     selected_method = st.selectbox(
         "วิธีคำนวณสัดส่วนฐาน",
         list(WEIGHTING_METHODS),
@@ -1155,8 +1173,10 @@ def render_settings_page() -> None:
         st.info("ยังไม่ได้บันทึก — กด **บันทึก Settings** ด้านล่างเพื่อเปลี่ยนวิธีคำนวณจริง")
     current_profile = get_risk_profile()
     selected_profile = current_profile
-    if selected_method in (WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
-        _render_erc_weights_table(current_tickers, sector_cap=selected_method == WEIGHTING_ERC_SECTOR_CAP)
+    if selected_method in (WEIGHTING_BLEND, WEIGHTING_ERC, WEIGHTING_ERC_SECTOR_CAP):
+        _render_erc_weights_table(
+            current_tickers, sector_cap=selected_method == WEIGHTING_ERC_SECTOR_CAP, blend=selected_method == WEIGHTING_BLEND
+        )
     else:
         profile_options = list(RISK_PROFILES.keys())
         profile_labels = {"conservative": "อนุรักษ์นิยม", "moderate": "สมดุล", "aggressive": "เชิงรุก"}

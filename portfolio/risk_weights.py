@@ -37,6 +37,16 @@ ERC เกิน 1 จุดทั้งสองช่วง) ผล: **ไม�
 ตัดจาก XLV ไหลไป VOO/QQQM ที่ขึ้นลงพร้อมกัน ผลตอบแทน +0.8%/ปี แยกไม่ออกทางสถิติ
 (ข้อจำกัดของการทดสอบ: มีสัดส่วนเซกเตอร์ของกองแค่ของวันนี้ ใช้คงที่ตลอดช่วง)
 
+วิธี ``blend`` (ค่าเริ่มต้นตั้งแต่ 2026-10-05 — **มติผู้ใช้ ขัดกับคำแนะนำและเกณฑ์ที่ล็อกไว้ ดูด้านล่าง**):
+น้ำหนัก = ``BLEND_ERC_SHARE`` × ERC + (1 − ``BLEND_ERC_SHARE``) × 1/N (ครึ่งต่อครึ่ง)
+ที่มา: simulation 300,000 เส้นทาง/โลก × 5 โลก (``research/dar_sim/REPORT_NEW.md``, สเปกล็อกที่ ``PREREG_NEW.md``)
+เทียบ ERC ล้วน: **ผลตอบแทน +0.05 ถึง +0.11 pp/ปี ทุกโลกและทุกชุดความไว (16/16)** แลกกับ **MaxDD มัธยฐานลึกขึ้น
++0.7 ถึง +1.5 จุด** และหางเสี่ยง (MaxDD แย่สุด 5%) ลึกขึ้น ~1.5–2 จุด — เป็นจุดบนเส้นแลกเปลี่ยนระหว่าง ERC กับ 1/N
+ไม่ใช่การได้ฟรี **BLEND ตกเกณฑ์ A1 ที่ล็อกไว้ก่อนรัน** (MaxDD มัธยฐานที่ 20 ปีลึกขึ้น +1.2 จุด เกณฑ์ไม่เกิน +1.0) และ
+ผ่าน A2 แค่ 1 จาก 5 โลก (ต้อง ≥ 3) ⇒ ตามกติกาของโปรเจกต์ "ERC อยู่ต่อ" ผู้ใช้เลือก BLEND เองเมื่อ 2026-10-05 หลังเห็นตัวเลขนี้ครบ
+ห้ามอ้างย้อนหลังว่า BLEND "ผ่านเกณฑ์" — ไม่ผ่าน · ข้อจำกัดของ simulation: ERC ฐานล้วน ไม่มีการเอียงตามคะแนน, ไม่หักภาษีปันผล 15%,
+เหตุการณ์ใหญ่ส่วนใหญ่เป็นข้อสมมติ — ใช้เทียบสูตรกัน ไม่ใช่พยากรณ์ผลตอบแทน · ``erc`` ยังเลือกได้ใน Settings
+
 ตัวเลขทุกตัวคำนวณในโค้ด (AI อธิบายเท่านั้น) · ข้อมูลไม่พอ = raise ห้ามเดาน้ำหนักแทน (C1)
 """
 
@@ -62,6 +72,9 @@ HISTORY_YEARS = 6
 #: USDTHB รายวันจาก Yahoo — ใช้แปลงราคาเป็นบาทก่อนวัดความเสี่ยง
 FX_TICKER = "THB=X"
 TRADING_DAYS_PER_YEAR = 252
+#: สัดส่วนของ ERC ในสูตร ``blend`` (ที่เหลือ = 1/N) — นิยามเดียว (``research/dar_sim`` ทดสอบที่ 0.5 เท่านั้น:
+#: ค่าอื่นไม่เคยผ่าน simulation จึงห้ามปรับตามความรู้สึก — เปลี่ยน = ต้องจำลองใหม่)
+BLEND_ERC_SHARE = 0.5
 
 _MAX_SWEEPS = 10_000
 _STEP_TOL = 1e-13
@@ -244,6 +257,8 @@ def erc_from_prices(
     marginal = (cov @ weights) / port_vol
     meta = {**meta, "portfolio_vol_pct": round(port_vol * 100.0, 2), "binding_sectors": binding}
     return {
+        # covariance รายปี (บาท) — ไว้ให้ :func:`blend_result` คำนวณส่วนแบ่งความเสี่ยงของน้ำหนักที่ผสมแล้ว
+        "cov": cov.tolist(),
         "weights": {t: float(w) for t, w in zip(tickers, weights)},
         "risk_share": {t: float(v) for t, v in zip(tickers, shares)},
         "risk_per_pct": {t: round(float(v) * 100.0, 2) for t, v in zip(tickers, marginal)},
@@ -293,6 +308,43 @@ def to_thb(prices_usd: pd.DataFrame) -> pd.DataFrame:
 
     fx = fetch_adjusted_close_data(tickers=[FX_TICKER], years=HISTORY_YEARS)[FX_TICKER]
     return prices_usd.mul(fx.reindex(prices_usd.index).ffill(limit=3), axis=0)
+
+
+def blend_with_equal(weights: dict[str, float], erc_share: float = BLEND_ERC_SHARE) -> dict[str, float]:
+    """``erc_share`` × น้ำหนัก ERC + (1 − ``erc_share``) × 1/N — รวมเป็น 1 และทุกกอง > 0 เสมอ."""
+    if not weights:
+        raise ValueError("ไม่มีน้ำหนักให้ผสม")
+    if not 0.0 <= float(erc_share) <= 1.0:
+        raise ValueError(f"erc_share ต้องอยู่ใน [0, 1] (ได้ {erc_share!r})")
+    n = len(weights)
+    return {t: float(erc_share) * float(w) + (1.0 - float(erc_share)) / n for t, w in weights.items()}
+
+
+def blend_result(erc_result: dict[str, Any], erc_share: float = BLEND_ERC_SHARE) -> dict[str, Any]:
+    """ผลของ :func:`compute_erc_weights` → ผลของวิธี ``blend`` (รูปทรงเดียวกัน ผู้เรียกเดิมใช้ต่อได้).
+
+    ``weights`` เป็นน้ำหนักที่ผสมแล้ว · ``erc_weights`` เก็บน้ำหนัก ERC ล้วนไว้แสดง · ส่วนแบ่งความเสี่ยง
+    (``risk_share``) คำนวณใหม่จากน้ำหนักที่ผสมแล้ว — **ไม่เท่ากันทุกกองอีกแล้ว** จึงมีความหมาย ต่างจาก ERC ล้วน
+    ไม่มี covariance (กองเดียว / ผลที่ไม่ได้มาจาก ``erc_from_prices``) → ``risk_share`` ว่าง ไม่เดา
+    """
+    erc_weights_dict = dict(erc_result["weights"])
+    tickers = list(erc_weights_dict)
+    blended = blend_with_equal(erc_weights_dict, erc_share)
+    out = {**erc_result, "weights": blended, "erc_weights": erc_weights_dict, "erc_share": float(erc_share),
+           "risk_share": {}, "risk_per_pct": {}}
+    cov = erc_result.get("cov")
+    if cov is not None and len(tickers) > 1:
+        c = np.asarray(cov, dtype=float)
+        w = np.array([blended[t] for t in tickers], dtype=float)
+        shares = risk_contributions(c, w)
+        port_vol = math.sqrt(float(w @ c @ w))
+        marginal = (c @ w) / port_vol
+        out["risk_share"] = {t: float(v) for t, v in zip(tickers, shares)}
+        out["risk_per_pct"] = {t: round(float(v) * 100.0, 2) for t, v in zip(tickers, marginal)}
+        out["meta"] = {**(erc_result.get("meta") or {}), "portfolio_vol_pct": round(port_vol * 100.0, 2)}
+    elif len(tickers) == 1:
+        out["risk_share"] = {tickers[0]: 1.0}
+    return out
 
 
 def build_erc(tickers: list[str], sector_cap: bool = False) -> dict[str, Any]:

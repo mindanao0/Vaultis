@@ -236,8 +236,10 @@ class TestSectorCapMethod:
         assert status.method == "erc_sector_cap"
         assert any("สุขภาพ" in n for n in status.notes)
 
-    def test_default_is_still_plain_erc(self):
-        assert targets.DEFAULT_WEIGHTING == "erc", "เพดานเซกเตอร์ไม่ผ่าน backtest — ห้ามเป็นค่าเริ่มต้น"
+    def test_default_is_blend_and_never_the_sector_cap(self):
+        # ค่าเริ่มต้นเป็น blend ตั้งแต่ 2026-10-05 (มติผู้ใช้) · เพดานเซกเตอร์ไม่ผ่าน backtest — ห้ามเป็นค่าเริ่มต้นเด็ดขาด
+        assert targets.DEFAULT_WEIGHTING == "blend"
+        assert targets.DEFAULT_WEIGHTING != "erc_sector_cap"
 
 
 # ---------------------------------------------------------------- Discord

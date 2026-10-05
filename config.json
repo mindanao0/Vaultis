@@ -13,7 +13,7 @@
     ]
   },
   "portfolio": {
-    "weighting_method": "erc",
+    "weighting_method": "blend",
     "risk_profile": "moderate",
     "target_weights": {}
   },

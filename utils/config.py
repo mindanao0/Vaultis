@@ -29,10 +29,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tickers": DEFAULT_TICKERS,
     },
     # สัดส่วนพอร์ตเป้าหมาย — ฐานของทั้งการจัดสรร DCA และการ rebalance (ดู portfolio/targets.py)
-    # weighting_method: "erc" = คำนวณจากความเสี่ยง+correlation ทุกครั้ง ไม่มีสัดส่วนตายตัว
+    # weighting_method: "blend" = ERC ครึ่ง + 1/N ครึ่ง (ค่าเริ่มต้นตั้งแต่ 2026-10-05 — มติผู้ใช้; ตกเกณฑ์ที่ล็อกไว้
+    # ก่อนรัน ดู portfolio/risk_weights.py) · "erc" = คำนวณจากความเสี่ยง+correlation ทุกครั้ง ไม่มีสัดส่วนตายตัว
     # (มติผู้ใช้ 2026-09-30) · "preset" = สูตรเดิม risk_profile + target_weights
     "portfolio": {
-        "weighting_method": "erc",
+        "weighting_method": "blend",
         "risk_profile": "moderate",
         "target_weights": {},
     },

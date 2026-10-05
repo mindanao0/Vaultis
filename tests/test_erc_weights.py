@@ -188,8 +188,8 @@ class TestTargetsUseErc:
         assert set(status.source.values()) == {"erc"}
         assert calls == [tuple(FIVE)]
 
-    def test_missing_method_key_means_erc(self, tmp_path, monkeypatch):
-        """config.json เก่าที่ไม่มีคีย์ = ใช้ค่าเริ่มต้นของระบบ (ERC) ไม่ใช่ preset."""
+    def test_missing_method_key_means_the_system_default(self, tmp_path, monkeypatch):
+        """config.json เก่าที่ไม่มีคีย์ = ใช้ค่าเริ่มต้นของระบบ (blend ตั้งแต่ 2026-10-05) ไม่ใช่ preset."""
         from utils import config as cfg
 
         path = tmp_path / "config.json"
@@ -197,12 +197,12 @@ class TestTargetsUseErc:
         monkeypatch.setattr(cfg, "CONFIG_PATH", path)
         monkeypatch.setattr(cfg, "_cache", None)
         monkeypatch.setattr(rw, "compute_erc_weights", _fake_erc([]))
-        assert targets.get_weighting_method() == "erc"
+        assert targets.get_weighting_method() == "blend"
 
     def test_default_holds_even_when_config_is_built_without_defaults(self, monkeypatch):
-        """ผู้เรียกที่ประกอบ config เอง (ไม่ผ่าน utils.config merge) ก็ต้องได้ ERC."""
+        """ผู้เรียกที่ประกอบ config เอง (ไม่ผ่าน utils.config merge) ก็ต้องได้ค่าเริ่มต้นของระบบ (blend)."""
         monkeypatch.setattr(targets, "load_config", lambda: {"portfolio": {"risk_profile": "moderate"}})
-        assert targets.get_weighting_method() == "erc"
+        assert targets.get_weighting_method() == "blend"
 
     def test_data_failure_never_falls_back_to_the_preset(self, configured, monkeypatch):
         configured()
