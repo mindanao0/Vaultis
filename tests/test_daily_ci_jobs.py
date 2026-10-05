@@ -734,4 +734,4 @@ class TestSchedulerResilience:
             getattr(getattr(j.job_func, "func", j.job_func), "__name__", "")
             for j in schedule_lib.jobs
         }
-        assert names == {"run_price_alert_job", "run_simulation_refresh", "run_predict_daily", "run_trade_daily"}, names  # simulation ไม่ต้องใช้ webhook
+        assert names == {"run_price_alert_job", "run_simulation_refresh", "run_predict_daily", "run_trade_daily", "run_backup"}, names  # simulation ไม่ต้องใช้ webhook

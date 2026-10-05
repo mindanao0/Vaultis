@@ -147,6 +147,16 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {},
     },
     {
+        # ที่เก็บสแนปช็อตของสมุด — เทสต์ห้ามเขียนลงที่จริง (ปน/ตัดสแนปช็อตหลักฐานของจริง)
+        "label": "ที่สำรองสมุด",
+        "module": "jobs.backup_ledgers",
+        "attr": "BACKUP_DIR",
+        "real": REPO_ROOT / ".docker-data" / "backups",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",

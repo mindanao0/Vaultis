@@ -47,6 +47,7 @@ from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from jobs.dar_monthly import run_dar_plan_if_due
 from jobs.select_monthly import run_select_plan_if_due
+from jobs.backup_ledgers import run_backup as run_backup_ledgers
 from jobs.predict_daily import run_predict_daily
 from jobs.trade_daily import run_trade_daily
 from jobs.simulation_refresh import run_simulation_refresh
@@ -871,6 +872,9 @@ def run_scheduler() -> None:
         #    ไม่ต้องใช้ webhook ไม่มี LLM ไม่มีค่าใช้จ่าย (ครั้งแรกใช้เวลา ~1–2 นาที: Prophet 30 ตัว)
         schedule.every().day.at("06:35").do(_safe(run_trade_daily))
         _safe(run_trade_daily)()
+        # 9) สำรองสมุดที่ทดแทนไม่ได้ (คำทำนาย PREDICT/TRADE ฯลฯ) 06:50 หลังงานบันทึกคำทำนาย + ตอนเริ่มโปรเซส · ตรวจว่าสมุดแบบต่อท้ายอย่างเดียวไม่ถูกแก้/ย่อ
+        schedule.every().day.at("06:50").do(_safe(run_backup_ledgers))
+        _safe(run_backup_ledgers)()
 
         print(
             "Vaultis scheduler started: "
@@ -886,7 +890,8 @@ def run_scheduler() -> None:
             "21:00 alerts only) = True, "
             "simulation refresh (daily 06:00 + startup) = True, "
             "predict daily (06:30 + startup) = True, "
-            "trade daily (06:35 + startup) = True"
+            "trade daily (06:35 + startup) = True, "
+            "ledger backup (06:50 + startup) = True"
         )
 
         while True:

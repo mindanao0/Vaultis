@@ -28,6 +28,8 @@ x-app-env: &app-env
   # งานแผน SELECT-DCA ("โมเดลเลือกกองเอง") จำเดือนที่ส่งแล้วในไฟล์ของตัวเอง (ปิดไว้ก่อน — เปิดที่ Settings) · สมุดอยู่ที่
   # portfolio/data/select_transactions.csv ซึ่ง bind mount อยู่แล้ว
   VAULTIS_SELECT_STATE_PATH: /data/select_scheduler_state.json
+  # สแนปช็อตสมุดที่ทดแทนไม่ได้ (jobs/backup_ledgers.py) — ต้องอยู่ใน /data ที่ bind mount จาก host ไม่งั้น rebuild แล้วหาย
+  VAULTIS_BACKUP_DIR: /data/backups
   # ระดับ log ของ "ทางเข้า" ทั้งสองทาง (uvicorn backend.main:app และ python main.py)
   # ไม่ตั้ง = INFO ตามค่าในโค้ด · ตั้ง WARNING เพื่อหรี่, DEBUG เพื่อไล่ปัญหา
   # uvicorn --log-level ใช้แทนกันไม่ได้ มันตั้งเฉพาะ logger ชื่อ uvicorn*
@@ -203,6 +205,7 @@ services:
       VAULTIS_STOCK_LEDGER_PATH: /tmp/vaultis-test-data/stock_transactions.csv
       VAULTIS_PREDICT_LEDGER_PATH: /tmp/vaultis-test-data/predict_log.csv
       VAULTIS_TRADE_LEDGER_PATH: /tmp/vaultis-test-data/trade_log.csv
+      VAULTIS_BACKUP_DIR: /tmp/vaultis-test-data/backups
       VAULTIS_SELECT_STATE_PATH: /tmp/vaultis-test-data/select_scheduler_state.json
       # ข้อมูล simulation (ราคาที่ดึงสด + ผลล่าสุด) — ออกนอก repo เหมือนไฟล์ข้างบน
       VAULTIS_SIM_DATA_DIR: /tmp/vaultis-test-data/simulation
