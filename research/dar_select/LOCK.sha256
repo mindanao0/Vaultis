@@ -1,0 +1,13 @@
+# LOCK — hash ก่อนรันยืนยันบน JST (2026-10-05 10:46:36 +0700)
+1bdc3e5c04ce57ef80ecd4d6717a7e2f9430aff23e55f0726e07af9f6f7fc12c  PREREG.md
+c9b9ac24e8f7ad4876ac2de902be3f52ea95c278bf9193930e4b2c01377cde3e  confirm.py
+784987f45d17e60a3fae2c86558843656649f260bfaa92073264673844966647  design.py
+7e5ecc3ba9201a71f194c13d745a4f22332ec71f4fe5a688b27958b584aa3d3c  design_data.py
+36920f8847ad52cbb58f0403e18b67502ea1508e026fcbbbf7b81650f3c18390  results_design.json
+b3e4f6776e79c4bb736319e7058cb109700999d6f09b13ddc8e77c3da58c111d  results_pipeline_check_exploration.json
+cc6f362a3ca885855d59bf3288d8f5cab2b17f496205c36c918975ee25c30173  ../../tests/test_dar_select_confirm.py
+# ข้อมูลยืนยัน (ไม่อยู่ใน git — ใบอนุญาต CC BY-NC-SA 4.0): b0ebb74a8d1b5b1bc9033fc46a6dcc578736afff8ce1e1086b7840f2649e79b3  JSTdatasetR6.dta
+# บันทึกความซื่อตรง (ไม่อยู่ใน hash): ก่อนล็อก ผมรันท่อคำนวณเดียวกันบนข้อมูลสำรวจที่แปลงเป็นรายปีเพื่อตรวจว่าโค้ดทำงาน
+# (results_pipeline_check_exploration.json: กฎ A ล้มข้อ 4 "ไม่แพ้ DAR เอียงทุกกอง" ในชุดนั้น) — ไม่ได้แก้นิยามกฎ/เกณฑ์หลังเห็นผลนั้น
+# ยกเว้นเพิ่ม "ปลดเพดานเฉพาะปีที่ทุกตลาดติดเพดาน" (พบเพราะเทสต์สังเคราะห์ค้าง ไม่ใช่เพราะผลตอบแทน) และบันทึกไว้ใน PREREG ข้อ 1
+# หมายเหตุ: design_data.py ถูกแก้ที่อ่าน path ข้อมูลจาก argv เป็นตัวแปรสภาพแวดล้อมหลังรัน design.py (เพราะ confirm.py ใช้ argv) — ไม่กระทบผลของ design

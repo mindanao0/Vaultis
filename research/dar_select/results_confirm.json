@@ -1,0 +1,456 @@
+{
+ "usd": {
+  "n_windows": 69,
+  "first_start_year": 1887,
+  "last_start_year": 1955,
+  "markets": [
+   "Australia",
+   "Belgium",
+   "Canada",
+   "Denmark",
+   "Finland",
+   "France",
+   "Germany",
+   "Ireland",
+   "Italy",
+   "Japan",
+   "Netherlands",
+   "Norway",
+   "Portugal",
+   "Spain",
+   "Sweden",
+   "Switzerland",
+   "UK"
+  ],
+  "dar_all_vs_equal": {
+   "n": 69,
+   "mean_pct": 0.7867516760965643,
+   "median_pct": 1.2400836282114414,
+   "win_pct": 68.11594202898551,
+   "p10_pct": -3.304955169939494,
+   "worst_pct": -7.014524699567682,
+   "annual_excess_pct": 0.03757123018124509,
+   "annual_excess_ci95_pct": [
+    -0.01669634591848949,
+    0.09183880628097967
+   ],
+   "first_half_mean_pct": 0.052095129286655606,
+   "second_half_mean_pct": 1.5004180358547226,
+   "first_year": 1887,
+   "last_year": 1955
+  },
+  "rules": {
+   "dar_topk_K5": {
+    "vs_equal": {
+     "n": 69,
+     "mean_pct": 5.650400195611605,
+     "median_pct": 5.956275481162021,
+     "win_pct": 84.05797101449275,
+     "p10_pct": -2.624932659094492,
+     "worst_pct": -17.72067935628051,
+     "annual_excess_pct": 0.2620461112291594,
+     "annual_excess_ci95_pct": [
+      0.04807223479028132,
+      0.4760199876680374
+     ],
+     "first_half_mean_pct": 2.5634534101619533,
+     "second_half_mean_pct": 8.649148501476978,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 69,
+     "mean_pct": 4.72810953406011,
+     "median_pct": 4.87278109454472,
+     "win_pct": 86.95652173913044,
+     "p10_pct": -1.412151551220675,
+     "worst_pct": -12.106307822788853,
+     "annual_excess_pct": 0.2241464838920993,
+     "annual_excess_ci95_pct": [
+      0.0589217803135275,
+      0.3893711874706711
+     ],
+     "first_half_mean_pct": 2.377998586226404,
+     "second_half_mean_pct": 7.0110744548129045,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 18.19636060329408,
+     "max": 45.92125427708177
+    },
+    "markets_held_at_end": 13.985507246376812
+   },
+   "dar_topk_K8": {
+    "vs_equal": {
+     "n": 69,
+     "mean_pct": 1.9591818907975789,
+     "median_pct": 2.0908685265395244,
+     "win_pct": 68.11594202898551,
+     "p10_pct": -3.655242320313734,
+     "worst_pct": -9.23433723774638,
+     "annual_excess_pct": 0.09241892784765948,
+     "annual_excess_ci95_pct": [
+      0.008572765604621817,
+      0.17626509009069716
+     ],
+     "first_half_mean_pct": 0.8540737630533979,
+     "second_half_mean_pct": 3.03271550060622,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 69,
+     "mean_pct": 1.1231126000825764,
+     "median_pct": 1.0010643800200558,
+     "win_pct": 71.01449275362319,
+     "p10_pct": -1.8194953418465665,
+     "worst_pct": -3.225215265422432,
+     "annual_excess_pct": 0.054728130229699676,
+     "annual_excess_ci95_pct": [
+      0.022599561143749596,
+      0.08685669931564974
+     ],
+     "first_half_mean_pct": 0.7737483327498573,
+     "second_half_mean_pct": 1.4624950312057905,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 16.308310363389936,
+     "max": 37.25897727007999
+    },
+    "markets_held_at_end": 14.057971014492754
+   },
+   "yield_topk_K5": {
+    "vs_equal": {
+     "n": 69,
+     "mean_pct": 15.900448784196763,
+     "median_pct": 15.953797065256946,
+     "win_pct": 98.55072463768117,
+     "p10_pct": 5.728989196806911,
+     "worst_pct": -1.388784619057326,
+     "annual_excess_pct": 0.727702320072678,
+     "annual_excess_ci95_pct": [
+      0.5552362644324743,
+      0.9001683757128817
+     ],
+     "first_half_mean_pct": 18.23243302793818,
+     "second_half_mean_pct": 13.635092661705063,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 69,
+     "mean_pct": 15.11427981518343,
+     "median_pct": 14.748887519018904,
+     "win_pct": 97.10144927536231,
+     "p10_pct": 5.23319156281723,
+     "worst_pct": -5.0948269708770315,
+     "annual_excess_pct": 0.6901222655039135,
+     "annual_excess_ci95_pct": [
+      0.4808803317310768,
+      0.8993641992767502
+     ],
+     "first_half_mean_pct": 18.32241261709633,
+     "second_half_mean_pct": 11.997807950468008,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 24.16928431392222,
+     "max": 49.113998089925
+    },
+    "markets_held_at_end": 12.53623188405797
+   },
+   "yield_topk_K8": {
+    "vs_equal": {
+     "n": 69,
+     "mean_pct": 8.571886069724055,
+     "median_pct": 9.437373739138511,
+     "win_pct": 95.65217391304348,
+     "p10_pct": 1.2216427492732773,
+     "worst_pct": -6.536814130748536,
+     "annual_excess_pct": 0.4055833407949293,
+     "annual_excess_ci95_pct": [
+      0.28575919157111074,
+      0.525407490018748
+     ],
+     "first_half_mean_pct": 9.450824477193365,
+     "second_half_mean_pct": 7.718060188182463,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 69,
+     "mean_pct": 7.855904984899453,
+     "median_pct": 7.950856623154201,
+     "win_pct": 89.85507246376811,
+     "p10_pct": 0.0652749597412905,
+     "worst_pct": -13.187141020607996,
+     "annual_excess_pct": 0.3681812060573669,
+     "annual_excess_ci95_pct": [
+      0.22084547508754307,
+      0.5155169370271908
+     ],
+     "first_half_mean_pct": 9.50497131807293,
+     "second_half_mean_pct": 6.253954832673747,
+     "first_year": 1887,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 20.66658608086704,
+     "max": 40.65521900798281
+    },
+    "markets_held_at_end": 13.623188405797102
+   }
+  },
+  "verdict": {
+   "dar_topk_K5": {
+    "checks": {
+     "mean>=+1%": true,
+     "win>=60%": true,
+     "p10>=-5%": true,
+     "not_worse_than_DAR_tilt_all": true
+    },
+    "PASS": true
+   },
+   "yield_topk_K5": {
+    "checks": {
+     "mean>=+1%": true,
+     "win>=60%": true,
+     "p10>=-5%": true,
+     "not_worse_than_DAR_tilt_all": true
+    },
+    "PASS": true
+   }
+  }
+ },
+ "local_currency_secondary": {
+  "n_windows": 70,
+  "first_start_year": 1886,
+  "last_start_year": 1955,
+  "markets": [
+   "Australia",
+   "Belgium",
+   "Canada",
+   "Denmark",
+   "Finland",
+   "France",
+   "Germany",
+   "Ireland",
+   "Italy",
+   "Japan",
+   "Netherlands",
+   "Norway",
+   "Portugal",
+   "Spain",
+   "Sweden",
+   "Switzerland",
+   "UK"
+  ],
+  "dar_all_vs_equal": {
+   "n": 70,
+   "mean_pct": -0.8277403964743857,
+   "median_pct": 1.6903373697621182,
+   "win_pct": 70.0,
+   "p10_pct": -4.092922991982562,
+   "worst_pct": -78.75280073861659,
+   "annual_excess_pct": -0.18446192706403655,
+   "annual_excess_ci95_pct": [
+    -0.6952953404313993,
+    0.3263714863033262
+   ],
+   "first_half_mean_pct": 4.063166229955439,
+   "second_half_mean_pct": -5.7186470229042,
+   "first_year": 1886,
+   "last_year": 1955
+  },
+  "rules": {
+   "dar_topk_K5": {
+    "vs_equal": {
+     "n": 70,
+     "mean_pct": -10.042553456190785,
+     "median_pct": 0.764629559438279,
+     "win_pct": 51.42857142857142,
+     "p10_pct": -47.14811775883041,
+     "worst_pct": -99.99999989917302,
+     "annual_excess_pct": -3.8745454758497195,
+     "annual_excess_ci95_pct": [
+      -9.571814571544593,
+      1.8227236198451542
+     ],
+     "first_half_mean_pct": -16.09241944654174,
+     "second_half_mean_pct": -3.9926874658398503,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 70,
+     "mean_pct": -12.26218509791468,
+     "median_pct": -0.7526339619823852,
+     "win_pct": 44.285714285714285,
+     "p10_pct": -49.095277472389675,
+     "worst_pct": -99.99999984996899,
+     "annual_excess_pct": -3.8703793786677467,
+     "annual_excess_ci95_pct": [
+      -9.387297317206365,
+      1.646538559870872
+     ],
+     "first_half_mean_pct": -19.42819050107828,
+     "second_half_mean_pct": -5.096179694751058,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 40.77393597680034,
+     "max": 99.99999998812572
+    },
+    "markets_held_at_end": 10.957142857142857
+   },
+   "dar_topk_K8": {
+    "vs_equal": {
+     "n": 70,
+     "mean_pct": -2.6330758316509884,
+     "median_pct": 2.823462824579126,
+     "win_pct": 72.85714285714285,
+     "p10_pct": -14.120017206870461,
+     "worst_pct": -99.99999989791026,
+     "annual_excess_pct": -3.340056077159305,
+     "annual_excess_ci95_pct": [
+      -8.766947895829688,
+      2.0868357415110776
+     ],
+     "first_half_mean_pct": 1.2640646299491243,
+     "second_half_mean_pct": -6.530216293251046,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 70,
+     "mean_pct": -5.574445848893184,
+     "median_pct": 0.9817455525049867,
+     "win_pct": 61.42857142857143,
+     "p10_pct": -10.035328599854143,
+     "worst_pct": -99.99999984809,
+     "annual_excess_pct": -3.3383926599439127,
+     "annual_excess_ci95_pct": [
+      -8.564978233175037,
+      1.8881929132872115
+     ],
+     "first_half_mean_pct": -3.664544601095654,
+     "second_half_mean_pct": -7.484347096690758,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 39.93319533234685,
+     "max": 99.99999999384153
+    },
+    "markets_held_at_end": 11.114285714285714
+   },
+   "yield_topk_K5": {
+    "vs_equal": {
+     "n": 70,
+     "mean_pct": 4.240627396511165,
+     "median_pct": 9.04000942677703,
+     "win_pct": 78.57142857142857,
+     "p10_pct": -16.15626961088771,
+     "worst_pct": -99.99999988453537,
+     "annual_excess_pct": -3.0360825206341424,
+     "annual_excess_ci95_pct": [
+      -8.535009585637281,
+      2.462844544368998
+     ],
+     "first_half_mean_pct": 3.5678305572127478,
+     "second_half_mean_pct": 4.913424235809627,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 70,
+     "mean_pct": 1.7248584494351071,
+     "median_pct": 7.25420286799745,
+     "win_pct": 71.42857142857143,
+     "p10_pct": -23.606241163583075,
+     "worst_pct": -99.99999982818811,
+     "annual_excess_pct": -3.0327176538770746,
+     "annual_excess_ci95_pct": [
+      -8.33822188520942,
+      2.2727865774552702
+     ],
+     "first_half_mean_pct": -0.6482753320519397,
+     "second_half_mean_pct": 4.097992230922154,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 44.8377501301886,
+     "max": 99.99999999385238
+    },
+    "markets_held_at_end": 9.742857142857142
+   },
+   "yield_topk_K8": {
+    "vs_equal": {
+     "n": 70,
+     "mean_pct": -7.608855324283404,
+     "median_pct": 0.9541784213936033,
+     "win_pct": 54.285714285714285,
+     "p10_pct": -35.641360990934686,
+     "worst_pct": -99.99999988754304,
+     "annual_excess_pct": -3.634008525989158,
+     "annual_excess_ci95_pct": [
+      -9.102178055640483,
+      1.8341610036621658
+     ],
+     "first_half_mean_pct": -12.78546621323441,
+     "second_half_mean_pct": -2.432244435332409,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "vs_dar_all": {
+     "n": 70,
+     "mean_pct": -9.664125293713631,
+     "median_pct": -0.24885244813738217,
+     "win_pct": 44.285714285714285,
+     "p10_pct": -40.49740897219769,
+     "worst_pct": -99.99999983266356,
+     "annual_excess_pct": -3.6297417840976136,
+     "annual_excess_ci95_pct": [
+      -8.913451470760073,
+      1.6539679025648464
+     ],
+     "first_half_mean_pct": -16.29364245028484,
+     "second_half_mean_pct": -3.0346081371424027,
+     "first_year": 1886,
+     "last_year": 1955
+    },
+    "max_single_market_weight_pct": {
+     "mean": 41.7314319952366,
+     "max": 99.99999999135427
+    },
+    "markets_held_at_end": 10.571428571428571
+   }
+  },
+  "verdict": {
+   "dar_topk_K5": {
+    "checks": {
+     "mean>=+1%": false,
+     "win>=60%": false,
+     "p10>=-5%": false,
+     "not_worse_than_DAR_tilt_all": false
+    },
+    "PASS": false
+   },
+   "yield_topk_K5": {
+    "checks": {
+     "mean>=+1%": true,
+     "win>=60%": true,
+     "p10>=-5%": false,
+     "not_worse_than_DAR_tilt_all": true
+    },
+    "PASS": false
+   }
+  }
+ }
+}
