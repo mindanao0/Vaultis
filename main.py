@@ -46,6 +46,7 @@ from analysis.returns import calculate_period_returns, real_bars
 from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from jobs.dar_monthly import run_dar_plan_if_due
+from jobs.simulation_refresh import run_simulation_refresh
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
 from technical.signal_rules import rsi_zone
@@ -849,6 +850,10 @@ def run_scheduler() -> None:
             _safe(run_price_alert_job), daily_summary=DAILY_SUMMARY_NEW_CLOSE
         )
         schedule.every().day.at("21:00").do(_safe(run_price_alert_job), daily_summary=DAILY_SUMMARY_OFF)
+        # 6) simulation (งานหลักของระบบ): ดึงข้อมูลสดเมื่อเก่าเกิน 7 วัน + รันแผนปัจจุบันในโลกจำลอง ทุกวัน 06:00
+        #    และตอนเริ่มโปรเซส (ไม่ต้องใช้ webhook ไม่มี LLM) — รันหลังงานอื่นตอนเริ่ม เพราะครั้งแรกใช้เวลา 1–3 นาที
+        schedule.every().day.at("06:00").do(_safe(run_simulation_refresh))
+        _safe(run_simulation_refresh)()
 
         print(
             "Vaultis scheduler started: "
@@ -861,7 +866,8 @@ def run_scheduler() -> None:
             f"daily technical alert check (09:00, RSI abnormal only) = "
             f"{bool(webhook_url) and notifications.get('rsi_alert', True)}, "
             "price alert check (daily 09:00 + price summary when there is a new close, "
-            "21:00 alerts only) = True"
+            "21:00 alerts only) = True, "
+            "simulation refresh (daily 06:00 + startup) = True"
         )
 
         while True:
@@ -961,6 +967,12 @@ if __name__ == "__main__":
         status = run_dar_plan_if_due(force=True)
         print(f"DAR-DCA plan: {status}")
         if status not in {"sent"}:
+            raise SystemExit(1)
+    elif args.job == "sim_refresh":
+        # ดึงข้อมูลสดของ simulation + รันแผนปัจจุบันใหม่ทั้งหมดทันที (ข้ามการเช็กว่าถึงเวลา)
+        outcome = run_simulation_refresh(force=True)
+        print(f"simulation: {outcome}")
+        if not outcome["ok"]:
             raise SystemExit(1)
     elif args.job == "all":
         # รัน scheduler ปกติ (ใช้เมื่อรันบนเครื่องตัวเอง)

@@ -184,6 +184,19 @@ class DcaSimRequest(_WeightedPortfolioRequest):
         return _finite_amount(value, "งบลงทุนต่อเดือน (monthly_investment)")
 
 
+class SimulationRunRequest(BaseModel):
+    """``POST /api/simulation/run`` — รันแผนปัจจุบันของระบบในโลกจำลอง (ข้อมูลที่ดึงไว้แล้ว ไม่ยิงเน็ตดึงข้อมูลใหม่)."""
+
+    paths: int = Field(default=3000, ge=100, le=12000, description="จำนวนเส้นทางต่อโลก")
+    save: bool = Field(default=False, description="บันทึกเป็นผลล่าสุดที่หน้าจอ/Discord อ่าน")
+
+
+class SimulationWhatIfRequest(_WeightedPortfolioRequest):
+    """``POST /api/simulation/whatif`` — ลองสัดส่วนที่กำหนดเอง (เทียบ ERC / blend / 1/N) ก่อนใช้จริง."""
+
+    paths: int = Field(default=3000, ge=100, le=12000)
+
+
 class AiAdviceRequest(BaseModel):
     """คำขอ ``POST /api/ai/advice``.
 

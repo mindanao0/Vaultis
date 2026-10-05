@@ -66,6 +66,9 @@ x-app: &app
     - ./.docker-data:/data
     # config.json ผู้ใช้แก้ได้จากหน้า Settings → ต้องเขียนกลับมาที่ host
     - ./config.json:/app/config.json
+    # simulation: ราคาที่ดึงสด + manifest + ผลของแผนปัจจุบัน — scheduler เขียน, backend/dashboard อ่าน
+    # (bind mount ไม่ใช่ image: rebuild ไม่ทำให้ต้องดึงใหม่ และรันนอก Docker เห็นไฟล์ชุดเดียวกัน)
+    - ./simulation/data:/app/simulation/data
   restart: unless-stopped
 
 services:
@@ -192,6 +195,8 @@ services:
       # พอร์ตทดลอง DAR-DCA มีสมุด + ไฟล์สถานะของตัวเอง — ออกนอก repo ด้วยเหตุผลเดียวกัน
       VAULTIS_DAR_LEDGER_PATH: /tmp/vaultis-test-data/dar_transactions.csv
       VAULTIS_DAR_STATE_PATH: /tmp/vaultis-test-data/dar_scheduler_state.json
+      # ข้อมูล simulation (ราคาที่ดึงสด + ผลล่าสุด) — ออกนอก repo เหมือนไฟล์ข้างบน
+      VAULTIS_SIM_DATA_DIR: /tmp/vaultis-test-data/simulation
       # ชุดเทสต์ต้องผ่านโดยไม่พึ่งฐานข้อมูล — ล้างค่าที่ติดมาจาก .env ทิ้ง
       DATABASE_URL: ""
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"

@@ -243,7 +243,7 @@ class TestRunJob:
             getattr(getattr(j.job_func, "func", j.job_func), "__name__", "")
             for j in schedule_lib.jobs
         }
-        assert names == {"run_price_alert_job"}
+        assert names == {"run_price_alert_job", "run_simulation_refresh"}  # simulation ไม่ต้องใช้ webhook
 
 
 # ---------------------------------------------------------------- CLI

@@ -501,6 +501,14 @@ def _base_context_lines(notes: list[str]) -> list[str]:
     except Exception as exc:  # noqa: BLE001 — บริบทเสริม ห้ามล้มแผนที่คำนวณเสร็จแล้ว
         lines.extend(f"ℹ️ {note}" for note in notes)
         lines.append(f"⚠️ วัดความกระจุกตัวของเซกเตอร์ไม่ได้ ({exc}) — ไม่ได้แปลว่าไม่กระจุกตัว")
+    # simulation เป็นงานหลัก: ทุกแผนที่ส่งออกไปต้องมีผลการลองรันในโลกจำลองแนบไปด้วย (อ่านผลที่ scheduler รันไว้ — ไม่รันที่นี่
+    # เพราะใช้เวลาหลายวินาที) ไม่มีผล/เก่าเกินไป = บอกตรง ๆ ไม่เงียบ · ห้ามให้พังจนแผนที่คำนวณเสร็จแล้วไม่ถูกส่ง
+    try:
+        from simulation.service import load_last_plan, summary_lines
+
+        lines.extend(summary_lines(load_last_plan()))
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"🧪 Simulation: อ่านผลไม่ได้ ({exc}) — ไม่ได้แปลว่าแผนผ่านการจำลองแล้ว")
     return lines
 
 

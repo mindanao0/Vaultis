@@ -29,6 +29,7 @@ from .routers import (
     reports,
     screener,
     sentiment,
+    simulation,
     transactions,
 )
 from .routers import websocket as prices_ws
@@ -190,6 +191,7 @@ protected = [
     backtest.router,
     forecast.router,
     etf_analysis.router,
+    simulation.router,
 ]
 for router in protected:
     app.include_router(router, dependencies=[Depends(require_api_key)])

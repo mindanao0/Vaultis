@@ -213,7 +213,7 @@ BANGKOK_TZ = ZoneInfo("Asia/Bangkok")
 # แล้วปุ่ม "บันทึก Settings" เขียนทับค่าเดิมลง config.json เงียบ ๆ แม้ตั้งใจมาแก้แค่งบ DCA
 NAV_GROUPS = [
     ("Main", ["Overview", "Scorecard", "Portfolio"]),
-    ("Analysis", ["Backtest", "DCA Simulator", "Technical Signals", "Correlation", "DCF Analysis"]),
+    ("Analysis", ["Backtest", "DCA Simulator", "Simulation", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
     # พอร์ตทดลองที่แยกจากแผนหลักทั้งหมด (สูตร/สมุด/งาน Discord ของตัวเอง) — dashboard/dar_page.py
     ("Experiments", ["DAR-DCA"]),
@@ -1187,6 +1187,27 @@ def render_settings_page() -> None:
             format_func=lambda p: f"{profile_labels.get(p, p)} ({p})",
         )
         _render_target_weights_table(current_tickers, RISK_PROFILES[selected_profile])
+
+    # simulation เป็นงานหลัก: ทุกวิธีที่เลือก/แผนที่ใช้อยู่ต้องถูกลองรันในโลกจำลองด้วย (ผล + ข้อจำกัดอยู่ใน expander)
+    with st.expander("🧪 ลองแผนนี้ใน simulation (5–20 ปี: วิกฤต สงคราม เงินเฟ้อ ค่าเงินบาท)", expanded=False):
+        try:
+            from dashboard.simulation_panel import render_simulation_panel
+
+            preview = None
+            if selected_method != current_method:
+                if selected_method == WEIGHTING_BLEND:
+                    preview = {"label": "blend (ที่เลือก)", "spec": "BLEND"}
+                elif selected_method == WEIGHTING_ERC:
+                    preview = {"label": "ERC (ที่เลือก)", "spec": "ERC"}
+                elif selected_method == WEIGHTING_PRESET:
+                    base = RISK_PROFILES[selected_profile]
+                    preview = {"label": f"preset {selected_profile} (ที่เลือก)",
+                               "spec": {t: float(base.get(t, 0.0)) for t in current_tickers if base.get(t, 0.0) > 0}}
+                else:
+                    st.caption("วิธีเพดานเซกเตอร์ยังจำลองสดก่อนบันทึกไม่ได้ (บันทึกแล้วตัวตั้งเวลาจะรันให้)")
+            render_simulation_panel(preview=preview, key="settings_sim")
+        except Exception as exc:  # noqa: BLE001 — ส่วนเสริม ห้ามทำให้หน้า Settings ล่ม
+            st.warning(f"แสดงผล simulation ไม่ได้: {exc}")
 
     st.divider()
     st.subheader("4) Notification Settings")
@@ -5343,6 +5364,13 @@ def render_scorecard_page() -> None:
                 use_container_width=True,
                 hide_index=True,
             )
+            with st.expander("🧪 ลองแผนนี้ใน simulation (5–20 ปี: วิกฤต สงคราม เงินเฟ้อ ค่าเงินบาท)", expanded=False):
+                try:
+                    from dashboard.simulation_panel import render_simulation_panel
+
+                    render_simulation_panel(key="scorecard_sim")
+                except Exception as exc:  # noqa: BLE001 — ส่วนเสริม ห้ามทำให้หน้า Scorecard ล่ม
+                    st.warning(f"แสดงผล simulation ไม่ได้: {exc}")
         with donut_col:
             donut_df = pd.DataFrame(
                 [
@@ -5492,6 +5520,12 @@ def render_dashboard() -> None:
             from dashboard.dar_page import render_dar_page
 
             render_dar_page(apply_theme=_apply_plotly_dark_theme)
+            return
+        elif page == "Simulation":
+            # import ตอนใช้: ส่วน simulation พังต้องไม่ลากหน้าหลักไปด้วย (รูปแบบเดียวกับหน้า DAR-DCA)
+            from dashboard.simulation_panel import render_simulation_page
+
+            render_simulation_page()
             return
         elif page == "Settings":
             render_settings_page()

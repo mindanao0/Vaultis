@@ -36,6 +36,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 USER_DATA_FILES: tuple[dict, ...] = (
     {
+        # โฟลเดอร์ข้อมูลของ simulation (ราคาที่ดึงสด + manifest + ผลล่าสุด) — **สร้างใหม่ได้** (ดึงใหม่) จึงไม่นับเป็นของที่ทดแทนไม่ได้
+        # แต่เทสต์ห้ามเขียนทับของจริงที่ scheduler ในคอนเทนเนอร์กำลังอ่านอยู่
+        "label": "ข้อมูล simulation",
+        "module": "simulation.data",
+        "attr": "DATA_DIR",
+        "real": REPO_ROOT / "simulation" / "data",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
         "label": "คลัง price alert",
         "module": "alerts.price_alert",
         "attr": "ALERTS_PATH",
@@ -104,7 +115,7 @@ USER_DATA_FILES: tuple[dict, ...] = (
 # ไฟล์ที่ถูก gitignore = ไม่มีสำเนาใน git ให้กู้ถ้าหาย (config.json ไม่อยู่ในชุดนี้เพราะ
 # track ใน git และคน/เอเจนต์แก้ระหว่างวันได้ตามปกติ — ใส่มาจะกลายเป็นสัญญาณเท็จ)
 _IRREPLACEABLE = tuple(
-    spec for spec in USER_DATA_FILES if spec["label"] != "config.json"
+    spec for spec in USER_DATA_FILES if spec["label"] not in ("config.json", "ข้อมูล simulation")
 )
 
 
@@ -218,6 +229,19 @@ def _no_live_erc_price_fetch(request, monkeypatch):
         )
 
     monkeypatch.setattr(risk_weights, "compute_erc_weights", _blocked)
+
+    # ข้อมูลสดของ simulation (ราคา + FRED) ก็เป็น network — ตัวตั้งเวลารันงานดึงข้อมูลตอนเริ่มโปรเซส
+    # เทสต์ที่ไม่ได้ติด mark network ห้ามไปถึงการดึงนั้นเด็ดขาด (สตับ ``simulation.data`` เองถ้าต้องการข้อมูล)
+    import simulation.data as sim_data
+
+    def _sim_blocked(*_a, **_k):
+        raise AssertionError(
+            "เทสต์นี้ไปถึงการดึงข้อมูลสดของ simulation — ใช้ข้อมูลสังเคราะห์ (ดู tests/test_simulation_engine.py) "
+            "หรือสตับ simulation.data.fetch_raw"
+        )
+
+    monkeypatch.setattr(sim_data, "fetch_raw", _sim_blocked)
+    monkeypatch.setattr(sim_data, "_fetch_fred", _sim_blocked)
 
     # ข้อมูลเซกเตอร์ของกอง (funds_data) ก็เป็น network เหมือนกัน — แผนรายเดือนเรียกมันเพื่อเตือน
     # ความกระจุกตัว ``_fund_data`` มีสัญญาว่า "ไม่ throw คืนเหตุผลแทน" จึงคืนเหตุผลตามสัญญา

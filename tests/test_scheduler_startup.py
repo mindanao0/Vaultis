@@ -95,7 +95,7 @@ class TestNoWebhook:
             assert job not in names, f"{job} ไม่ควรถูกตั้งเวลาเมื่อไม่มี webhook"
 
     def test_only_price_alert_jobs_registered(self, monkeypatch):
-        assert _names(_run(monkeypatch, "")) == {"run_price_alert_job"}
+        assert _names(_run(monkeypatch, "")) == {"run_price_alert_job", "run_simulation_refresh"}  # simulation ไม่ต้องใช้ webhook
 
 
 class TestWithWebhook:

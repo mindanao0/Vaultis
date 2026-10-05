@@ -30,3 +30,7 @@ alerts/data/price_alerts.json
 alerts/data/price_alerts.json.bak
 alerts/data/price_alerts.json.lock
 alerts/data/price_alerts.json.tmp.*
+
+# simulation: ข้อมูลที่ดึงสด + ผลล่าสุด สร้างใหม่ได้เสมอ — ไม่ต้องเข้า git (เหลือ .gitkeep ให้ fresh clone มีโฟลเดอร์ ไม่งั้น bind mount สร้างเป็น root)
+simulation/data/*
+!simulation/data/.gitkeep
