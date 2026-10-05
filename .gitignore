@@ -15,6 +15,8 @@ portfolio/data/select_transactions.csv
 portfolio/data/select_transactions.csv.tmp
 portfolio/data/stock_transactions.csv
 portfolio/data/stock_transactions.csv.tmp
+portfolio/data/predict_log.csv
+portfolio/data/predict_log.csv.tmp
 .dar_scheduler_state.json
 .dar_scheduler_state.json.tmp
 .select_scheduler_state.json

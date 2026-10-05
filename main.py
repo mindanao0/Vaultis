@@ -47,6 +47,7 @@ from data.fetcher import DEFAULT_TICKERS, fetch_adjusted_close_data
 from jobs.daily_check import run
 from jobs.dar_monthly import run_dar_plan_if_due
 from jobs.select_monthly import run_select_plan_if_due
+from jobs.predict_daily import run_predict_daily
 from jobs.simulation_refresh import run_simulation_refresh
 from portfolio.tracker import get_today_fx_rate_thb
 from technical.indicators import calculate_rsi
@@ -861,6 +862,10 @@ def run_scheduler() -> None:
         #    และตอนเริ่มโปรเซส (ไม่ต้องใช้ webhook ไม่มี LLM) — รันหลังงานอื่นตอนเริ่ม เพราะครั้งแรกใช้เวลา 1–3 นาที
         schedule.every().day.at("06:00").do(_safe(run_simulation_refresh))
         _safe(run_simulation_refresh)()
+        # 7) PREDICT (พอร์ตกระดาษ "ทำนายตลาด", แยกจากแผน DCA): ทุกวัน 06:30 หลังตลาดสหรัฐปิด บันทึกคำทำนายหนึ่งชุดต่อวันที่ของแท่ง
+        #    ให้คะแนนที่ครบกำหนดแล้ว และจำลองเกณฑ์ตัดสิน — ไม่ต้องใช้ webhook ไม่มี LLM ไม่มีค่าใช้จ่าย (รันทันทีตอนเริ่มโปรเซสด้วย)
+        schedule.every().day.at("06:30").do(_safe(run_predict_daily))
+        _safe(run_predict_daily)()
 
         print(
             "Vaultis scheduler started: "
@@ -874,7 +879,8 @@ def run_scheduler() -> None:
             f"{bool(webhook_url) and notifications.get('rsi_alert', True)}, "
             "price alert check (daily 09:00 + price summary when there is a new close, "
             "21:00 alerts only) = True, "
-            "simulation refresh (daily 06:00 + startup) = True"
+            "simulation refresh (daily 06:00 + startup) = True, "
+            "predict daily (06:30 + startup) = True"
         )
 
         while True:
@@ -979,6 +985,12 @@ if __name__ == "__main__":
         # ดึงข้อมูลสดของ simulation + รันแผนปัจจุบันใหม่ทั้งหมดทันที (ข้ามการเช็กว่าถึงเวลา)
         outcome = run_simulation_refresh(force=True)
         print(f"simulation: {outcome}")
+        if not outcome["ok"]:
+            raise SystemExit(1)
+    elif args.job == "predict_daily":
+        # บันทึกคำทำนายของวันนี้ + ให้คะแนน + จำลองเกณฑ์ตัดสินใหม่ทันที (ชุดของวันที่บันทึกไปแล้วไม่ถูกเขียนซ้ำ)
+        outcome = run_predict_daily(force=True)
+        print(f"predict: {outcome}")
         if not outcome["ok"]:
             raise SystemExit(1)
     elif args.job == "select_plan":

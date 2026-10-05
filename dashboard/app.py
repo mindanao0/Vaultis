@@ -216,7 +216,7 @@ NAV_GROUPS = [
     ("Analysis", ["Backtest", "DCA Simulator", "Simulation", "Technical Signals", "Correlation", "DCF Analysis"]),
     ("AI & Alerts", ["AI Advisor", "Macro", "News", "Price Alerts"]),
     # พอร์ตทดลองที่แยกจากแผนหลักทั้งหมด (สูตร/สมุด/งาน Discord ของตัวเอง) — dashboard/dar_page.py
-    ("Experiments", ["DAR-DCA", "SELECT-DCA", "STOCK-DCA"]),
+    ("Experiments", ["DAR-DCA", "SELECT-DCA", "STOCK-DCA", "PREDICT"]),
     ("System", ["Settings"]),
 ]
 
@@ -5536,6 +5536,11 @@ def render_dashboard() -> None:
             from dashboard.stock_page import render_stock_page
 
             render_stock_page(apply_theme=_apply_plotly_dark_theme)
+            return
+        elif page == "PREDICT":
+            from dashboard.predict_page import render_predict_page
+
+            render_predict_page(apply_theme=_apply_plotly_dark_theme)
             return
         elif page == "Simulation":
             # import ตอนใช้: ส่วน simulation พังต้องไม่ลากหน้าหลักไปด้วย (รูปแบบเดียวกับหน้า DAR-DCA)

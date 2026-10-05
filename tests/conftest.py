@@ -127,6 +127,16 @@ USER_DATA_FILES: tuple[dict, ...] = (
         "reset": {},
     },
     {
+        # สมุดคำทำนาย PREDICT — กติกาล็อกห้ามแก้/ลบ/ย้อนบันทึก ⇒ หายแล้วกู้ไม่ได้ (หลักฐาน forward test ทั้งก้อน)
+        "label": "สมุดคำทำนาย PREDICT",
+        "module": "portfolio.predict_ledger",
+        "attr": "PREDICT_LEDGER_PATH",
+        "real": REPO_ROOT / "portfolio" / "data" / "predict_log.csv",
+        "seed": False,
+        "mirror_parent": (),
+        "reset": {},
+    },
+    {
         "label": "config.json",
         "module": "utils.config",
         "attr": "CONFIG_PATH",
@@ -282,6 +292,24 @@ def _no_live_erc_price_fetch(request, monkeypatch):
 
     monkeypatch.setattr(sim_data, "fetch_raw", _sim_blocked)
     monkeypatch.setattr(sim_data, "_fetch_fred", _sim_blocked)
+
+    # โหมดพอร์ตกระดาษ (STOCK / PREDICT) ดึงราคาเองทีละกองผ่าน yfinance — ตัวตั้งเวลารัน PREDICT ตอนเริ่มโปรเซสด้วย
+    # ปล่อยให้เทสต์ส่ง ``fetch=`` ของตัวเองเข้าไปได้ แต่ **ห้ามใช้ตัวดึงจริงเป็นค่าเริ่มต้น** ในเทสต์ที่ไม่ติด network
+    import analysis.predict_lab as predict_lab_mod
+    import analysis.stock_pick as stock_pick_mod
+
+    def _guard(real, label):
+        def _wrapped(*args, fetch=None, **kwargs):
+            if fetch is None:
+                raise AssertionError(
+                    f"เทสต์นี้ไปถึงการดึงราคาจริงของ {label} — ส่ง fetch= ของเทสต์เอง หรือสตับ fetch_prices"
+                )
+            return real(*args, fetch=fetch, **kwargs)
+
+        return _wrapped
+
+    monkeypatch.setattr(predict_lab_mod, "fetch_prices", _guard(predict_lab_mod.fetch_prices, "PREDICT"))
+    monkeypatch.setattr(stock_pick_mod, "fetch_prices", _guard(stock_pick_mod.fetch_prices, "STOCK-DCA"))
 
     # ข้อมูลเซกเตอร์ของกอง (funds_data) ก็เป็น network เหมือนกัน — แผนรายเดือนเรียกมันเพื่อเตือน
     # ความกระจุกตัว ``_fund_data`` มีสัญญาว่า "ไม่ throw คืนเหตุผลแทน" จึงคืนเหตุผลตามสัญญา

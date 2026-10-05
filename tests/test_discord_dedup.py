@@ -252,7 +252,7 @@ class TestSchedule:
                             lambda: pytest.fail("เทสต์นี้ห้ามส่งแผนจริง"))
         # งานตอนเริ่ม scheduler ที่ยิงเน็ตจริงเมื่อมี webhook (แผน DAR/SELECT ดึงราคา+FX, simulation ดึงข้อมูลสด) — เทสต์นี้ดูแค่การลงทะเบียนเวลา
         # และ sleep ที่ถูกสตับให้ KeyboardInterrupt จะหยุดมันกลางทาง ก่อนงานราคาถูกลงทะเบียน (ทำให้ modes ว่าง)
-        for _name in ("run_dar_plan_if_due", "run_select_plan_if_due", "run_simulation_refresh"):
+        for _name in ("run_dar_plan_if_due", "run_select_plan_if_due", "run_simulation_refresh", "run_predict_daily"):
             monkeypatch.setattr(scheduler_main, _name, lambda *a, **k: None)
 
         def _stop(_seconds):

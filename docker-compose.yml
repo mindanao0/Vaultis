@@ -201,6 +201,7 @@ services:
       # พอร์ตทดลอง SELECT-DCA ("โมเดลเลือกกองเอง") — สมุด + ไฟล์สถานะของตัวเอง ออกนอก repo เหมือนกัน
       VAULTIS_SELECT_LEDGER_PATH: /tmp/vaultis-test-data/select_transactions.csv
       VAULTIS_STOCK_LEDGER_PATH: /tmp/vaultis-test-data/stock_transactions.csv
+      VAULTIS_PREDICT_LEDGER_PATH: /tmp/vaultis-test-data/predict_log.csv
       VAULTIS_SELECT_STATE_PATH: /tmp/vaultis-test-data/select_scheduler_state.json
       # ข้อมูล simulation (ราคาที่ดึงสด + ผลล่าสุด) — ออกนอก repo เหมือนไฟล์ข้างบน
       VAULTIS_SIM_DATA_DIR: /tmp/vaultis-test-data/simulation
